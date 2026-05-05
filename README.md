@@ -74,6 +74,24 @@ If you just want to install the plugin without building it:
 
 APK filenames look like `ATAK-Plugin-UVPro-*-civ-release.apk` (or `civ-debug` for debug builds).
 
+### Upgrading from a debug or self-signed build
+
+If you previously installed a **debug** or **self-signed** (non-TPC) build, Android will block the upgrade with an "App not installed" or "incompatible" error because the signing certificate changed. This is a one-time issue — all TPC-signed releases share the same certificate going forward.
+
+**Fix (your ATAK data is safe):**
+
+> Uninstalling the plugin APK does **not** affect the `/atak` directory, your maps, contacts, tracks, or any other ATAK data. That data belongs to the ATAK application, not this plugin.
+
+```bash
+# 1. Remove the old plugin (ATAK data is untouched)
+adb uninstall com.uvpro.plugin
+
+# 2. Install the new TPC-signed APK
+adb install ATAK-Plugin-UVPro-*-tpc-*-civ-release.apk
+```
+
+After reinstalling, open ATAK → Menu → Tools → **UV-PRO** and reconnect your radio. All previous settings are stored in ATAK's shared preferences and will be restored automatically.
+
 ## GitHub releases and signing
 
 - **Third-party (TPC) signing:** The APK that is fully aligned with **stock ATAK-CIV** and the usual install rules is the one built and signed on the **TAK Product Center third-party pipeline** (takrepo). It may show the standard indicator that the plugin was signed with the third-party service. No extra code is required in this repo for that — trust comes from the **pipeline signature**, not a flag in Java.

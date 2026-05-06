@@ -19,7 +19,16 @@
             android:textColor="#FFFFFFFF"
             android:textSize="18sp"
             android:textStyle="bold"
-            android:paddingBottom="4dp" />
+            android:paddingBottom="2dp" />
+
+        <TextView
+            android:id="@+id/header_version"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="v1.8.0"
+            android:textColor="#FF888888"
+            android:textSize="11sp"
+            android:paddingBottom="8dp" />
 
         <!-- ==================== CONNECTION ==================== -->
         <LinearLayout

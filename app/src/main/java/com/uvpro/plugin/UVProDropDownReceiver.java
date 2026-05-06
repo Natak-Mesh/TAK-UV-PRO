@@ -188,6 +188,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void bindViews() {
+        android.widget.TextView headerVersion = rootView.findViewById(getId("header_version"));
+        if (headerVersion != null) {
+            headerVersion.setText("v" + com.uvpro.plugin.BuildConfig.VERSION_NAME);
+        }
+
         statusDot = rootView.findViewById(getId("status_dot"));
         statusText = rootView.findViewById(getId("status_text"));
         deviceName = rootView.findViewById(getId("device_name"));

@@ -10,7 +10,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 /**
- * Dialog for editing APRS Smart Beacon parameters.
+ * Dialog for editing Smart Beacon parameters.
  */
 public class SmartBeaconSettingsDialog {
 

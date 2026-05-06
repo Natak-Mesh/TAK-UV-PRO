@@ -5,7 +5,10 @@ import android.content.SharedPreferences;
 import android.preference.PreferenceManager;
 
 /**
- * APRS Smart Beaconing algorithm.
+ * Smart Beaconing algorithm for AX.25 position reporting via UV-PRO radio.
+ * Dynamically adjusts the beacon rate based on speed and heading change —
+ * similar in concept to the well-known Smart Beacon algorithm but applied
+ * to UV-PRO AX.25 packets, not APRS.
  *
  * Dynamically adjusts the beacon rate based on speed and heading change:
  *  - Fast/turning  → beacon more frequently (down to fastRate)
@@ -24,7 +27,7 @@ public class SmartBeacon {
     public static final String KEY_TURN_THRESHOLD = "uvpro_smart_beacon_turn_threshold";
     public static final String KEY_TURN_SLOPE     = "uvpro_smart_beacon_turn_slope";
 
-    // Defaults (standard APRS Smart Beacon values)
+    // Default parameter values (based on the Smart Beacon algorithm)
     public static final boolean DEFAULT_ENABLED        = true;
     public static final int     DEFAULT_LOW_SPEED      = 5;    // mph
     public static final int     DEFAULT_HIGH_SPEED     = 60;   // mph

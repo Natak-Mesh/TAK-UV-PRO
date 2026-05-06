@@ -7,7 +7,7 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | Feature | Status | Description |
 |---------|--------|-------------|
 | **Position Sharing (PLI)** | ✅ Working | Your ATAK position is beaconed over radio at a configurable interval. Incoming positions appear as contacts on the map. |
-| **APRS Smart Beaconing** | ✅ Working | Dynamically adjusts beacon rate based on speed and heading change. Fast/turning = frequent beacons; slow/straight = less frequent. All six parameters configurable in Settings → Manage Smart Beacon Settings. |
+| **Smart Beaconing** | ✅ Working | Dynamically adjusts beacon rate based on speed and heading change. Fast/turning = frequent beacons; slow/straight = less frequent. All six parameters configurable in Settings → Manage Smart Beacon Settings. |
 | **Ping Reply** | ✅ Working | Automatically replies to incoming pings with your current GPS position. Toggle on/off in Settings. |
 | **Bluetooth Scan & Connect** | ✅ Working | Instant picker showing previously-connected radios with live green/gray availability dots. Auto-connects to last used radio on ATAK startup. |
 | **Radio Connection Status Overlay** | ✅ Working | Persistent icon in the lower-right ATAK map corner showing connection state. Green box = connected; dark box = disconnected. |

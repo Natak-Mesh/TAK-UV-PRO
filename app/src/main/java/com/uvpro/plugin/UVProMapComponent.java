@@ -325,33 +325,79 @@ try {
             is.read(certBytes);
             is.close();
 
-            // AtakCertificateDatabaseBase is accessible by class name but its methods are
-            // renamed by ProGuard in the production ATAK APK. Find saveCertificate(String, byte[])
-            // by parameter signature — it is the only static method with that exact signature.
-            Class<?> certDb = Class.forName("com.atakmap.net.AtakCertificateDatabaseBase");
-            java.lang.reflect.Method saveCert = null;
-            for (java.lang.reflect.Method m : certDb.getDeclaredMethods()) {
+            final String CERT_TYPE = "UPDATE_SERVER_TRUST_STORE_CA";
+            final String CERT_PASS = "atakatak";
+
+            // --- Step 1: Save via AtakCertificateDatabaseBase (legacy path) ---
+            // This writes to adapter.certDb (the CertificateStore SQLite file).
+            Class<?> certDbBase = Class.forName("com.atakmap.net.AtakCertificateDatabaseBase");
+            java.lang.reflect.Method saveCertLegacy = null;
+            for (java.lang.reflect.Method m : certDbBase.getDeclaredMethods()) {
                 Class<?>[] p = m.getParameterTypes();
                 if (p.length == 2 && p[0] == String.class && p[1] == byte[].class) {
-                    saveCert = m;
-                    saveCert.setAccessible(true);
+                    saveCertLegacy = m;
+                    saveCertLegacy.setAccessible(true);
                     break;
                 }
             }
-            if (saveCert == null) {
-                Log.w(TAG, "registerUpdateServerCA: saveCertificate method not found");
-                return;
+            if (saveCertLegacy != null) {
+                saveCertLegacy.invoke(null, CERT_TYPE, certBytes);
+                Log.i(TAG, "registerUpdateServerCA: legacy saveCertificate done");
+            } else {
+                Log.w(TAG, "registerUpdateServerCA: legacy saveCertificate not found");
             }
-            saveCert.invoke(null, "UPDATE_SERVER_TRUST_STORE_CA", certBytes);
 
-            // saveCertificatePassword is just a wrapper around AtakAuthenticationDatabase
-            // .saveCredentials — call the public API directly with username="" password="atakatak"
+            // --- Step 2: Save directly to the ICertificateStore that CertificateManager._impl
+            // holds — this is what getCACerts actually reads via validateCertificate().
+            // CertificateManager._impl.getCertificateStore() returns adapter.certDb; however
+            // if initialization order meant _impl was created before the DB was open, the two
+            // references diverge. Writing to both guarantees coverage.
+            Class<?> certMgrClass = Class.forName("com.atakmap.net.CertificateManager");
+            java.lang.reflect.Method getInst = certMgrClass.getDeclaredMethod("getInstance");
+            getInst.setAccessible(true);
+            Object certMgr = getInst.invoke(null);
+
+            java.lang.reflect.Field implField = certMgrClass.getDeclaredField("_impl");
+            implField.setAccessible(true);
+            Object impl = implField.get(certMgr);
+
+            if (impl != null) {
+                java.lang.reflect.Method getCertStore = impl.getClass().getMethod("getCertificateStore");
+                Object liveStore = getCertStore.invoke(impl);
+                if (liveStore != null) {
+                    java.lang.reflect.Method saveMethod = liveStore.getClass()
+                            .getMethod("saveCertificate", String.class, String.class, int.class, byte[].class);
+                    saveMethod.invoke(liveStore, CERT_TYPE, (String) null, -1, certBytes);
+                    Log.i(TAG, "registerUpdateServerCA: live store saveCertificate done");
+
+                    // Verify the cert is now readable
+                    java.lang.reflect.Method getMethod = liveStore.getClass()
+                            .getMethod("getCertificate", String.class, String.class, int.class);
+                    byte[] readBack = (byte[]) getMethod.invoke(liveStore, CERT_TYPE, (String) null, -1);
+                    Log.i(TAG, "registerUpdateServerCA: verify readback len=" +
+                            (readBack != null ? readBack.length : -1));
+                } else {
+                    Log.w(TAG, "registerUpdateServerCA: liveStore is null");
+                }
+            } else {
+                Log.w(TAG, "registerUpdateServerCA: _impl is null");
+            }
+
+            // --- Step 3: Store the password so getCACerts passes the !isEmpty check ---
             com.atakmap.net.AtakAuthenticationDatabase.saveCredentials(
-                    "updateServerCaPassword", "updateServerCaPassword", "", "atakatak", false);
+                    "updateServerCaPassword", "updateServerCaPassword", "", CERT_PASS, false);
+
+            // --- Step 4: Flush cached ExtendedSSLSocketFactory instances ---
+            // socketFactories is a ConcurrentHashMap cache keyed by server URL.
+            // If a factory was built before our cert was saved it would never see the cert.
+            // refresh() calls socketFactories.clear() so the next sync builds a fresh factory.
+            java.lang.reflect.Method refresh = certMgrClass.getDeclaredMethod("refresh");
+            refresh.invoke(certMgr);
+            Log.i(TAG, "registerUpdateServerCA: factory cache refreshed");
 
             Log.i(TAG, "Update server CA registered successfully");
         } catch (Exception e) {
-            Log.w(TAG, "registerUpdateServerCA failed: " + e.getMessage());
+            Log.w(TAG, "registerUpdateServerCA failed: " + e.getMessage(), e);
         }
     }
 

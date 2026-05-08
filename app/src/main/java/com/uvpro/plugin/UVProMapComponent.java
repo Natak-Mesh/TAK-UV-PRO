@@ -344,20 +344,27 @@ try {
                     .putString("updateServerCaLocation", p12.getAbsolutePath())
                     .apply();
 
+            // Store the P12 bytes in ATAK's cert DB (importCertificate reads raw bytes only,
+            // no password validation at this stage).
             byte[] imported = AtakCertificateDatabase.importCertificate(
                     p12.getAbsolutePath(),
                     null,
                     AtakCertificateDatabaseIFace.TYPE_UPDATE_SERVER_TRUST_STORE_CA,
                     false);
             if (imported != null) {
-                AtakCertificateDatabase.saveCertificatePassword(
-                        UPDATE_TRUSTSTORE_AUTH,
-                        AtakAuthenticationCredentials.TYPE_updateServerCaPassword,
-                        null);
-                Log.i(TAG, "Update server truststore installed: " + p12.getAbsolutePath());
+                Log.i(TAG, "Update server truststore imported: " + p12.getAbsolutePath());
             } else {
-                Log.w(TAG, "AtakCertificateDatabase.importCertificate returned null");
+                Log.w(TAG, "AtakCertificateDatabase.importCertificate returned null — file may not exist yet");
             }
+
+            // Always store the credential regardless of import result so that ATAK's
+            // plugin-manager UI shows the field pre-populated and the SSL handshake can
+            // open the PKCS12 truststore when it is ready.
+            AtakCertificateDatabase.saveCertificatePassword(
+                    UPDATE_TRUSTSTORE_AUTH,
+                    AtakAuthenticationCredentials.TYPE_updateServerCaPassword,
+                    null);
+            Log.i(TAG, "Update server CA credential stored");
 
             triggerUpdateServerSync();
         } catch (Exception e) {

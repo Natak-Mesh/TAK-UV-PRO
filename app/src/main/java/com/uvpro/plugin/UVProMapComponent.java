@@ -359,26 +359,51 @@ try {
             }
             Object certMgr = getInst.invoke(null);
 
-            // Find _impl field — the gov.tak.platform.engine.net.CertificateManager instance.
-            // Do NOT match by type name: ProGuard renames the type to a short obfuscated name
-            // (e.g. gov.tak.platform.engine.net.a) so contains("CertificateManager") fails.
-            // Instead, find the non-static field whose type exposes addCertificate(X509Certificate).
+            // Find _impl field and addCertificate method on its type.
+            // getMethod("addCertificate") fails when ProGuard renames the method.
+            // Instead scan every non-static field's type hierarchy for a method with
+            // the right signature: non-static, void return, single X509Certificate param.
+            // This is fully obfuscation-proof — no names required at any level.
             java.lang.reflect.Field implField = null;
+            java.lang.reflect.Method addCertMethod = null;
+            outer:
             for (java.lang.reflect.Field f : certMgrClass.getDeclaredFields()) {
                 if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
                 if (f.getType().isPrimitive()) continue;
-                try {
-                    f.getType().getMethod("addCertificate",
-                            java.security.cert.X509Certificate.class);
-                    implField = f;
-                    implField.setAccessible(true);
-                    Log.d(TAG, "injectCACert: found _impl field type=" + f.getType().getName());
-                    break;
-                } catch (NoSuchMethodException ignored) {
-                    // not the right field
+                Class<?> c = f.getType();
+                while (c != null && c != Object.class) {
+                    for (java.lang.reflect.Method m : c.getDeclaredMethods()) {
+                        if (java.lang.reflect.Modifier.isStatic(m.getModifiers())) continue;
+                        if (m.getReturnType() != void.class) continue;
+                        Class<?>[] params = m.getParameterTypes();
+                        if (params.length == 1
+                                && params[0].isAssignableFrom(
+                                        java.security.cert.X509Certificate.class)) {
+                            implField = f;
+                            implField.setAccessible(true);
+                            addCertMethod = m;
+                            addCertMethod.setAccessible(true);
+                            Log.d(TAG, "injectCACert: found _impl field=" + f.getName()
+                                    + " type=" + f.getType().getName()
+                                    + " addCert method=" + m.getName());
+                            break outer;
+                        }
+                    }
+                    c = c.getSuperclass();
                 }
             }
-            Object impl = (implField != null) ? implField.get(certMgr) : null;
+
+            if (implField == null) {
+                // Structural mismatch — log all non-static fields for diagnosis, don't retry
+                Log.w(TAG, "injectCACert: _impl field not found. Non-static fields on "
+                        + certMgrClass.getName() + ":");
+                for (java.lang.reflect.Field f : certMgrClass.getDeclaredFields()) {
+                    if (!java.lang.reflect.Modifier.isStatic(f.getModifiers()))
+                        Log.w(TAG, "  " + f.getName() + " : " + f.getType().getName());
+                }
+                return;
+            }
+            Object impl = implField.get(certMgr);
 
             if (impl == null) {
                 // CertificateManager.initialize() hasn't been called yet — retry shortly.
@@ -392,13 +417,8 @@ try {
                 return;
             }
 
-            // Call addCertificate(X509Certificate) on _impl directly.
-            // This adds to _impl.certificates list and calls _impl.refresh() which
-            // invalidates the localTrustManager so it is rebuilt with our CA included.
-            java.lang.reflect.Method addCert =
-                    impl.getClass().getMethod("addCertificate",
-                            java.security.cert.X509Certificate.class);
-            addCert.invoke(impl, cert);
+            // Call addCertificate on _impl using the method found during field scan.
+            addCertMethod.invoke(impl, cert);
             Log.i(TAG, "injectCACert: cert injected into _impl.certificates (attempt " + attempt + ")");
 
             // Also clear the outer socketFactories cache — these are built once and cached;

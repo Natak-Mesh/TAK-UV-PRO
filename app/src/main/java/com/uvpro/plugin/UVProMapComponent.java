@@ -341,32 +341,19 @@ try {
         try {
             Class<?> certMgrClass = Class.forName("com.atakmap.net.CertificateManager");
 
-            // Find getInstance() — ProGuard renames it, so match by signature:
-            // static, no params, returns same class.
-            java.lang.reflect.Method getInst = null;
-            for (java.lang.reflect.Method m : certMgrClass.getDeclaredMethods()) {
-                if (java.lang.reflect.Modifier.isStatic(m.getModifiers())
-                        && m.getParameterTypes().length == 0
-                        && certMgrClass.isAssignableFrom(m.getReturnType())) {
-                    getInst = m;
-                    getInst.setAccessible(true);
-                    break;
-                }
-            }
+            java.lang.reflect.Method getInst = findSingletonGetter(certMgrClass);
             if (getInst == null) {
                 Log.w(TAG, "injectCACert: getInstance() not found");
                 return;
             }
             Object certMgr = getInst.invoke(null);
+            boolean injectedA = false;
+            boolean injectedB = false;
 
-            // Find _impl field and addCertificate method on its type.
-            // getMethod("addCertificate") fails when ProGuard renames the method.
-            // Instead scan every non-static field's type hierarchy for a method with
-            // the right signature: non-static, void return, single X509Certificate param.
-            // This is fully obfuscation-proof — no names required at any level.
+            // Strategy A: try addCertificate(X509Certificate)-like method by signature.
             java.lang.reflect.Field implField = null;
             java.lang.reflect.Method addCertMethod = null;
-            outer:
+            outerA:
             for (java.lang.reflect.Field f : certMgrClass.getDeclaredFields()) {
                 if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
                 if (f.getType().isPrimitive()) continue;
@@ -377,52 +364,197 @@ try {
                         if (m.getReturnType() != void.class) continue;
                         Class<?>[] params = m.getParameterTypes();
                         if (params.length == 1
-                                && params[0].isAssignableFrom(
-                                        java.security.cert.X509Certificate.class)) {
+                                && params[0].isAssignableFrom(java.security.cert.X509Certificate.class)) {
                             implField = f;
                             implField.setAccessible(true);
                             addCertMethod = m;
                             addCertMethod.setAccessible(true);
-                            Log.d(TAG, "injectCACert: found _impl field=" + f.getName()
+                            Log.d(TAG, "injectCACert[A]: field=" + f.getName()
                                     + " type=" + f.getType().getName()
-                                    + " addCert method=" + m.getName());
-                            break outer;
+                                    + " method=" + m.getName());
+                            break outerA;
                         }
                     }
                     c = c.getSuperclass();
                 }
             }
 
-            if (implField == null) {
-                // Structural mismatch — log all non-static fields for diagnosis, don't retry
-                Log.w(TAG, "injectCACert: _impl field not found. Non-static fields on "
-                        + certMgrClass.getName() + ":");
-                for (java.lang.reflect.Field f : certMgrClass.getDeclaredFields()) {
-                    if (!java.lang.reflect.Modifier.isStatic(f.getModifiers()))
-                        Log.w(TAG, "  " + f.getName() + " : " + f.getType().getName());
+            if (implField != null) {
+                Object impl = implField.get(certMgr);
+                if (impl == null) {
+                    if (attempt < 15) {
+                        new Handler(Looper.getMainLooper()).postDelayed(
+                                () -> injectCACert(cert, attempt + 1), 1000);
+                        Log.d(TAG, "injectCACert[A]: _impl null, retry " + (attempt + 1));
+                    } else {
+                        Log.w(TAG, "injectCACert[A]: _impl still null after " + attempt + " retries");
+                    }
+                    return;
                 }
-                return;
+                addCertMethod.invoke(impl, cert);
+                Log.i(TAG, "injectCACert[A]: cert injected (attempt " + attempt + ")");
+                clearSocketFactoriesCache(certMgrClass);
+                injectedA = true;
+            } else {
+                Log.d(TAG, "injectCACert[A]: addCertificate-like method not found");
             }
-            Object impl = implField.get(certMgr);
 
-            if (impl == null) {
-                // CertificateManager.initialize() hasn't been called yet — retry shortly.
+            // Strategy B: always attempt on modern builds, even if A succeeded.
+            int tmFieldsFound = 0;
+            int tmFieldsInjected = 0;
+            for (java.lang.reflect.Field f : certMgrClass.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                if (!javax.net.ssl.X509TrustManager.class.isAssignableFrom(f.getType())) continue;
+                tmFieldsFound++;
+                f.setAccessible(true);
+                Object tm = f.get(certMgr);
+                if (tm == null) {
+                    Log.d(TAG, "injectCACert[B]: TrustManager " + f.getName() + " is null");
+                    continue;
+                }
+                Log.d(TAG, "injectCACert[B]: TrustManager field=" + f.getName()
+                        + " type=" + f.getType().getName());
+                if (injectIntoObjectCertArrays(tm, cert, "tm." + f.getName(), 2)) {
+                    injectedB = true;
+                    tmFieldsInjected++;
+                }
+            }
+
+            for (java.lang.reflect.Field f : certMgrClass.getDeclaredFields()) {
+                if (!java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                if (!java.util.Map.class.isAssignableFrom(f.getType())) continue;
+                f.setAccessible(true);
+                Object mapObj = f.get(null);
+                if (!(mapObj instanceof java.util.Map)) continue;
+                for (Object factory : ((java.util.Map<?, ?>) mapObj).values()) {
+                    if (factory == null) continue;
+                    injectedB |= injectIntoObjectCertArrays(factory, cert,
+                            "cache." + factory.getClass().getSimpleName(), 2);
+                }
+            }
+
+            if (tmFieldsFound == 0) {
+                Log.w(TAG, "injectCACert[B]: X509TrustManager field not found on " + certMgrClass.getName());
+            } else {
+                Log.i(TAG, "injectCACert[B]: trustManagers found=" + tmFieldsFound
+                        + " injected=" + tmFieldsInjected);
+            }
+
+            if (!injectedA && !injectedB) {
                 if (attempt < 15) {
                     new Handler(Looper.getMainLooper()).postDelayed(
                             () -> injectCACert(cert, attempt + 1), 1000);
-                    Log.d(TAG, "injectCACert: _impl null, retry " + (attempt + 1));
+                    Log.d(TAG, "injectCACert: no injection target yet, retry " + (attempt + 1));
                 } else {
-                    Log.w(TAG, "injectCACert: _impl still null after " + attempt + " retries");
+                    Log.w(TAG, "injectCACert: no injection target found after " + attempt + " retries");
                 }
                 return;
             }
 
-            // Call addCertificate on _impl using the method found during field scan.
-            addCertMethod.invoke(impl, cert);
-            Log.i(TAG, "injectCACert: cert injected into _impl.certificates (attempt " + attempt + ")");
+            Log.i(TAG, "Update server CA registered successfully (A=" + injectedA + ", B=" + injectedB + ")");
+            if (injectedB) {
+                Log.d(TAG, "injectCACert[B]: cache preserved intentionally");
+            }
+            triggerUpdateServerSync();
+        } catch (Exception e) {
+            Log.w(TAG, "injectCACert failed (attempt " + attempt + "): " + e.getMessage(), e);
+        }
+    }
 
-            // Also clear the outer socketFactories cache — these are built once and cached;
-            // any factory created before our cert was injected has stale trust context.
+    private boolean injectIntoObjectCertArrays(Object obj, java.security.cert.X509Certificate cert,
+            String label, int depth) {
+        if (obj == null || depth < 0) return false;
+        boolean injected = false;
+        try {
+            for (java.lang.reflect.Field f : obj.getClass().getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                f.setAccessible(true);
+                if (f.getType() == java.security.cert.X509Certificate[].class) {
+                    injected |= appendToCertArray(f, obj, cert, label + "." + f.getName());
+                    continue;
+                }
+                if (depth == 0 || f.getType().isPrimitive()) continue;
+                Object nested = f.get(obj);
+                if (nested == null) continue;
+                injected |= injectIntoObjectCertArrays(nested, cert, label + "." + f.getName(), depth - 1);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "injectIntoObjectCertArrays[" + label + "] failed: " + e.getMessage());
+        }
+        return injected;
+    }
+
+    private java.lang.reflect.Method findSingletonGetter(Class<?> cls) {
+        for (java.lang.reflect.Method m : cls.getDeclaredMethods()) {
+            if (!java.lang.reflect.Modifier.isStatic(m.getModifiers())) continue;
+            if (m.getParameterTypes().length != 0) continue;
+            if (!cls.isAssignableFrom(m.getReturnType())) continue;
+            m.setAccessible(true);
+            return m;
+        }
+        return null;
+    }
+
+    private java.lang.reflect.Method findProviderManagerGetter(Class<?> compClass) {
+        for (java.lang.reflect.Method m : compClass.getDeclaredMethods()) {
+            if (java.lang.reflect.Modifier.isStatic(m.getModifiers())) continue;
+            if (m.getParameterTypes().length != 0) continue;
+            Class<?> rt = m.getReturnType();
+            for (java.lang.reflect.Method pm : rt.getMethods()) {
+                if (pm.getReturnType() != void.class) continue;
+                Class<?>[] p = pm.getParameterTypes();
+                if (p.length == 2 && p[0] == boolean.class && p[1] == boolean.class) {
+                    m.setAccessible(true);
+                    return m;
+                }
+            }
+        }
+        return null;
+    }
+
+    private java.lang.reflect.Method findSyncMethod(Class<?> mgrClass) {
+        for (java.lang.reflect.Method m : mgrClass.getMethods()) {
+            if (m.getReturnType() != void.class) continue;
+            Class<?>[] p = m.getParameterTypes();
+            if (p.length == 2 && p[0] == boolean.class && p[1] == boolean.class) {
+                m.setAccessible(true);
+                return m;
+            }
+        }
+        return null;
+    }
+
+    /** Append cert to an X509Certificate[] field on obj. Returns true if appended (or already present). */
+    private boolean appendToCertArray(java.lang.reflect.Field f, Object obj,
+            java.security.cert.X509Certificate cert, String label) {
+        try {
+            java.security.cert.X509Certificate[] existing =
+                    (java.security.cert.X509Certificate[]) f.get(obj);
+            if (existing != null) {
+                for (java.security.cert.X509Certificate c : existing) {
+                    if (cert.equals(c)) {
+                        Log.d(TAG, "appendToCertArray[" + label + "]: already present");
+                        return true;
+                    }
+                }
+            }
+            int len = existing != null ? existing.length : 0;
+            java.security.cert.X509Certificate[] updated =
+                    new java.security.cert.X509Certificate[len + 1];
+            if (existing != null) System.arraycopy(existing, 0, updated, 0, len);
+            updated[len] = cert;
+            f.set(obj, updated);
+            Log.i(TAG, "appendToCertArray[" + label + "]: appended to array of len " + len);
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "appendToCertArray[" + label + "] failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Clear the static socketFactories Map cache on CertificateManager. */
+    private void clearSocketFactoriesCache(Class<?> certMgrClass) {
+        try {
             for (java.lang.reflect.Field f : certMgrClass.getDeclaredFields()) {
                 if (java.lang.reflect.Modifier.isStatic(f.getModifiers())
                         && java.util.Map.class.isAssignableFrom(f.getType())) {
@@ -430,20 +562,12 @@ try {
                     Object map = f.get(null);
                     if (map instanceof java.util.Map) {
                         ((java.util.Map<?, ?>) map).clear();
-                        Log.i(TAG, "injectCACert: socketFactories cache cleared");
+                        Log.i(TAG, "clearSocketFactoriesCache: cleared");
                     }
                 }
             }
-
-            Log.i(TAG, "Update server CA registered successfully");
-
-            // The startup sync fires before this plugin loads. Now that trust is established
-            // and the socketFactories cache is cleared, trigger a fresh silent sync so the
-            // update server check succeeds without the user having to press the button.
-            triggerUpdateServerSync();
-
         } catch (Exception e) {
-            Log.w(TAG, "injectCACert failed (attempt " + attempt + "): " + e.getMessage(), e);
+            Log.w(TAG, "clearSocketFactoriesCache failed: " + e.getMessage());
         }
     }
 
@@ -453,21 +577,44 @@ try {
      * gets a second chance with the correct trust context.
      */
     private void triggerUpdateServerSync() {
+        triggerUpdateServerSync(0);
+    }
+
+    private void triggerUpdateServerSync(final int attempt) {
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
             try {
                 Class<?> cls = Class.forName("com.atakmap.android.update.ApkUpdateComponent");
-                Object comp = cls.getMethod("getInstance").invoke(null);
-                if (comp == null) {
-                    Log.w(TAG, "triggerUpdateServerSync: ApkUpdateComponent not ready");
+                java.lang.reflect.Method singletonGetter = findSingletonGetter(cls);
+                if (singletonGetter == null) {
+                    Log.w(TAG, "triggerUpdateServerSync: singleton getter not found");
                     return;
                 }
-                Object mgr = cls.getMethod("getProviderManager").invoke(comp);
+                Object comp = singletonGetter.invoke(null);
+                if (comp == null) {
+                    if (attempt < 8) {
+                        Log.d(TAG, "triggerUpdateServerSync: component not ready, retry " + (attempt + 1));
+                        triggerUpdateServerSync(attempt + 1);
+                    } else {
+                        Log.w(TAG, "triggerUpdateServerSync: component still null after retries");
+                    }
+                    return;
+                }
+                java.lang.reflect.Method pmGetter = findProviderManagerGetter(cls);
+                if (pmGetter == null) {
+                    Log.w(TAG, "triggerUpdateServerSync: providerManager getter not found");
+                    return;
+                }
+                Object mgr = pmGetter.invoke(comp);
                 if (mgr == null) {
                     Log.w(TAG, "triggerUpdateServerSync: providerManager null");
                     return;
                 }
-                mgr.getClass().getMethod("sync", boolean.class, boolean.class)
-                        .invoke(mgr, true, false); // silent=true, checkIncompat=false
+                java.lang.reflect.Method sync = findSyncMethod(mgr.getClass());
+                if (sync == null) {
+                    Log.w(TAG, "triggerUpdateServerSync: sync(boolean,boolean) not found");
+                    return;
+                }
+                sync.invoke(mgr, true, false); // silent=true, checkIncompat=false
                 Log.i(TAG, "triggerUpdateServerSync: sync triggered");
             } catch (Exception e) {
                 Log.w(TAG, "triggerUpdateServerSync failed: " + e.getMessage());

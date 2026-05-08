@@ -38,17 +38,7 @@ buildscript {
     ext.takrepoUrl = getProperty(urlKey, 'https://localhost/')
     ext.takrepoUser = getProperty('takrepo.user', 'invalid')
     ext.takrepoPassword = getProperty('takrepo.password', 'invalid')
-
-    // Local fallback JAR for builds without TPC Artifactory access.
-    // Priority: explicit -Ptakdev.plugin= > vendored gradle/takdev/ > SDK app/libs/atak-civ/
-    def localTakdevJar = {
-        String override = getProperty('takdev.plugin', null)
-        if (override != null) { def o = file(override); if (o.exists()) return o }
-        def vendored = file("${rootDir}/gradle/takdev/atak-gradle-takdev.jar")
-        if (vendored.exists()) return vendored
-        return file("${rootDir}/app/libs/atak-civ/atak-gradle-takdev.jar")
-    }
-    ext.takdevPlugin = localTakdevJar().absolutePath
+    ext.takdevPlugin = getProperty('takdev.plugin', "${rootDir}/app/libs/atak-civ/atak-gradle-takdev.jar")
 
     repositories {
         google()
@@ -70,9 +60,6 @@ buildscript {
 
     dependencies {
         classpath 'com.android.tools.build:gradle:8.8.2'
-        // When TPC provides Artifactory (isDevKitEnabled), always use it — their init script
-        // sets takrepo.url and expects atak-gradle-takdev to resolve from their registry.
-        // Fall back to a local JAR only when building without TPC/DevKit access.
         if(isDevKitEnabled()) {
             classpath "com.atakmap.gradle:atak-gradle-takdev:${takdevVersion}"
         } else {
@@ -82,8 +69,9 @@ buildscript {
 }
 
 // R8: app/proguard-gradle.txt uses -applymapping <atak.proguard.mapping>. TPC/takrepo sets
-// this when resolving ATAK from Artifactory. For local assembleCivRelease without the mapping
-// file, fall back to a vendored empty placeholder so the build completes.
+// this when resolving ATAK from Artifactory. For local `assembleCivRelease`, use a real
+// `proguard-civ-release-mapping.txt` in app/libs/atak-civ/ if you have it, else a committed
+// empty file so the build completes. Prefer the TPC-built APK for public distribution.
 if (!System.getProperty("atak.proguard.mapping")) {
     def userMap = file("app/libs/atak-civ/proguard-civ-release-mapping.txt")
     if (userMap.exists()) {

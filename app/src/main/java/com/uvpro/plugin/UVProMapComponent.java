@@ -320,7 +320,6 @@ try {
     private static final String UPDATE_SERVER_URL = "https://atakmaps.com/plugins/product.infz";
     private static final String UPDATE_TRUSTSTORE_ASSET = "atakmaps-ca.p12";
     private static final String UPDATE_TRUSTSTORE_LOCAL = "uvpro_update_server_ca.p12";
-    private static final String UPDATE_TRUSTSTORE_AUTH = "atakatak";
 
     /**
      * Configure ATAK plugin-management prefs and install the official update-server truststore
@@ -361,7 +360,7 @@ try {
             // plugin-manager UI shows the field pre-populated and the SSL handshake can
             // open the truststore file when it is ready.
             AtakCertificateDatabase.saveCertificatePassword(
-                    UPDATE_TRUSTSTORE_AUTH,
+                    "",
                     AtakAuthenticationCredentials.TYPE_updateServerCaPassword,
                     null);
             Log.i(TAG, "Update server CA credential stored");

@@ -34,6 +34,7 @@ HANDOFF.md
 # Debug / scratch
 build_output.txt
 jar_list.txt
+uvpro-logcat*.txt
 # Local logs/diagnostics — keep README; ignore everything else in scratch/
 *.log
 logs/

@@ -166,8 +166,8 @@ try {
         // Auto-connect to last used radio after a short delay (let BT stack settle)
         view.postDelayed(() -> autoConnectLastRadio(context), 4000);
 
-        // Configure ATAK's plugin update server on first install (silent, one-time)
-        configureUpdateServer(context);
+        // Configure ATAK plugin update server + trust for atakmaps.com (same prefs/storage as host ATAK).
+        configureUpdateServer(context, view);
 
         // Wire BT manager into bridges so they can transmit
         cotBridge.setBtManager(btConnectionManager);
@@ -319,10 +319,11 @@ try {
      * Forces URL/update-server/auto-sync prefs on every launch because some
      * ATAK builds use different key names and UI toggles can drift out of sync.
      */
-    private void configureUpdateServer(Context context) {
+    private void configureUpdateServer(Context pluginContext, MapView mapView) {
         try {
-            // Must use ATAK's own context — plugin context writes to the wrong prefs file
-            Context atakContext = com.atakmap.android.maps.MapView.getMapView().getContext();
+            // Host ATAK context: default prefs + cert import read paths under ATAK's package dir,
+            // not the plugin package (plugin filesDir is often wrong for AtakCertificateDatabase).
+            Context atakContext = mapView.getContext().getApplicationContext();
             android.content.SharedPreferences prefs =
                     android.preference.PreferenceManager.getDefaultSharedPreferences(atakContext);
             final String UPDATE_SERVER_URL = "https://atakmaps.com/plugins/product.infz";
@@ -339,11 +340,52 @@ try {
                     .apply();
             Log.i(TAG, "Plugin update server enforced: " + UPDATE_SERVER_URL);
 
-            // Register the Let's Encrypt CA so ATAK's custom SSL manager trusts atakmaps.com.
-            registerUpdateServerCA(context);
+            // Official route: PKCS#12 under ATAK's files dir + importCertificate.
+            installUpdateServerTruststoreCompat(pluginContext, atakContext);
+
+            // Supplement: inject LE root into CertificateManager (covers builds that ignore p12 path).
+            registerUpdateServerCA(pluginContext);
 
         } catch (Exception e) {
             Log.w(TAG, "configureUpdateServer failed: " + e.getMessage());
+        }
+    }
+
+    private void installUpdateServerTruststoreCompat(Context pluginCtx, Context atakCtx) {
+        try {
+            final String asset = "atakmaps-ca.p12";
+            // ATAK's SSL/update code opens this path as the host app — must live under atakCtx,
+            // not com.uvpro.plugin's private storage (EACCES / wrong trust store on clean installs).
+            java.io.File p12 = new java.io.File(atakCtx.getFilesDir(), "uvpro_update_server_ca.p12");
+            copyAssetToFile(pluginCtx, asset, p12);
+            android.preference.PreferenceManager.getDefaultSharedPreferences(atakCtx).edit()
+                    .putString("updateServerCaLocation", p12.getAbsolutePath())
+                    .apply();
+
+            // Reflection keeps this resilient across ATAK variants where these classes move/rename.
+            Class<?> dbClass = Class.forName("com.atakmap.net.AtakCertificateDatabase");
+            Class<?> ifaceClass = Class.forName("com.atakmap.net.AtakCertificateDatabaseIFace");
+            Object typeObj = ifaceClass.getField("TYPE_UPDATE_SERVER_TRUST_STORE_CA").get(null);
+            int type = (typeObj instanceof Number) ? ((Number) typeObj).intValue() : Integer.parseInt(String.valueOf(typeObj));
+            java.lang.reflect.Method importCert = dbClass.getMethod(
+                    "importCertificate", String.class, String.class, int.class, boolean.class);
+            Object imported = importCert.invoke(null, p12.getAbsolutePath(), null, type, false);
+            Log.i(TAG, "installUpdateServerTruststoreCompat: imported="
+                    + (imported != null) + " path=" + p12.getAbsolutePath());
+        } catch (Exception e) {
+            Log.w(TAG, "installUpdateServerTruststoreCompat failed: " + e.getMessage(), e);
+        }
+    }
+
+    private static void copyAssetToFile(Context context, String assetName, java.io.File dest)
+            throws java.io.IOException {
+        try (java.io.InputStream in = context.getAssets().open(assetName);
+             java.io.FileOutputStream out = new java.io.FileOutputStream(dest)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
         }
     }
 

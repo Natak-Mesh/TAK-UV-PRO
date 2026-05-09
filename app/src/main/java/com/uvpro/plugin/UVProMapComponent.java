@@ -341,8 +341,6 @@ try {
             }
 
             // Register the Let's Encrypt CA so ATAK's custom SSL manager trusts atakmaps.com.
-            // ATAK's CertificateManagerBase requires a non-empty password entry for
-            // UPDATE_SERVER_TRUST_STORE_CA — the settings UI never stores one, so we do it here.
             registerUpdateServerCA(context);
 
         } catch (Exception e) {

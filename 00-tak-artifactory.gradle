@@ -1,0 +1,303 @@
+// Routes Gradle Maven traffic through the TAK Artifactory virtual repo first
+// so that plugin builds stop hitting public repos first and tripping rate limits.
+//
+// Scope: only Gradle RepositoryHandler instances are touched, so this does NOT
+// affect:
+//   - Gradle wrapper distribution downloads (services.gradle.org)
+//   - Android SDK manager downloads (dl.google.com/android/repository/*)
+// Both go through their own code paths that bypass this init script.
+//
+// If there s at least one repo listed and TPC artifactory isn't one
+// of them it will insert the TPC artifactory into the list.
+
+import org.gradle.api.artifacts.repositories.FlatDirectoryArtifactRepository
+import org.gradle.api.artifacts.repositories.MavenArtifactRepository
+import org.gradle.api.initialization.resolve.RepositoriesMode
+
+if (gradle.ext.has("takArtifactoryInitLoaded")) return
+gradle.ext.takArtifactoryInitLoaded = true
+
+def prefix = { detail ->
+    if (detail?.length()?:0 > 0) {
+        "|tak-artifactory|${detail}|"
+    } else {
+        "|tak-artifactory|"
+    }
+}
+logger.lifecycle("${prefix()} Running gradle init script...")
+
+def getValueFromPropertiesFile = { propFile, key ->
+    try {
+        if (propFile == null) {
+            return null
+        }
+        if(!propFile.isFile() || !propFile.canRead())
+            return null
+        def prop = new Properties()
+        def reader = propFile.newReader()
+        try {
+            prop.load(reader)
+        } finally {
+            reader.close()
+        }
+        return prop.get(key)
+    } catch (Exception) {
+        return null
+    }
+}
+
+def getProperty = { proj, name, defValue ->
+    try {
+        if (proj == null)
+            return null
+        def prop = proj.properties[name] ?:
+                getValueFromPropertiesFile(proj.rootProject.file('local.properties'), name)
+        return (null == prop) ? defValue : prop
+    } catch (Exception) {
+        return null
+    }
+}
+
+def getPropertyTuple = { proj, name, defValue ->
+    return new Tuple2(name, getProperty(proj, name, defValue))
+}
+
+def getSysEnvTuple = { name ->
+    return new Tuple2(name, System.getenv(name))
+}
+
+def hasMirror = { repos, url ->
+    repos.any {
+        it instanceof MavenArtifactRepository &&
+        it.url?.toString()?.startsWith(url)
+    }
+}
+
+
+def reorderRepos = { urlTuple, userTuple, passTuple, repos ->
+
+
+    def url = {
+        if (urlTuple == null) {
+            return null
+        } else {
+            return urlTuple.v2
+        }
+    }()
+
+    def user = {
+        if (userTuple == null) {
+            return null
+        } else {
+            return userTuple.v2
+        }
+    }()
+
+    def pass = {
+        if (passTuple == null) {
+            return null
+        } else {
+            return passTuple.v2
+        }
+    }()
+
+    if (!hasMirror(repos, url)) {
+
+        def missing = [
+            'artifactory url': url,
+            'artifactory user' : user,
+            'artifactory password' : pass,
+        ].findAll { _, v -> v == null || v.trim().isEmpty() }.keySet()
+
+
+        if (missing) {
+            logger.lifecycle('WARNING: Unable to add takArtifactoryRepo. '+
+                    "TAK Artifactory init script: required respository information not set: ${missing.join(', ')}. " +
+                    'These must be provided at runtime by the consuming CI job. To opt out, ' +
+                    'set the project property disableReorderRepos="true" or set the environmental variable DISABLE_REORDER_REPOS="true". ' +
+                    'The repositories will remain in their original order')
+            logger.lifecycle("")
+        } else {
+            logger.lifecycle("  + takArtifactoryVirtual (${urlTuple.v1}, ${userTuple.v1}, ${passTuple.v1})")
+            repos.maven { mvn ->
+                mvn.name = 'takArtifactoryVirtual'
+                mvn.url  = url
+                mvn.credentials {
+                    username = user
+                    password = pass
+                }
+            }
+        }
+    }
+
+    def local = repos.findAll {
+        (it instanceof MavenArtifactRepository && it.hasProperty("url") && it.url.scheme.equalsIgnoreCase("file"))
+    }
+    def tpcArtifactory = repos.find { it.hasProperty("url") && String.valueOf(it.url).equalsIgnoreCase(String.valueOf(url)) }
+    def others = repos.toList().findAll { it != tpcArtifactory && !(it in local)}
+
+    repos.clear()
+    local.each { repos.add(it) }
+    if (tpcArtifactory == null) {
+        logger.lifecycle("${prefix()} Repository with URL '${url}' not found")
+    } else {
+        repos.add(tpcArtifactory)
+    }
+    others.each { repos.add(it) }
+
+    repos.each { r ->
+        def src = r.metaClass.hasProperty(r, 'url') ? r.url : (r.metaClass.hasProperty(r, 'dirs') ? r.dirs : '')
+
+        logger.lifecycle("  -> ${r.name}: ${src}")
+    }
+}
+
+settingsEvaluated { settings ->
+    logger.lifecycle("${prefix()} settingsEvaluated")
+    def startProjectProperties = settings.gradle.startParameter.getProjectProperties()
+    def propertiesFile = {
+        try {
+            return new File(settings.settingsDir, 'local.properties')
+        } catch (Exception) {
+            return null
+        }
+    }()
+
+    def disableReorderRepos = "true".equalsIgnoreCase([
+            startProjectProperties.get('disableReorderRepos'),
+            getValueFromPropertiesFile(propertiesFile, 'disableReorderRepos'),
+            System.getenv('DISABLE_REORDER_REPOS')
+        ].find{ it -> it != null })
+
+    if (disableReorderRepos) {
+        logger.lifecycle("${prefix('settingsEvaluated')} Reordering of repos disabled")
+    } else {
+        def takArtifactoryUrl = [
+            new Tuple2('-P takrepo.url', startProjectProperties.get('takrepo.url')),
+            new Tuple2('-P takRepoMavenUrl', startProjectProperties.get('takRepoMavenUrl')),
+            new Tuple2('-P maven.consume.url', startProjectProperties.get('maven.consume.url')),
+            new Tuple2('propsfile takrepo.url', getValueFromPropertiesFile(propertiesFile, 'takrepo.url')),
+            new Tuple2('propsfile takRepoMavenUrl', getValueFromPropertiesFile(propertiesFile, 'takRepoMavenUrl')),
+            new Tuple2('propsfile maven.consume.url', getValueFromPropertiesFile(propertiesFile, 'maven.consume.url')),
+            getSysEnvTuple('ARTIFACTORY_URL_APK'),
+            getSysEnvTuple('ARTIFACTORY_URL_MAVEN'),
+            new Tuple2('default', "https://artifacts.tak.gov/artifactory/maven-release")
+        ].find{ it -> it.v2 != null }
+
+        def takArtifactoryUser = [
+            new Tuple2('-P takrepo.user', startProjectProperties.get('takrepo.user')),
+            new Tuple2('-P takRepoUsername', startProjectProperties.get('takRepoUsername')),
+            new Tuple2('-P maven.user', startProjectProperties.get('maven.user')),
+            new Tuple2('propsfile takrepo.user', getValueFromPropertiesFile(propertiesFile, 'takrepo.user')),
+            new Tuple2('propsfile talRepoUsername', getValueFromPropertiesFile(propertiesFile, 'takRepoUsername')),
+            new Tuple2('propsfile maven.user', getValueFromPropertiesFile(propertiesFile, 'maven.user')),
+            getSysEnvTuple('ARTIFACTORY_USER'),
+            getSysEnvTuple('ARTIFACTORY_CONSUME_USER')
+        ].find{ it -> it.v2 != null }
+
+        def takArtifactoryPass = [
+            new Tuple2('-P takrepo.password', startProjectProperties.get('takrepo.password')),
+            new Tuple2('-P takRepoPassword', startProjectProperties.get('takRepoPassword')),
+            new Tuple2('-P maven.password', startProjectProperties.get('maven.password')),
+            new Tuple2('propsfile takrepo.password', getValueFromPropertiesFile(propertiesFile, 'takrepo.password')),
+            new Tuple2('propsfile takRepoPassword', getValueFromPropertiesFile(propertiesFile, 'takRepoPassword')),
+            new Tuple2('propsfile maven.password', getValueFromPropertiesFile(propertiesFile, 'maven.password')),
+            getSysEnvTuple('ARTIFACTORY_PASSWORD'),
+            getSysEnvTuple('ARTIFACTORY_CONSUME_PASSWORD')
+        ].find{ it -> it.v2 != null }
+
+        logger.lifecycle("${prefix('settingsEvaluated')} settings.pluginManagement.repositories")
+        reorderRepos(takArtifactoryUrl, takArtifactoryUser, takArtifactoryPass, settings.pluginManagement.repositories)
+
+        try {
+            def drm = settings.dependencyResolutionManagement
+            logger.lifecycle("${prefix('settingsEvaluated')} settings.dependencyResolutionManagement.repositories")
+            reorderRepos(takArtifactoryUrl, takArtifactoryUser, takArtifactoryPass, drm.repositories)
+            // If a project's settings.gradle uses FAIL_ON_PROJECT_REPOS we cannot
+            // also rewrite project-level repositories below; relax to PREFER_SETTINGS
+            // so our settings-level mirror still wins but project-level entries are
+            // tolerated. Builds that intentionally enforce FAIL_ON_PROJECT_REPOS
+            // for governance reasons should opt out of this init script.
+            //drm.repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+        } catch (MissingPropertyException ignored) {
+            // Gradle < 6.8 — no dependencyResolutionManagement block
+        }
+    }
+}
+
+
+
+def runReorderProjectRepos = { proj, repos ->
+    def disableReorderRepos = "true".equalsIgnoreCase(getProperty(proj, 'disableReorderRepos', System.getenv('DISABLE_REORDER_REPOS')))
+    if (disableReorderRepos) {
+            logger.lifecycle("${prefix(project.name)} Reordering of repos disabled")
+    } else {
+        def takArtifactoryUrl = [
+            getPropertyTuple(proj, 'takrepo.url', null),
+            getPropertyTuple(proj, 'takRepoMavenUrl', null),
+            getPropertyTuple(proj, 'maven.consume.url', null),
+            getSysEnvTuple('ARTIFACTORY_URL_APK'),
+            getSysEnvTuple('ARTIFACTORY_URL_MAVEN'),
+            new Tuple2('default', "https://artifacts.tak.gov/artifactory/maven-release")
+        ].find{ t -> t.v2 != null }
+        def takArtifactoryUser = [
+            getPropertyTuple(proj,'takrepo.user', null),
+            getPropertyTuple(proj, 'takRepoUsername', null),
+            getPropertyTuple(proj, 'maven.user', null),
+            getSysEnvTuple('ARTIFACTORY_USER'),
+            getSysEnvTuple('ARTIFACTORY_CONSUME_USER')
+        ].find{ t -> t.v2 != null }
+        def takArtifactoryPass = [
+            getPropertyTuple(proj,'takrepo.password', null),
+            getPropertyTuple(proj, 'takRepoPassword', null),
+            getPropertyTuple(proj, 'maven.password', null),
+            getSysEnvTuple('ARTIFACTORY_PASSWORD'),
+            getSysEnvTuple('ARTIFACTORY_CONSUME_PASSWORD')
+        ].find{ t -> t.v2 != null }
+
+        reorderRepos(takArtifactoryUrl, takArtifactoryUser, takArtifactoryPass, repos)
+    }
+}
+
+
+gradle.beforeProject { project ->
+    // Standard repositories { }
+    project.repositories { repos ->
+        logger.lifecycle("${prefix(project.name)} gradle.beforeProject.repositories")
+        runReorderProjectRepos(project, repos)
+    }
+
+    // buildscript.repositories { }
+    project.buildscript.repositories { repos ->
+        logger.lifecycle("${prefix(project.name)} gradle.beforeProject.buildscript.repositories")
+        runReorderProjectRepos(project, repos)
+    }
+}
+
+/**
+ * Also catch late additions (after evaluation safety net)
+ */
+gradle.afterProject { project ->
+
+    project.repositories { repos ->
+        logger.lifecycle("${prefix(project.name)} gradle.afterscript.repositories")
+        runReorderProjectRepos(project, repos)
+    }
+
+    project.buildscript.repositories { repos ->
+        logger.lifecycle("${prefix(project.name)} gradle.afterProject.buildscript.repositories")
+        runReorderProjectRepos(project, repos)
+    }
+}
+
+/**
+ * Optional: allprojects/subprojects safety net
+ */
+gradle.projectsLoaded {
+    gradle.rootProject.allprojects { project ->
+        project.repositories { repos ->
+            logger.lifecycle("${prefix(project.name)}  gradle.projectsLoaded.buildscript.repositories")
+            runReorderProjectRepos(project, repos)
+        }
+    }
+}

@@ -29,6 +29,7 @@ app/build/
 
 # Local-only agent / handoff notes (not published)
 NEW-AGENT-HANDOFF.md
+HANDOFF.md
 
 # Debug / scratch
 build_output.txt
@@ -41,6 +42,7 @@ scratch/*
 
 # Generated portal drop (tools/package-submission.sh)
 submission/
+tools/package-submission.sh
 
 # OS files
 Thumbs.db

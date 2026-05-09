@@ -40,6 +40,52 @@ cd "`dirname \"$PRG\"`/" >/dev/null
 APP_HOME="`pwd -P`"
 cd "$SAVED" >/dev/null
 
+# TPC/CI often passes --init-script /root/.gradle/init.d/00-tak-artifactory.gradle
+# for Artifactory credentials. Remap that path to the project-local script located
+# alongside this wrapper so the runner does not depend on /root being writable.
+ensureOptionalTakArtifactoryInit() {
+    TAK_ROOT_INIT="/root/.gradle/init.d/00-tak-artifactory.gradle"
+    TAK_FALLBACK_INIT="$APP_HOME/00-tak-artifactory.gradle"
+    if [ -f "$TAK_FALLBACK_INIT" ]; then
+        GRADLE_OPTS=`printf '%s' "$GRADLE_OPTS" | sed "s|$TAK_ROOT_INIT|$TAK_FALLBACK_INIT|g"`
+    fi
+}
+ensureOptionalTakArtifactoryInit
+
+# Some CI systems pass --init-script /root/.gradle/init.d/00-tak-artifactory.gradle
+# directly as Gradle CLI args (not via GRADLE_OPTS). Remap those args to the
+# project-local script next to gradlew.
+if [ -f "$TAK_FALLBACK_INIT" ]; then
+    quote_arg() {
+        printf '%s' "$1" | sed "s/'/'\\\\''/g;1s/^/'/;\$s/\$/'/"
+    }
+    remapped_args=""
+    while [ "$#" -gt 0 ]; do
+        arg="$1"
+        shift
+        case "$arg" in
+            --init-script|-I)
+                if [ "$#" -gt 0 ] && [ "$1" = "$TAK_ROOT_INIT" ]; then
+                    remapped_args="$remapped_args `quote_arg "$arg"` `quote_arg "$TAK_FALLBACK_INIT"`"
+                    shift
+                    continue
+                fi
+                remapped_args="$remapped_args `quote_arg "$arg"`"
+                ;;
+            --init-script="$TAK_ROOT_INIT")
+                remapped_args="$remapped_args `quote_arg "--init-script=$TAK_FALLBACK_INIT"`"
+                ;;
+            -I="$TAK_ROOT_INIT")
+                remapped_args="$remapped_args `quote_arg "-I=$TAK_FALLBACK_INIT"`"
+                ;;
+            *)
+                remapped_args="$remapped_args `quote_arg "$arg"`"
+                ;;
+        esac
+    done
+    eval "set -- $remapped_args"
+fi
+
 APP_NAME="Gradle"
 APP_BASE_NAME=`basename "$0"`
 

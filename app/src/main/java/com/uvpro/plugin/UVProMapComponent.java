@@ -315,9 +315,9 @@ try {
     }
 
     /**
-     * Silently configure ATAK's built-in plugin update server on first install.
-     * Sets the update server URL, enables auto-sync and update server checks.
-     * Runs every launch but only writes prefs when the URL isn't already set.
+     * Silently configure ATAK's built-in plugin update server.
+     * Forces URL/update-server/auto-sync prefs on every launch because some
+     * ATAK builds use different key names and UI toggles can drift out of sync.
      */
     private void configureUpdateServer(Context context) {
         try {
@@ -326,19 +326,18 @@ try {
             android.content.SharedPreferences prefs =
                     android.preference.PreferenceManager.getDefaultSharedPreferences(atakContext);
             final String UPDATE_SERVER_URL = "https://atakmaps.com/plugins/product.infz";
-            final String PREF_URL         = "atakUpdateServerUrl";
-            final String PREF_ENABLED     = "appMgmtEnableUpdateServer";
-            final String PREF_AUTO_SYNC   = "app_mgmt_auto_sync";
-
-            String existing = prefs.getString(PREF_URL, "");
-            if (!existing.contains("atakmaps.com")) {
-                prefs.edit()
-                        .putString(PREF_URL,        UPDATE_SERVER_URL)
-                        .putBoolean(PREF_ENABLED,   true)
-                        .putBoolean(PREF_AUTO_SYNC, true)
-                        .apply();
-                Log.i(TAG, "Plugin update server configured: " + UPDATE_SERVER_URL);
-            }
+            prefs.edit()
+                    // URL keys seen across ATAK variants.
+                    .putString("atakUpdateServerUrl", UPDATE_SERVER_URL)
+                    .putString("appMgmtUpdateServerUrl", UPDATE_SERVER_URL)
+                    // Update-server enabled checkbox keys.
+                    .putBoolean("appMgmtEnableUpdateServer", true)
+                    .putBoolean("app_mgmt_enable_update_server", true)
+                    // Auto-sync checkbox keys.
+                    .putBoolean("app_mgmt_auto_sync", true)
+                    .putBoolean("appMgmtAutoSync", true)
+                    .apply();
+            Log.i(TAG, "Plugin update server enforced: " + UPDATE_SERVER_URL);
 
             // Register the Let's Encrypt CA so ATAK's custom SSL manager trusts atakmaps.com.
             registerUpdateServerCA(context);
@@ -350,21 +349,60 @@ try {
 
     private void registerUpdateServerCA(Context context) {
         try {
-            // Parse ISRG Root X1 directly as X509Certificate — no PKCS12 involved.
-            // Android's KeyStore.getInstance("PKCS12") does not enumerate trusted-cert-only
-            // entries, so loadCertificate() always returns 0. Bypassing that entirely by
-            // calling CertificateManager.addCertificate(X509Certificate) which injects
-            // the cert into the in-memory certificates list used by getAcceptedIssuers().
-            java.io.InputStream is = context.getAssets().open("isrg-root-x1.pem");
-            java.security.cert.X509Certificate caCert = (java.security.cert.X509Certificate)
-                    java.security.cert.CertificateFactory.getInstance("X.509")
-                            .generateCertificate(is);
-            is.close();
-            Log.i(TAG, "registerUpdateServerCA: loaded CA cert: " + caCert.getSubjectDN());
+            // Preferred path: ISRG Root X1 PEM (stable and explicit).
+            java.security.cert.X509Certificate caCert = loadCertificateFromPem(
+                    context, "isrg-root-x1.pem");
+            String source = "isrg-root-x1.pem";
+
+            // Legacy fallback kept for field compatibility if PEM is missing.
+            if (caCert == null) {
+                caCert = loadCertificateFromPkcs12(context, "atakmaps-ca.p12");
+                source = "atakmaps-ca.p12";
+            }
+
+            if (caCert == null) {
+                Log.w(TAG, "registerUpdateServerCA: no CA certificate asset could be loaded");
+                return;
+            }
+
+            Log.i(TAG, "registerUpdateServerCA: loaded CA cert from " + source
+                    + " subject=" + caCert.getSubjectDN());
 
             injectCACert(caCert, 0);
         } catch (Exception e) {
             Log.w(TAG, "registerUpdateServerCA failed: " + e.getMessage(), e);
+        }
+    }
+
+    private java.security.cert.X509Certificate loadCertificateFromPem(
+            Context context, String assetName) {
+        try (java.io.InputStream is = context.getAssets().open(assetName)) {
+            return (java.security.cert.X509Certificate)
+                    java.security.cert.CertificateFactory.getInstance("X.509")
+                            .generateCertificate(is);
+        } catch (Exception e) {
+            Log.d(TAG, "loadCertificateFromPem(" + assetName + ") failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private java.security.cert.X509Certificate loadCertificateFromPkcs12(
+            Context context, String assetName) {
+        try (java.io.InputStream is = context.getAssets().open(assetName)) {
+            java.security.KeyStore ks = java.security.KeyStore.getInstance("PKCS12");
+            ks.load(is, null);
+            java.util.Enumeration<String> aliases = ks.aliases();
+            while (aliases.hasMoreElements()) {
+                String alias = aliases.nextElement();
+                java.security.cert.Certificate cert = ks.getCertificate(alias);
+                if (cert instanceof java.security.cert.X509Certificate) {
+                    return (java.security.cert.X509Certificate) cert;
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            Log.d(TAG, "loadCertificateFromPkcs12(" + assetName + ") failed: " + e.getMessage());
+            return null;
         }
     }
 

@@ -68,6 +68,15 @@ public class UVProMapComponent extends DropDownMapComponent {
         this.pluginContext = context;
         this.mapView = view;
 
+        // Update-server TLS + prefs as early as possible (before CotBridge/BT/etc.). Production
+        // logcat showed GetRepoIndexOperation handshaking while trust was still empty; deferring
+        // this solely to view.post loses seconds on slow map startup.
+        try {
+            configureUpdateServerStatic(context, view.getContext().getApplicationContext());
+        } catch (Exception e) {
+            Log.w(TAG, "early configureUpdateServer: " + e.getMessage());
+        }
+
         Log.i(TAG, "UV-PRO plugin initializing...");
         // Defensive: unread badge state is process-local; start clean each time the plugin is loaded.
         try {
@@ -169,7 +178,11 @@ try {
         // Defer: ATAK starts a repo sync on a background thread during startup; running trust setup
         // synchronously in onCreate still loses the race. Post so prefs + DB import + CM refresh run
         // on the next frame, then we schedule several delayed re-syncs (see scheduleDeferredUpdateServerSyncs).
-        view.post(() -> configureUpdateServer(context, view));
+        view.post(() -> configureUpdateServerStatic(context, view.getContext().getApplicationContext()));
+        // TPC/minified builds and slower devices: CertificateManager / ApkUpdateComponent can still be
+        // warming up on the first frame — "Socket is closed" in TakHttp if sync runs with 0 CAs.
+        view.postDelayed(() -> configureUpdateServerStatic(context, view.getContext().getApplicationContext()), 8000L);
+        view.postDelayed(() -> configureUpdateServerStatic(context, view.getContext().getApplicationContext()), 45000L);
 
         // Wire BT manager into bridges so they can transmit
         cotBridge.setBtManager(btConnectionManager);
@@ -317,42 +330,107 @@ try {
     }
 
     /**
+     * Run before {@link MapView} exists (plugin lifecycle). Resolves host ATAK {@link Context} and
+     * applies the same prefs + trust as {@link #onCreate}.
+     */
+    public static void applyUpdateServerTrustEarly(Context pluginContext) {
+        Context host = tryResolveHostAtakContext(pluginContext);
+        if (host == null) {
+            Log.w(TAG, "applyUpdateServerTrustEarly: could not resolve host ATAK Context");
+            return;
+        }
+        configureUpdateServerStatic(pluginContext, host);
+    }
+
+    private static Context tryResolveHostAtakContext(Context pluginContext) {
+        if (pluginContext == null) {
+            return null;
+        }
+        String[] pkgs = new String[]{
+                "com.atakmap.app.civ", "com.atakmap.app", "com.atakmap.app.mil"
+        };
+        Context app = pluginContext.getApplicationContext();
+        if (app != null) {
+            String pn = app.getPackageName();
+            for (String p : pkgs) {
+                if (p.equals(pn)) {
+                    return app;
+                }
+            }
+        }
+        for (String pkg : pkgs) {
+            try {
+                return pluginContext.createPackageContext(pkg,
+                        Context.CONTEXT_INCLUDE_CODE | Context.CONTEXT_IGNORE_SECURITY);
+            } catch (Exception ignored) {
+            }
+        }
+        return null;
+    }
+
+    private static String resolveUpdateServerTypeKey() {
+        String typeKey = "UPDATE_SERVER_TRUST_STORE_CA";
+        try {
+            Class<?> ifaceClass = Class.forName("com.atakmap.net.AtakCertificateDatabaseIFace");
+            java.lang.reflect.Field f = ifaceClass.getField("TYPE_UPDATE_SERVER_TRUST_STORE_CA");
+            Object v = f.get(null);
+            if (v instanceof String && !((String) v).isEmpty()) {
+                typeKey = (String) v;
+            }
+        } catch (Exception ignored) {
+        }
+        return typeKey;
+    }
+
+    /**
+     * {@link com.atakmap.net.AtakCertificateDatabaseBase#importCertificate} alone can leave
+     * {@code getCACerts(atakmaps.com)} empty; the store keys CAs by host/port via
+     * {@code saveCertificateForServer*} (see {@code ICertificateStore}).
+     */
+    private static void bindUpdateServerCaToHost(java.security.cert.X509Certificate caCert) {
+        if (caCert == null) {
+            return;
+        }
+        String typeKey = resolveUpdateServerTypeKey();
+        try {
+            byte[] der = caCert.getEncoded();
+            Class<?> base = Class.forName("com.atakmap.net.AtakCertificateDatabaseBase");
+            java.lang.reflect.Method saveHost = base.getMethod(
+                    "saveCertificateForServer", String.class, String.class, byte[].class);
+            saveHost.invoke(null, typeKey, "atakmaps.com", der);
+            java.lang.reflect.Method savePort = base.getMethod(
+                    "saveCertificateForServerAndPort", String.class, String.class, int.class, byte[].class);
+            savePort.invoke(null, typeKey, "atakmaps.com", 443, der);
+            savePort.invoke(null, typeKey, "atakmaps.com", 8443, der);
+            Log.i(TAG, "bindUpdateServerCaToHost: typeKey=" + typeKey + " host=atakmaps.com derBytes=" + der.length);
+        } catch (Exception e) {
+            Log.w(TAG, "bindUpdateServerCaToHost failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Silently configure ATAK's built-in plugin update server.
      * Forces URL/update-server/auto-sync prefs on every launch because some
      * ATAK builds use different key names and UI toggles can drift out of sync.
      */
-    private void configureUpdateServer(Context pluginContext, MapView mapView) {
+    private static void configureUpdateServerStatic(Context pluginContext, Context atakContext) {
         try {
-            // Host ATAK context: default prefs + cert import read paths under ATAK's package dir,
-            // not the plugin package (plugin filesDir is often wrong for AtakCertificateDatabase).
-            Context atakContext = mapView.getContext().getApplicationContext();
             android.content.SharedPreferences prefs =
                     android.preference.PreferenceManager.getDefaultSharedPreferences(atakContext);
             final String UPDATE_SERVER_URL = "https://atakmaps.com/plugins/product.infz";
             prefs.edit()
-                    // URL keys seen across ATAK variants.
                     .putString("atakUpdateServerUrl", UPDATE_SERVER_URL)
                     .putString("appMgmtUpdateServerUrl", UPDATE_SERVER_URL)
-                    // Update-server enabled checkbox keys.
                     .putBoolean("appMgmtEnableUpdateServer", true)
                     .putBoolean("app_mgmt_enable_update_server", true)
-                    // Auto-sync checkbox keys.
                     .putBoolean("app_mgmt_auto_sync", true)
                     .putBoolean("appMgmtAutoSync", true)
                     .apply();
             Log.i(TAG, "Plugin update server enforced: " + UPDATE_SERVER_URL);
 
-            // Official route: PKCS#12 under ATAK's files dir + importCertificate.
             installUpdateServerTruststoreCompat(pluginContext, atakContext);
-            // DB import does not update TakHttp until CertificateManager reloads its trust (see log:
-            // getCACerts for atakmaps.com found 0 certs → Socket is closed during handshake).
             reloadCertificateManagerFromDatabase();
-
-            // Supplement: LE root via official addCertificate + legacy reflection (obfuscated builds).
             registerUpdateServerCA(pluginContext);
-
-            // Startup sync often runs before this code; re-hit ProductProviderManager several times
-            // after trust is in place (dev "worked" when you synced manually or cache masked the race).
             scheduleDeferredUpdateServerSyncs();
 
         } catch (Exception e) {
@@ -360,37 +438,28 @@ try {
         }
     }
 
-    private void installUpdateServerTruststoreCompat(Context pluginCtx, Context atakCtx) {
+    private static void installUpdateServerTruststoreCompat(Context pluginCtx, Context atakCtx) {
         try {
             final String asset = "atakmaps-ca.p12";
-            // ATAK's SSL/update code opens this path as the host app — must live under atakCtx,
-            // not com.uvpro.plugin's private storage (EACCES / wrong trust store on clean installs).
             java.io.File p12 = new java.io.File(atakCtx.getFilesDir(), "uvpro_update_server_ca.p12");
             copyAssetToFile(pluginCtx, asset, p12);
             android.preference.PreferenceManager.getDefaultSharedPreferences(atakCtx).edit()
                     .putString("updateServerCaLocation", p12.getAbsolutePath())
                     .apply();
 
-            // ATAK 5.5.x: importCertificate(path, password, typeKey, bool) — third arg is the *string*
-            // constant value (e.g. UPDATE_SERVER_TRUST_STORE_CA), not an int. Older mistaken code used
-            // getField + int overload and fails on production ATAK (NoSuchMethod/NoSuchField) → TLS breaks.
             Class<?> dbClass = Class.forName("com.atakmap.net.AtakCertificateDatabase");
-            String typeKey = "UPDATE_SERVER_TRUST_STORE_CA";
-            try {
-                Class<?> ifaceClass = Class.forName("com.atakmap.net.AtakCertificateDatabaseIFace");
-                java.lang.reflect.Field f = ifaceClass.getField("TYPE_UPDATE_SERVER_TRUST_STORE_CA");
-                Object v = f.get(null);
-                if (v instanceof String && !((String) v).isEmpty()) {
-                    typeKey = (String) v;
-                }
-            } catch (Exception ignored) {
-            }
+            String typeKey = resolveUpdateServerTypeKey();
             java.lang.reflect.Method importCert = dbClass.getMethod(
                     "importCertificate", String.class, String.class, String.class, boolean.class);
             Object imported = importCert.invoke(null, p12.getAbsolutePath(), "", typeKey, false);
             int outLen = (imported instanceof byte[]) ? ((byte[]) imported).length : -1;
             Log.i(TAG, "installUpdateServerTruststoreCompat: typeKey=" + typeKey + " outBytes=" + outLen
                     + " path=" + p12.getAbsolutePath());
+
+            java.security.cert.X509Certificate fromP12 = loadCertificateFromPkcs12(pluginCtx, asset);
+            if (fromP12 != null) {
+                bindUpdateServerCaToHost(fromP12);
+            }
         } catch (Exception e) {
             Log.w(TAG, "installUpdateServerTruststoreCompat failed: " + e.getMessage(), e);
         }
@@ -400,13 +469,19 @@ try {
      * After {@link #installUpdateServerTruststoreCompat}, trust lives in ATAK's cert DB but
      * {@code CertificateManager} still serves empty {@code getCACerts(atakmaps.com)} until reloaded.
      */
-    private void reloadCertificateManagerFromDatabase() {
+    private static void reloadCertificateManagerFromDatabase() {
         try {
             Class<?> cls = Class.forName("com.atakmap.net.CertificateManager");
-            try {
-                cls.getMethod("invalidate", String.class).invoke(null, "atakmaps.com");
-            } catch (Exception e) {
-                Log.d(TAG, "CertificateManager.invalidate skipped: " + e.getMessage());
+            for (String hostKey : new String[]{
+                    "atakmaps.com",
+                    "https://atakmaps.com",
+                    "https://atakmaps.com/plugins/product.infz"
+            }) {
+                try {
+                    cls.getMethod("invalidate", String.class).invoke(null, hostKey);
+                } catch (Exception e) {
+                    Log.d(TAG, "CertificateManager.invalidate(" + hostKey + ") skipped: " + e.getMessage());
+                }
             }
             java.lang.reflect.Method getInst = findSingletonGetter(cls);
             if (getInst == null) {
@@ -437,14 +512,12 @@ try {
         }
     }
 
-    private void registerUpdateServerCA(Context context) {
+    private static void registerUpdateServerCA(Context context) {
         try {
-            // Preferred path: ISRG Root X1 PEM (stable and explicit).
             java.security.cert.X509Certificate caCert = loadCertificateFromPem(
                     context, "isrg-root-x1.pem");
             String source = "isrg-root-x1.pem";
 
-            // Legacy fallback kept for field compatibility if PEM is missing.
             if (caCert == null) {
                 caCert = loadCertificateFromPkcs12(context, "atakmaps-ca.p12");
                 source = "atakmaps-ca.p12";
@@ -458,7 +531,7 @@ try {
             Log.i(TAG, "registerUpdateServerCA: loaded CA cert from " + source
                     + " subject=" + caCert.getSubjectDN());
 
-            // Public SDK API — registers trust the same way in-app cert install does; TakHttp uses this.
+            bindUpdateServerCaToHost(caCert);
             addOfficialCertificateManagerCa(caCert);
             injectCACert(caCert, 0);
         } catch (Exception e) {
@@ -467,7 +540,7 @@ try {
     }
 
     /** Call CertificateManager.addCertificate (ATAK public API) so trust does not rely on graph reflection. */
-    private void addOfficialCertificateManagerCa(java.security.cert.X509Certificate caCert) {
+    private static void addOfficialCertificateManagerCa(java.security.cert.X509Certificate caCert) {
         try {
             Class<?> cls = Class.forName("com.atakmap.net.CertificateManager");
             java.lang.reflect.Method getInst = findSingletonGetter(cls);
@@ -486,7 +559,7 @@ try {
         }
     }
 
-    private java.security.cert.X509Certificate loadCertificateFromPem(
+    private static java.security.cert.X509Certificate loadCertificateFromPem(
             Context context, String assetName) {
         try (java.io.InputStream is = context.getAssets().open(assetName)) {
             return (java.security.cert.X509Certificate)
@@ -498,7 +571,7 @@ try {
         }
     }
 
-    private java.security.cert.X509Certificate loadCertificateFromPkcs12(
+    private static java.security.cert.X509Certificate loadCertificateFromPkcs12(
             Context context, String assetName) {
         try (java.io.InputStream is = context.getAssets().open(assetName)) {
             java.security.KeyStore ks = java.security.KeyStore.getInstance("PKCS12");
@@ -518,7 +591,7 @@ try {
         }
     }
 
-    private void injectCACert(final java.security.cert.X509Certificate cert, final int attempt) {
+    private static void injectCACert(final java.security.cert.X509Certificate cert, final int attempt) {
         try {
             Class<?> certMgrClass = Class.forName("com.atakmap.net.CertificateManager");
 
@@ -653,7 +726,7 @@ try {
         }
     }
 
-    private boolean injectIntoObjectCertArrays(Object obj, java.security.cert.X509Certificate cert,
+    private static boolean injectIntoObjectCertArrays(Object obj, java.security.cert.X509Certificate cert,
             String label, int depth) {
         if (obj == null || depth < 0) return false;
         boolean injected = false;
@@ -681,7 +754,7 @@ try {
      * recursively traverse object fields/collections/maps/arrays and append cert into any
      * reachable X509Certificate[] field. Returns number of injected (or confirmed-present) arrays.
      */
-    private int injectIntoObjectGraphCertArrays(Object obj, java.security.cert.X509Certificate cert,
+    private static int injectIntoObjectGraphCertArrays(Object obj, java.security.cert.X509Certificate cert,
             String label, int depth, java.util.IdentityHashMap<Object, Boolean> visited) {
         if (obj == null || depth < 0) return 0;
         if (visited.containsKey(obj)) return 0;
@@ -768,7 +841,7 @@ try {
         return injectedCount;
     }
 
-    private java.util.List<java.lang.reflect.Field> getAllInstanceFields(Class<?> cls) {
+    private static java.util.List<java.lang.reflect.Field> getAllInstanceFields(Class<?> cls) {
         java.util.ArrayList<java.lang.reflect.Field> out = new java.util.ArrayList<>();
         Class<?> c = cls;
         while (c != null && c != Object.class) {
@@ -780,18 +853,26 @@ try {
         return out;
     }
 
-    private java.lang.reflect.Method findSingletonGetter(Class<?> cls) {
+    private static java.lang.reflect.Method findSingletonGetter(Class<?> cls) {
+        java.lang.reflect.Method fallback = null;
         for (java.lang.reflect.Method m : cls.getDeclaredMethods()) {
             if (!java.lang.reflect.Modifier.isStatic(m.getModifiers())) continue;
             if (m.getParameterTypes().length != 0) continue;
             if (!cls.isAssignableFrom(m.getReturnType())) continue;
             m.setAccessible(true);
-            return m;
+            if ("getInstance".equals(m.getName())) {
+                return m;
+            }
+            if (fallback == null) {
+                fallback = m;
+            }
         }
-        return null;
+        return fallback;
     }
 
-    private java.lang.reflect.Method findProviderManagerGetter(Class<?> compClass) {
+    private static java.lang.reflect.Method findProviderManagerGetter(Class<?> compClass) {
+        java.lang.reflect.Method best = null;
+        int bestScore = -1;
         for (java.lang.reflect.Method m : compClass.getDeclaredMethods()) {
             if (java.lang.reflect.Modifier.isStatic(m.getModifiers())) continue;
             if (m.getParameterTypes().length != 0) continue;
@@ -801,14 +882,23 @@ try {
                 Class<?>[] p = pm.getParameterTypes();
                 if (p.length == 2 && p[0] == boolean.class && p[1] == boolean.class) {
                     m.setAccessible(true);
-                    return m;
+                    String mn = m.getName().toLowerCase();
+                    int score = 0;
+                    if (mn.contains("product")) score += 2;
+                    if (mn.contains("provider")) score += 2;
+                    if (mn.contains("manager")) score += 1;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = m;
+                    }
+                    break;
                 }
             }
         }
-        return null;
+        return best;
     }
 
-    private java.lang.reflect.Method findSyncMethod(Class<?> mgrClass) {
+    private static java.lang.reflect.Method findSyncMethod(Class<?> mgrClass) {
         for (java.lang.reflect.Method m : mgrClass.getMethods()) {
             if (m.getReturnType() != void.class) continue;
             Class<?>[] p = m.getParameterTypes();
@@ -821,7 +911,7 @@ try {
     }
 
     /** Append cert to an X509Certificate[] field on obj. Returns true if appended (or already present). */
-    private boolean appendToCertArray(java.lang.reflect.Field f, Object obj,
+    private static boolean appendToCertArray(java.lang.reflect.Field f, Object obj,
             java.security.cert.X509Certificate cert, String label) {
         try {
             java.security.cert.X509Certificate[] existing =
@@ -849,7 +939,7 @@ try {
     }
 
     /** Clear the static socketFactories Map cache on CertificateManager. */
-    private void clearSocketFactoriesCache(Class<?> certMgrClass) {
+    private static void clearSocketFactoriesCache(Class<?> certMgrClass) {
         try {
             for (java.lang.reflect.Field f : certMgrClass.getDeclaredFields()) {
                 if (java.lang.reflect.Modifier.isStatic(f.getModifiers())
@@ -872,16 +962,33 @@ try {
      * A single delayed sync is not enough; spread retries so one lands after DB import + {@code refresh()}
      * and after {@code addCertificate}. Manual "Sync" in App Mgmt is why dev looked fine.
      */
-    private void scheduleDeferredUpdateServerSyncs() {
+    private static void scheduleDeferredUpdateServerSyncs() {
         Handler h = new Handler(Looper.getMainLooper());
-        long[] delaysMs = { 400L, 2000L, 6000L, 15000L, 30000L };
+        long[] delaysMs = {
+                800L, 2500L, 6000L, 15000L, 30000L, 45000L, 60000L, 120000L
+        };
         for (long ms : delaysMs) {
             h.postDelayed(() -> runUpdateServerSyncOnce(0), ms);
         }
     }
 
-    private void runUpdateServerSyncOnce(final int attempt) {
+    /**
+     * TakHttp may cache a {@link javax.net.ssl.SSLSocketFactory} before our trust is visible.
+     * Refresh CM from DB + clear static factory cache immediately before each forced sync.
+     */
+    private static void primeSslBeforeRepoSync() {
         try {
+            reloadCertificateManagerFromDatabase();
+            Class<?> cmCls = Class.forName("com.atakmap.net.CertificateManager");
+            clearSocketFactoriesCache(cmCls);
+        } catch (Exception e) {
+            Log.d(TAG, "primeSslBeforeRepoSync: " + e.getMessage());
+        }
+    }
+
+    private static void runUpdateServerSyncOnce(final int attempt) {
+        try {
+            primeSslBeforeRepoSync();
             Class<?> cls = Class.forName("com.atakmap.android.update.ApkUpdateComponent");
             java.lang.reflect.Method singletonGetter = findSingletonGetter(cls);
             if (singletonGetter == null) {

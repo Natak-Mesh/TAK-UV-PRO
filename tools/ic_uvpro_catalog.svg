@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Raster source for ATAK product.infz listing icon (from res/drawable/ic_uvpro.xml) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 48 48">
+  <path d="M24,4C12.95,4 4,12.95 4,24s8.95,20 20,20 20,-8.95 20,-20S35.05,4 24,4z" fill="#1E293B"/>
+  <path d="M17.5,17.5h13c1.38,0 2.5,1.12 2.5,2.5v12.5c0,1.38 -1.12,2.5 -2.5,2.5h-13c-1.38,0 -2.5,-1.12 -2.5,-2.5V20c0,-1.38 1.12,-2.5 2.5,-2.5z" fill="#06B6D4"/>
+  <path d="M22,11.5h4v4.5h-4z" fill="#22D3EE"/>
+  <path d="M23,8h2v4h-2z" fill="#E2E8F0"/>
+  <path d="M19.5,21.5h9v3.5h-9z" fill="#0F172A"/>
+  <path d="M19.5,26h9v2h-9z" fill="#0F172A"/>
+  <path d="M19.5,29.5h5.5v2h-5.5z" fill="#0F172A"/>
+  <path d="M30.5,24.5m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0" fill="#E2E8F0"/>
+</svg>

@@ -111,6 +111,14 @@ public class UVProMapComponent extends DropDownMapComponent {
     private android.content.BroadcastReceiver beaconIntervalReceiver;
     private final SmartBeacon smartBeacon = new SmartBeacon();
 
+    /** Smart Beacon prefs are stored in ATAK (map) default prefs, not plugin prefs. */
+    private Context getBeaconPrefsContext() {
+        if (mapView != null && mapView.getContext() != null) {
+            return mapView.getContext();
+        }
+        return pluginContext;
+    }
+
     @Override
     public void onCreate(Context context, Intent intent, MapView view) {
         // context = plugin context, view.getContext() = map context (use for UI)
@@ -1466,7 +1474,7 @@ try {
                 sendBeaconIfConnected();
                 // Smart beacon: check every 10s. Fixed: check at interval.
                 long nextCheckMs;
-                if (SmartBeacon.isEnabled(pluginContext)) {
+                if (SmartBeacon.isEnabled(getBeaconPrefsContext())) {
                     nextCheckMs = 10_000L; // poll every 10s; algorithm decides when to actually send
                 } else {
                     int intervalSec = SettingsFragment.getBeaconIntervalSec(pluginContext);
@@ -1495,8 +1503,9 @@ try {
             try { course  = Double.parseDouble(self.getMetaString("course", "0")); } catch (Exception ignored) {}
             double speedMph = speedMs * 2.23694;
 
-            if (SmartBeacon.isEnabled(pluginContext)) {
-                if (!smartBeacon.shouldBeacon(pluginContext, speedMph, course)) return;
+            Context beaconCtx = getBeaconPrefsContext();
+            if (SmartBeacon.isEnabled(beaconCtx)) {
+                if (!smartBeacon.shouldBeacon(beaconCtx, speedMph, course)) return;
                 smartBeacon.recordBeacon(course);
                 Log.d(TAG, "Smart beacon fired (speed=" + String.format("%.1f", speedMph)
                         + "mph, course=" + String.format("%.0f", course) + "°)");

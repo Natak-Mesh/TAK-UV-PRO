@@ -372,6 +372,30 @@ public class CotBridge {
     public void injectPositionCot(String callsign, double lat, double lon,
                                   double alt, double speed, double course,
                                   String senderTeamFromPeer) {
+        injectPositionCot(callsign, lat, lon, alt, speed, course,
+                senderTeamFromPeer, null, null, null);
+    }
+
+    public void injectPositionCot(String callsign, double lat, double lon,
+                                  double alt, double speed, double course,
+                                  String senderTeamFromPeer, String cotTypeOverride) {
+        injectPositionCot(callsign, lat, lon, alt, speed, course,
+                senderTeamFromPeer, cotTypeOverride, null, null);
+    }
+
+    public void injectPositionCot(String callsign, double lat, double lon,
+                                  double alt, double speed, double course,
+                                  String senderTeamFromPeer,
+                                  Character aprsSymbolTable,
+                                  Character aprsSymbolCode) {
+        injectPositionCot(callsign, lat, lon, alt, speed, course,
+                senderTeamFromPeer, null, aprsSymbolTable, aprsSymbolCode);
+    }
+
+    private void injectPositionCot(String callsign, double lat, double lon,
+                                   double alt, double speed, double course,
+                                   String senderTeamFromPeer, String cotTypeOverride,
+                                   Character aprsSymbolTable, Character aprsSymbolCode) {
         try {
             String teamForCot = senderTeamFromPeer != null && !senderTeamFromPeer.trim().isEmpty()
                     ? senderTeamFromPeer.trim()
@@ -379,7 +403,10 @@ public class CotBridge {
 
             CotEvent event = CotBuilder.buildPositionCot(
                     callsign, lat, lon, alt, speed, course, teamForCot,
-                    resolveInboundContactStaleMs());
+                    resolveInboundContactStaleMs(),
+                    cotTypeOverride,
+                    aprsSymbolTable,
+                    aprsSymbolCode);
 
             if (event != null && event.isValid()) {
                 Log.d(TAG, "Injecting position CoT for " + callsign + " team=" + teamForCot);
@@ -697,6 +724,19 @@ public class CotBridge {
 
                         if (item instanceof com.atakmap.android.maps.Marker) {
                             Log.d(TAG, "MARKER_DEBUG marker_class=true");
+                            // Pull APRS label closer to the symbol by tightening marker bounds.
+                            // ATAK uses marker geometry to place labels; this is more reliable than
+                            // trying to alter transparent PNG padding.
+                            if ("a-u-G".equals(item.getType())) {
+                                com.atakmap.android.maps.Marker marker =
+                                        (com.atakmap.android.maps.Marker) item;
+                                marker.setShowLabel(true);
+                                // Avoid large icon/label separation when zoomed far out by
+                                // suppressing APRS callsigns at coarse map resolutions.
+                                marker.setMinLabelRenderResolution(0.0d);
+                                // ~0.1 m/px ~= ~100 m total width on a ~1080 px display.
+                                marker.setMaxLabelRenderResolution(0.1d);
+                            }
                         }
                     } else {
                         Log.d(TAG, "MARKER_DEBUG item not found uid=" + event.getUID());

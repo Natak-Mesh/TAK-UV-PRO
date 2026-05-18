@@ -31,6 +31,7 @@ import com.uvpro.plugin.protocol.PacketRouter;
 import com.uvpro.plugin.radio.UVProRadioControlManager;
 import com.uvpro.plugin.ui.RadioStatusOverlay;
 import com.uvpro.plugin.ui.SettingsFragment;
+import com.uvpro.plugin.ax25.AprsIconsetInstaller;
 
 /**
  * UVPro Map Component — the central nervous system of the plugin.
@@ -112,6 +113,8 @@ public class UVProMapComponent extends DropDownMapComponent {
     private MapEventDispatcher.MapEventDispatchListener mapItemClickListener;
     private Handler beaconHandler;
     private Runnable beaconRunnable;
+    private Handler iconsetReminderHandler;
+    private Runnable iconsetReminderRunnable;
     private android.content.BroadcastReceiver beaconIntervalReceiver;
     private final SmartBeacon smartBeacon = new SmartBeacon();
 
@@ -129,6 +132,8 @@ public class UVProMapComponent extends DropDownMapComponent {
         this.pluginContext = context;
         this.mapView = view;
         applySmartBeaconV21OffMigration(getBeaconPrefsContext());
+        // Persistent APRS iconset assist: keep reminding until import is complete.
+        startAprsIconsetReminder(context, view.getContext());
 
         // Update-server TLS + prefs as early as possible (before CotBridge/BT/etc.). Production
         // logcat showed GetRepoIndexOperation handshaking while trust was still empty; deferring
@@ -334,6 +339,9 @@ try {
         // Stop beacon timer
         if (beaconHandler != null && beaconRunnable != null) {
             beaconHandler.removeCallbacks(beaconRunnable);
+        }
+        if (iconsetReminderHandler != null && iconsetReminderRunnable != null) {
+            iconsetReminderHandler.removeCallbacks(iconsetReminderRunnable);
         }
 
         // Unregister settings
@@ -1546,6 +1554,25 @@ try {
         } catch (Exception e) {
             Log.e(TAG, "Error sending periodic beacon", e);
         }
+    }
+
+    private void startAprsIconsetReminder(Context pluginCtx, Context uiCtx) {
+        if (iconsetReminderHandler != null && iconsetReminderRunnable != null) {
+            iconsetReminderHandler.removeCallbacks(iconsetReminderRunnable);
+        }
+        iconsetReminderHandler = new Handler(Looper.getMainLooper());
+        iconsetReminderRunnable = new Runnable() {
+            @Override
+            public void run() {
+                boolean missing = AprsIconsetInstaller.ensureStagedAndPromptIfMissing(
+                        pluginCtx, uiCtx);
+                if (missing && iconsetReminderHandler != null) {
+                    // Persistent guidance while missing, throttled toast inside installer.
+                    iconsetReminderHandler.postDelayed(this, 15000L);
+                }
+            }
+        };
+        iconsetReminderHandler.post(iconsetReminderRunnable);
     }
 
     /**

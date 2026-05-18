@@ -2,6 +2,8 @@ package com.uvpro.plugin.cot;
 
 import android.util.Log;
 
+import com.uvpro.plugin.ax25.AprsSymbolMapper;
+
 import com.atakmap.coremap.cot.event.CotDetail;
 import com.atakmap.coremap.cot.event.CotEvent;
 import com.atakmap.coremap.cot.event.CotPoint;
@@ -71,7 +73,7 @@ public class CotBuilder {
                                             double lat, double lon,
                                             double alt, double speed,
                                             double course, String teamColor) {
-        return buildPositionCot(callsign, lat, lon, alt, speed, course, teamColor, STALE_MILLIS);
+        return buildPositionCot(callsign, lat, lon, alt, speed, course, teamColor, STALE_MILLIS, null);
     }
 
     /**
@@ -82,12 +84,44 @@ public class CotBuilder {
                                             double alt, double speed,
                                             double course, String teamColor,
                                             long staleMillis) {
+        return buildPositionCot(callsign, lat, lon, alt, speed, course, teamColor, staleMillis, null);
+    }
+
+    public static CotEvent buildPositionCot(String callsign,
+                                            double lat, double lon,
+                                            double alt, double speed,
+                                            double course, String teamColor,
+                                            long staleMillis,
+                                            String cotTypeOverride) {
+        return buildPositionCot(callsign, lat, lon, alt, speed, course,
+                teamColor, staleMillis, cotTypeOverride, null, null);
+    }
+
+    public static CotEvent buildPositionCot(String callsign,
+                                            double lat, double lon,
+                                            double alt, double speed,
+                                            double course, String teamColor,
+                                            long staleMillis,
+                                            String cotTypeOverride,
+                                            Character aprsSymbolTable,
+                                            Character aprsSymbolCode) {
         CotEvent event = new CotEvent();
 
         String normalizedCall = callsign.trim().toUpperCase();
         String uid = "ANDROID-" + normalizedCall;
         event.setUID(uid);
-        event.setType("a-f-G-U-C"); // friendly ground unit combat
+        String iconsetPath = null;
+        if (aprsSymbolTable != null && aprsSymbolCode != null) {
+            iconsetPath = AprsSymbolMapper.iconsetPath(aprsSymbolTable, aprsSymbolCode);
+        }
+        if (iconsetPath != null) {
+            // APRS icon path drives visual identity; use neutral base type.
+            event.setType("a-u-G");
+        } else {
+            event.setType((cotTypeOverride != null && !cotTypeOverride.trim().isEmpty())
+                    ? cotTypeOverride.trim()
+                    : "a-f-G-U-C"); // friendly ground unit combat
+        }
         event.setHow("m-g");          // machine GPS
 
         long now = System.currentTimeMillis();
@@ -110,11 +144,20 @@ public class CotBuilder {
         contact.setAttribute("callsign", normalizedCall);
         detail.addChild(contact);
 
-        // Group element — use configured team color
-        CotDetail group = new CotDetail("__group");
-        group.setAttribute("name", teamColor != null ? teamColor : "Cyan");
-        group.setAttribute("role", "Team Member");
-        detail.addChild(group);
+        if (iconsetPath != null) {
+            CotDetail usericon = new CotDetail("usericon");
+            usericon.setAttribute("iconsetpath", iconsetPath);
+            detail.addChild(usericon);
+        }
+
+        // Group/team tint can visually override generic fallback dots.
+        // For APRS custom icons, omit __group to avoid masking iconset issues with team color.
+        if (iconsetPath == null) {
+            CotDetail group = new CotDetail("__group");
+            group.setAttribute("name", teamColor != null ? teamColor : "Cyan");
+            group.setAttribute("role", "Team Member");
+            detail.addChild(group);
+        }
 
         // Track element (speed/course)
         if (speed >= 0 || course >= 0) {

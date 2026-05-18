@@ -11,6 +11,7 @@ import com.atakmap.android.maps.MapView;
 
 import com.uvpro.plugin.ax25.Ax25Frame;
 import com.uvpro.plugin.ax25.AprsParser;
+import com.uvpro.plugin.ax25.AprsSymbolMapper;
 import com.uvpro.plugin.chat.ChatBridge;
 import com.uvpro.plugin.cot.CotBridge;
 import com.uvpro.plugin.util.CallsignUtil;
@@ -90,6 +91,7 @@ public class PacketRouter {
         int srcSsid = frame.getSrcSsid();
         String destCall = frame.getDestCallsign();
         String info = frame.getInfoString();
+        byte[] infoBytes = frame.getInfoField();
 
         Log.d(TAG, "Received from " + srcCall + "-" + srcSsid +
                 " → " + destCall + ": " + info.length() + " bytes");
@@ -118,7 +120,7 @@ public class PacketRouter {
         }
 
         // Otherwise, try to parse as standard APRS
-        routeAprsPacket(srcCall, srcSsid, info);
+        routeAprsPacket(srcCall, srcSsid, info, infoBytes);
     }
 
     /**
@@ -220,8 +222,13 @@ public class PacketRouter {
     /**
      * Route a standard APRS packet.
      */
-    private void routeAprsPacket(String callsign, int ssid, String info) {
+    private void routeAprsPacket(String callsign, int ssid, String info, byte[] infoBytes) {
         if (info.isEmpty()) return;
+
+        // Diagnostic trace for symbol mismatches: compare raw payload bytes to parsed fields.
+        Log.d(TAG, "APRS raw " + callsign
+                + " info_ascii=\"" + sanitizeInfoForLog(info) + "\""
+                + " info_hex=" + toHex(infoBytes, 96));
 
         // Try position first
         AprsParser.AprsPosition pos =
@@ -229,12 +236,17 @@ public class PacketRouter {
         if (pos != null) {
             Log.d(TAG, "APRS position from " + callsign +
                     ": " + pos.latitude + ", " + pos.longitude);
+            String iconsetPath = AprsSymbolMapper.iconsetPath(pos.symbolTable, pos.symbol);
+            Log.d(TAG, "APRS symbol " + callsign
+                    + " table='" + pos.symbolTable + "'"
+                    + " symbol='" + pos.symbol + "'"
+                    + " iconsetpath=" + (iconsetPath != null ? iconsetPath : "<none>"));
             contactTracker.updateContact(callsign, pos.latitude,
                     pos.longitude, pos.altitude, pos.speed, pos.course, -1);
             String aprsTeam = resolveSharedAprsTeamExcludingLocal();
             cotBridge.injectPositionCot(callsign, pos.latitude,
                     pos.longitude, pos.altitude, pos.speed, pos.course,
-                    aprsTeam);
+                    aprsTeam, pos.symbolTable, pos.symbol);
             return;
         }
 
@@ -249,6 +261,38 @@ public class PacketRouter {
         }
 
         Log.d(TAG, "Unhandled APRS packet from " + callsign + ": " + info);
+    }
+
+    private static String sanitizeInfoForLog(String input) {
+        if (input == null || input.isEmpty()) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(input.length());
+        for (int i = 0; i < input.length(); i++) {
+            char c = input.charAt(i);
+            if (c >= 32 && c <= 126) {
+                out.append(c);
+            } else {
+                out.append(String.format(Locale.US, "\\x%02X", (int) c & 0xFF));
+            }
+        }
+        return out.toString();
+    }
+
+    private static String toHex(byte[] bytes, int maxBytes) {
+        if (bytes == null || bytes.length == 0) {
+            return "<empty>";
+        }
+        int n = Math.min(bytes.length, Math.max(1, maxBytes));
+        StringBuilder sb = new StringBuilder(n * 3 + 16);
+        for (int i = 0; i < n; i++) {
+            if (i > 0) sb.append(' ');
+            sb.append(String.format(Locale.US, "%02X", bytes[i] & 0xFF));
+        }
+        if (bytes.length > n) {
+            sb.append(" ...(").append(bytes.length).append(" bytes)");
+        }
+        return sb.toString();
     }
 
     private String resolveSharedAprsTeamExcludingLocal() {

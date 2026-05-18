@@ -32,6 +32,7 @@ import android.widget.Switch;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -78,6 +79,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     public static final String SHOW_PLUGIN =
             "com.uvpro.plugin.SHOW_PLUGIN";
+    public static final String SHOW_PLUGIN_CHANNEL_CONTROL =
+            "com.uvpro.plugin.SHOW_PLUGIN_CHANNEL_CONTROL";
 
     private static final String TAG = "UVPro.UI";
     private static final int MAX_LOG_LINES = 50;
@@ -91,6 +94,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private static final int EDIT_SELECTION_STROKE_DP = 3;
     private static final int COLOR_TX_HIGHLIGHT = 0xFFFF1744; // Bright red
     private static final int COLOR_TX_STROKE = 0xFFFFFFFF; // White stroke
+    private static final int COLOR_REPEATER_LOAD_FILL = 0xFF607D8B;
+    private static final int COLOR_REPEATER_LOAD_ARMED_STROKE = 0xFFFFEB3B;
+    private static final String LABEL_LOAD_REPEATER = "Load Selected Repeater";
+    private static final String LABEL_SELECT_CHANNEL = "Select Channel";
     private static final int TARGET_A = 0;
     private static final int TARGET_B = 1;
     private static final int TARGET_DIGITAL = 2;
@@ -177,6 +184,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private final AtomicBoolean snapshotRefreshPending = new AtomicBoolean(false);
     private final AtomicBoolean snapshotFullRefreshPending = new AtomicBoolean(false);
     private UVProRadioControlManager.RadioControlSnapshot lastSnapshot;
+    private boolean repeaterLoadArmed = false;
+    private String repeaterLoadArmedUid;
+    private UVProRadioControlManager.RepeaterSpec repeaterLoadArmedSpec;
+    private boolean pendingOpenToChannelControl = false;
 
     public UVProDropDownReceiver(MapView mapView,
                                      Context pluginContext,
@@ -213,11 +224,16 @@ public class UVProDropDownReceiver extends DropDownReceiver
     @Override
     public void onReceive(Context context, Intent intent) {
         final String action = intent.getAction();
-        if (SHOW_PLUGIN.equals(action)) {
+        if (SHOW_PLUGIN.equals(action) || SHOW_PLUGIN_CHANNEL_CONTROL.equals(action)) {
+            pendingOpenToChannelControl = SHOW_PLUGIN_CHANNEL_CONTROL.equals(action);
             showDropDown(createView(),
                     HALF_WIDTH, FULL_HEIGHT,
                     FULL_WIDTH, HALF_HEIGHT,
                     false, this);
+            if (pendingOpenToChannelControl) {
+                // Some ATAK builds do not reliably fire onDropDownVisible on first open.
+                scheduleScrollToChannelControlSection();
+            }
         }
     }
 
@@ -416,7 +432,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
 
         if (btnLoadSelectedRepeater != null) {
-            btnLoadSelectedRepeater.setOnClickListener(v -> loadSelectedRepeaterToRadio());
+            btnLoadSelectedRepeater.setOnClickListener(v -> armSelectedRepeaterLoad());
         }
         if (btnRadioSilence != null) {
             btnRadioSilence.setOnClickListener(v ->
@@ -888,12 +904,19 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (spec == null) {
             selectedRepeaterText.setText("None selected");
             btnLoadSelectedRepeater.setEnabled(false);
+            setRepeaterLoadArmed(false, null, null);
             return;
+        }
+        if (repeaterLoadArmed && repeaterLoadArmedUid != null
+                && spec.sourceUid != null
+                && !repeaterLoadArmedUid.equals(spec.sourceUid)) {
+            setRepeaterLoadArmed(false, null, null);
         }
         selectedRepeaterText.setText(String.format(
                 Locale.US, "%s (RX %.5f / TX %.5f)",
                 spec.name, spec.rxFreqMHz, spec.txFreqMHz));
         btnLoadSelectedRepeater.setEnabled(true);
+        updateLoadSelectedRepeaterButtonUi();
     }
 
     private void refreshChannelGridAsync() {
@@ -1133,6 +1156,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (radioControlManager == null) {
             return;
         }
+        if (repeaterLoadArmed) {
+            loadSelectedRepeaterToRadio(channelId);
+            return;
+        }
         if (channelTargetDigital) {
             appendLog(String.format(Locale.US,
                     "Setting Digital to CH%02d...", channelId + 1));
@@ -1234,6 +1261,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 ? String.format(Locale.US, "A: CH %02d", channelA + 1)
                 : "A: CH --";
         btnVfoA.setText(buildVfoLabelWithTxHighlight(aText, !dualWatchEnabled || !txOnB));
+        btnVfoA.setSingleLine(true);
+        btnVfoA.setMaxLines(1);
         GradientDrawable aBg = buildVfoButtonBackground(
                 activeA ? COLOR_A_ACTIVE : COLOR_A_SUBDUED,
                 activeA ? COLOR_EDIT_SELECTION_BORDER : subduedStroke,
@@ -1252,6 +1281,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                         ? String.format(Locale.US, "B: CH %02d", channelB + 1)
                         : "B: CH --";
                 btnVfoB.setText(buildVfoLabelWithTxHighlight(bText, txOnB));
+                btnVfoB.setSingleLine(true);
+                btnVfoB.setMaxLines(1);
                 GradientDrawable bBg = buildVfoButtonBackground(
                         activeB ? COLOR_B_ACTIVE : COLOR_B_SUBDUED,
                         activeB ? COLOR_EDIT_SELECTION_BORDER : subduedStroke,
@@ -1320,7 +1351,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (!isTx) {
             return base;
         }
-        final String suffix = " -TX";
+        // Keep TX as a single replacement span token so it cannot wrap to the next line.
+        final String suffix = "TX";
         SpannableStringBuilder sb = new SpannableStringBuilder(base).append(suffix);
         int txStart = sb.length() - 2;
         int txEnd = sb.length();
@@ -1648,11 +1680,65 @@ public class UVProDropDownReceiver extends DropDownReceiver
         return String.valueOf(tone);
     }
 
-    private void loadSelectedRepeaterToRadio() {
+    private void armSelectedRepeaterLoad() {
         if (radioControlManager == null) {
             appendLog("Radio control unavailable");
             Toast.makeText(getMapView().getContext(),
                     "Radio control unavailable", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        UVProRadioControlManager.RepeaterSpec spec = radioControlManager.getSelectedRepeater();
+        if (spec == null) {
+            appendLog("Select a repeater marker first.");
+            Toast.makeText(getMapView().getContext(),
+                    "Select a repeater marker first.", Toast.LENGTH_SHORT).show();
+            setRepeaterLoadArmed(false, null, null);
+            return;
+        }
+        setRepeaterLoadArmed(true, spec.sourceUid, spec);
+        appendLog("Repeater load armed. Select destination channel.");
+    }
+
+    private void setRepeaterLoadArmed(boolean armed, String sourceUid,
+                                      UVProRadioControlManager.RepeaterSpec spec) {
+        repeaterLoadArmed = armed;
+        repeaterLoadArmedUid = armed ? sourceUid : null;
+        repeaterLoadArmedSpec = armed ? spec : null;
+        updateLoadSelectedRepeaterButtonUi();
+    }
+
+    private void updateLoadSelectedRepeaterButtonUi() {
+        if (btnLoadSelectedRepeater == null) {
+            return;
+        }
+        btnLoadSelectedRepeater.setText(
+                repeaterLoadArmed ? LABEL_SELECT_CHANNEL : LABEL_LOAD_REPEATER);
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.RECTANGLE);
+        d.setCornerRadius(dip(getMapView().getContext(), 6));
+        d.setColor(COLOR_REPEATER_LOAD_FILL);
+        if (repeaterLoadArmed) {
+            d.setStroke(dip(getMapView().getContext(), 3), COLOR_REPEATER_LOAD_ARMED_STROKE);
+        } else {
+            d.setStroke(dip(getMapView().getContext(), 1), 0x00000000);
+        }
+        btnLoadSelectedRepeater.setBackgroundTintList(null);
+        btnLoadSelectedRepeater.setBackground(d);
+    }
+
+    private void loadSelectedRepeaterToRadio(int channelId) {
+        if (radioControlManager == null) {
+            appendLog("Radio control unavailable");
+            Toast.makeText(getMapView().getContext(),
+                    "Radio control unavailable", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final UVProRadioControlManager.RepeaterSpec armedSpec = repeaterLoadArmedSpec;
+        setRepeaterLoadArmed(false, null, null);
+        if (armedSpec == null) {
+            appendLog("No repeater selected to load.");
+            Toast.makeText(getMapView().getContext(),
+                    "No repeater selected to load.", Toast.LENGTH_SHORT).show();
             return;
         }
         appendLog("Preparing repeater load...");
@@ -1682,16 +1768,48 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 return;
             }
 
-            getMapView().post(() -> appendLog("Loading selected repeater to channel 1..."));
+            final int selectedChannelId = channelId;
+            getMapView().post(() -> appendLog(String.format(
+                    Locale.US, "Loading selected repeater to CH%02d...", selectedChannelId + 1)));
             UVProRadioControlManager.ProgramResult result =
-                    radioControlManager.programSelectedRepeaterAndTune(0);
+                    radioControlManager.programRepeaterAndTune(armedSpec, selectedChannelId);
             getMapView().post(() -> {
                 appendLog(result.message);
                 Toast.makeText(getMapView().getContext(),
                         result.message,
                         result.success ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
+                if (result.success) {
+                    refreshChannelGridFullAsync();
+                    // Some radios apply write+tune in two phases; re-read once more shortly after.
+                    rootView.postDelayed(this::refreshChannelGridFullAsync, 650L);
+                }
             });
         }, "uvpro-load-repeater").start();
+    }
+
+    private void scheduleScrollToChannelControlSection() {
+        // Dropdown/layout animation can delay child measurements; run multiple passes.
+        getMapView().postDelayed(this::scrollToChannelControlSection, 120L);
+        getMapView().postDelayed(this::scrollToChannelControlSection, 320L);
+        getMapView().postDelayed(this::scrollToChannelControlSection, 700L);
+        getMapView().postDelayed(this::scrollToChannelControlSection, 1200L);
+    }
+
+    private void scrollToChannelControlSection() {
+        if (!(rootView instanceof ScrollView)) {
+            return;
+        }
+        ScrollView scroll = (ScrollView) rootView;
+        scroll.post(() -> {
+            View target = channelsGrid != null ? channelsGrid : btnLoadSelectedRepeater;
+            if (target == null) {
+                return;
+            }
+            // Anchor to the grid and back off so the Channel Control header/buttons are visible.
+            int y = Math.max(0, target.getTop() - dip(getMapView().getContext(), 190));
+            scroll.scrollTo(0, y);
+            scroll.post(() -> scroll.smoothScrollTo(0, y));
+        });
     }
 
     // --- Actions ---
@@ -2040,6 +2158,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
             stopActiveVfoPulse();
         } else {
             refreshChannelGridFullAsync();
+            if (pendingOpenToChannelControl) {
+                scheduleScrollToChannelControlSection();
+                pendingOpenToChannelControl = false;
+            }
         }
     }
 

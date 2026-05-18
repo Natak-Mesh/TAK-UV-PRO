@@ -269,6 +269,7 @@ try {
         AtakBroadcast.DocumentedIntentFilter filter =
                 new AtakBroadcast.DocumentedIntentFilter();
         filter.addAction(UVProDropDownReceiver.SHOW_PLUGIN);
+        filter.addAction(UVProDropDownReceiver.SHOW_PLUGIN_CHANNEL_CONTROL);
         registerDropDownReceiver(dropDownReceiver, filter);
 
         // Track selected repeater markers from map taps.
@@ -279,7 +280,29 @@ try {
             if (event.getItem() == null || radioControlManager == null) {
                 return;
             }
+            UVProRadioControlManager.RepeaterSpec before =
+                    radioControlManager.getSelectedRepeater();
             radioControlManager.onMapItemClicked(event.getItem());
+            UVProRadioControlManager.RepeaterSpec selected =
+                    radioControlManager.getSelectedRepeater();
+            boolean newlySelected = false;
+            if (selected != null) {
+                if (before == null) {
+                    newlySelected = true;
+                } else if (selected.sourceUid != null && before.sourceUid != null) {
+                    newlySelected = !selected.sourceUid.equals(before.sourceUid);
+                } else {
+                    newlySelected = selected != before;
+                }
+            }
+            if (newlySelected) {
+                try {
+                    AtakBroadcast.getInstance().sendBroadcast(
+                            new Intent(UVProDropDownReceiver.SHOW_PLUGIN_CHANNEL_CONTROL));
+                } catch (Exception e) {
+                    Log.w(TAG, "Could not auto-open UV-PRO on repeater select", e);
+                }
+            }
         };
         view.getMapEventDispatcher().addMapEventListener(
                 MapEvent.ITEM_CLICK, mapItemClickListener);

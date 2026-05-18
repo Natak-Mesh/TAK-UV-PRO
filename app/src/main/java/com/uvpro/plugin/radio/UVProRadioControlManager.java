@@ -260,6 +260,13 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
             return new ProgramResult(false,
                     "Select a repeater marker first.");
         }
+        return programRepeaterAndTune(spec, channelId);
+    }
+
+    public ProgramResult programRepeaterAndTune(RepeaterSpec spec, int channelId) {
+        if (spec == null) {
+            return new ProgramResult(false, "Repeater not selected.");
+        }
         if (!btManager.isConnected()) {
             return new ProgramResult(false,
                     "Radio not connected.");

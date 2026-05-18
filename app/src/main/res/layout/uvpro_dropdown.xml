@@ -145,16 +145,103 @@
                     android:backgroundTint="#FFF44336" />
             </LinearLayout>
 
-        </LinearLayout>
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingTop="8dp">
 
-        <!-- ==================== ENCRYPTION ==================== -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="#FF2D2D2D"
-            android:padding="12dp"
-            android:layout_marginBottom="8dp">
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Callsign:"
+                    android:textColor="#FFAAAAAA"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/text_callsign"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="OPENRL"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingTop="2dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Team:"
+                    android:textColor="#FFAAAAAA"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/text_team_color"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Cyan"
+                    android:textColor="#FF00BCD4"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingTop="2dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Contacts:"
+                    android:textColor="#FFAAAAAA"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/text_contacts"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="0 active"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingTop="2dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Packets TX / RX:"
+                    android:textColor="#FFAAAAAA"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/text_packets"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="0 / 0"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+            </LinearLayout>
 
             <TextView
                 android:layout_width="match_parent"
@@ -163,6 +250,7 @@
                 android:textColor="#FFFF9800"
                 android:textSize="12sp"
                 android:textStyle="bold"
+                android:paddingTop="10dp"
                 android:paddingBottom="4dp" />
 
             <LinearLayout
@@ -228,6 +316,7 @@
                 android:textColor="#FF888888"
                 android:textSize="11sp"
                 android:paddingTop="4dp" />
+
         </LinearLayout>
 
         <!-- ==================== BEACON (interval display) ==================== -->
@@ -346,131 +435,6 @@
                 android:textStyle="bold"
                 android:paddingBottom="4dp" />
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Selected Repeater"
-                android:textColor="#FFAAAAAA"
-                android:textSize="11sp" />
-
-            <TextView
-                android:id="@+id/text_selected_repeater"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="None selected"
-                android:textColor="#FFFFFFFF"
-                android:textSize="12sp"
-                android:paddingTop="2dp"
-                android:paddingBottom="6dp" />
-
-            <Button
-                android:id="@+id/btn_load_selected_repeater"
-                android:layout_width="match_parent"
-                android:layout_height="40dp"
-                android:text="Load Selected Repeater"
-                android:textSize="11sp"
-                android:textColor="#FFFFFFFF"
-                android:enabled="false"
-                android:layout_marginBottom="6dp"
-                android:backgroundTint="#FF607D8B" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Callsign:"
-                    android:textColor="#FFAAAAAA"
-                    android:textSize="13sp" />
-
-                <TextView
-                    android:id="@+id/text_callsign"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="OPENRL"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:paddingTop="2dp">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Team:"
-                    android:textColor="#FFAAAAAA"
-                    android:textSize="13sp" />
-
-                <TextView
-                    android:id="@+id/text_team_color"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Cyan"
-                    android:textColor="#FF00BCD4"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:paddingTop="2dp">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Contacts:"
-                    android:textColor="#FFAAAAAA"
-                    android:textSize="13sp" />
-
-                <TextView
-                    android:id="@+id/text_contacts"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="0 active"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:paddingTop="2dp">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Packets TX / RX:"
-                    android:textColor="#FFAAAAAA"
-                    android:textSize="13sp" />
-
-                <TextView
-                    android:id="@+id/text_packets"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="0 / 0"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp" />
-            </LinearLayout>
-
             <Button
                 android:id="@+id/btn_radio_silence"
                 android:layout_width="match_parent"
@@ -537,14 +501,32 @@
                 android:paddingBottom="8dp">
 
                 <Button
-                    android:id="@+id/btn_refresh_channels"
+                    android:id="@+id/btn_load_selected_repeater"
                     android:layout_width="match_parent"
                     android:layout_height="40dp"
-                    android:text="Refresh Grid"
-                    android:textSize="11sp"
+                    android:text="Load Selected Repeater"
+                    android:textSize="13sp"
                     android:textColor="#FFFFFFFF"
-                    android:backgroundTint="#FF455A64" />
+                    android:enabled="false"
+                    android:backgroundTint="#FF607D8B" />
             </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Selected Repeater"
+                android:textColor="#FFAAAAAA"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/text_selected_repeater"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="None selected"
+                android:textColor="#FFFFFFFF"
+                android:textSize="12sp"
+                android:paddingTop="2dp"
+                android:paddingBottom="6dp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -692,17 +674,6 @@
                     android:layout_height="40dp"
                     android:layout_weight="1"
                     android:text="Send Beacon"
-                    android:textSize="11sp"
-                    android:textColor="#FFFFFFFF"
-                    android:layout_marginEnd="4dp"
-                    android:backgroundTint="#FF455A64" />
-
-                <Button
-                    android:id="@+id/btn_send_ping"
-                    android:layout_width="0dp"
-                    android:layout_height="40dp"
-                    android:layout_weight="1"
-                    android:text="Send Ping"
                     android:textSize="11sp"
                     android:textColor="#FFFFFFFF"
                     android:layout_marginEnd="4dp"

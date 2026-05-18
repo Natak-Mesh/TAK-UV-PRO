@@ -35,6 +35,9 @@ public final class AprsIconsetInstaller {
     private static volatile long lastDialogMs = 0L;
     private static final long DIALOG_THROTTLE_MS = 45_000L;
     private static volatile boolean dialogShowing = false;
+    private static final String IMPORT_INSTRUCTION =
+            "Select Point Dropper>Gear Icon>Add Iconset\n"
+                    + "Path= /sdcard/atak/tools/import/aprs.zip";
 
     private AprsIconsetInstaller() {
     }
@@ -185,14 +188,12 @@ public final class AprsIconsetInstaller {
                     .setAutoCancel(false)
                     .setOnlyAlertOnce(true)
                     .setContentTitle("APRS iconset import required")
-                    .setContentText("Point Dropper > Iconset Manager > Add > " + ICONSET_FILENAME);
+                    .setContentText("Select Point Dropper>Gear Icon>Add Iconset");
             if (pi != null) {
                 b.setContentIntent(pi);
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
-                b.setStyle(new Notification.BigTextStyle().bigText(
-                        "APRS iconset import required.\n"
-                                + "Point Dropper > Iconset Manager > Add > " + ICONSET_FILENAME));
+                b.setStyle(new Notification.BigTextStyle().bigText(IMPORT_INSTRUCTION));
             }
             nm.notify(REMINDER_NOTIFICATION_ID, b.build());
             reminderVisible = true;
@@ -220,8 +221,7 @@ public final class AprsIconsetInstaller {
             try {
                 new AlertDialog.Builder(activity)
                         .setTitle("APRS iconset required")
-                        .setMessage("Import path:\nPoint Dropper > Iconset Manager > Add > "
-                                + ICONSET_FILENAME)
+                        .setMessage(IMPORT_INSTRUCTION)
                         .setCancelable(true)
                         .setPositiveButton("OK", (d, which) -> {
                             dialogShowing = false;

@@ -918,14 +918,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
         for (int pos : RSSI_SCALE_TICKS) {
             View tick = new View(ctx);
             tick.setTag("tick:" + pos);
-            tick.setBackgroundColor(0xFFAAAAAA);
+            tick.setBackgroundColor(0xFFFFFFFF);
             receiveRssiScaleFrame.addView(tick,
                     new android.widget.FrameLayout.LayoutParams(tickW, tickH));
         }
         for (int i = 0; i < RSSI_SCALE_LABELS.length; i++) {
             TextView label = new TextView(ctx);
             label.setText(RSSI_SCALE_LABELS[i]);
-            label.setTextColor(0xFFAAAAAA);
+            label.setTextColor(0xFFFFFFFF);
             label.setTextSize(9f);
             label.setTag("label:" + RSSI_SCALE_LABEL_POS[i]);
             android.widget.FrameLayout.LayoutParams lp =

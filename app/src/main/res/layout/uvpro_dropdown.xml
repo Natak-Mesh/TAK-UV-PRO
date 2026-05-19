@@ -125,8 +125,9 @@
 
                 <Button
                     android:id="@+id/btn_scan"
+                    style="@style/UvproPillButton"
                     android:layout_width="0dp"
-                    android:layout_height="44dp"
+                    android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="SCAN &amp; CONNECT"
                     android:textSize="12sp"
@@ -136,8 +137,9 @@
 
                 <Button
                     android:id="@+id/btn_disconnect"
+                    style="@style/UvproPillButton"
                     android:layout_width="0dp"
-                    android:layout_height="44dp"
+                    android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="DISCONNECT"
                     android:textSize="12sp"
@@ -300,8 +302,9 @@
 
                 <Button
                     android:id="@+id/btn_set_passphrase"
+                    style="@style/UvproPillButton"
                     android:layout_width="wrap_content"
-                    android:layout_height="40dp"
+                    android:layout_height="wrap_content"
                     android:text="SET"
                     android:textSize="11sp"
                     android:backgroundTint="#FFFF9800"
@@ -339,13 +342,11 @@
 
             <Button
                 android:id="@+id/btn_send_beacon"
+                style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
                 android:text="Send Beacon"
-                android:textSize="12sp"
-                android:textColor="#FFFFFFFF"
-                android:minHeight="40dp"
                 android:backgroundTint="#FF455A64" />
 
             <LinearLayout
@@ -380,13 +381,11 @@
 
             <Button
                 android:id="@+id/btn_manage_smart_beacon_settings"
+                style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="Manage Smart Beacon Settings"
-                android:textSize="12sp"
-                android:textColor="#FFFFFFFF"
-                android:minHeight="40dp"
+                android:text="Smart Beacon Settings"
                 android:backgroundTint="#FF455A64" />
 
             <LinearLayout
@@ -418,13 +417,11 @@
 
             <Button
                 android:id="@+id/btn_manage_plugin_beacon_settings"
+                style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="Manage Beacon Settings"
-                android:textSize="12sp"
-                android:textColor="#FFFFFFFF"
-                android:minHeight="40dp"
+                android:text="Beacon Settings"
                 android:backgroundTint="#FF455A64" />
         </LinearLayout>
 
@@ -448,12 +445,12 @@
 
             <Button
                 android:id="@+id/btn_radio_silence"
+                style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"
-                android:layout_height="40dp"
+                android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="Long Press for Radio Silence"
-                android:textSize="13sp"
-                android:textColor="#FFFFFFFF" />
+                android:backgroundTint="#FF455A64" />
         </LinearLayout>
 
         <!-- ==================== CHANNEL CONTROL ==================== -->
@@ -500,13 +497,12 @@
 
                 <Button
                     android:id="@+id/btn_load_selected_repeater"
+                    style="@style/UvproPillButton.Beacon"
                     android:layout_width="match_parent"
-                    android:layout_height="40dp"
+                    android:layout_height="wrap_content"
                     android:text="Load Selected Repeater"
-                    android:textSize="16sp"
-                    android:textColor="#FFFFFFFF"
                     android:enabled="false"
-                    android:backgroundTint="#FF607D8B" />
+                    android:backgroundTint="#FF455A64" />
             </LinearLayout>
 
             <LinearLayout
@@ -657,12 +653,12 @@
 
                 <Button
                     android:id="@+id/btn_vfo_a"
+                    style="@style/UvproPillButton"
                     android:layout_width="0dp"
-                    android:layout_height="40dp"
+                    android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="A: CH--"
                     android:textSize="15sp"
-                    android:textColor="#FFFFFFFF"
                     android:gravity="start|center_vertical"
                     android:paddingStart="10dp"
                     android:layout_marginEnd="4dp"
@@ -670,12 +666,12 @@
 
                 <Button
                     android:id="@+id/btn_vfo_b"
+                    style="@style/UvproPillButton"
                     android:layout_width="0dp"
-                    android:layout_height="40dp"
+                    android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="B: CH--"
                     android:textSize="15sp"
-                    android:textColor="#FFFFFFFF"
                     android:gravity="start|center_vertical"
                     android:paddingStart="10dp"
                     android:layout_marginEnd="4dp"
@@ -684,12 +680,12 @@
 
                 <Button
                     android:id="@+id/btn_digital"
+                    style="@style/UvproPillButton"
                     android:layout_width="0dp"
-                    android:layout_height="40dp"
+                    android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="Digital"
                     android:textSize="15sp"
-                    android:textColor="#FFFFFFFF"
                     android:backgroundTint="#FF005A8D" />
             </LinearLayout>
 
@@ -721,12 +717,10 @@
 
             <Button
                 android:id="@+id/btn_settings"
+                style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Settings"
-                android:textSize="12sp"
-                android:textColor="#FFFFFFFF"
-                android:minHeight="40dp"
+                android:text="Plugin Settings"
                 android:backgroundTint="#FF455A64" />
         </LinearLayout>
 

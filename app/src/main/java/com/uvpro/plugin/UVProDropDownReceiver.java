@@ -93,9 +93,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private static final int COLOR_DIGITAL_SUBDUED = 0xFF2A5674; // Blue (subdued)
     private static final int COLOR_EDIT_SELECTION_BORDER = 0xFFFF9800; // Bright orange
     private static final int EDIT_SELECTION_STROKE_DP = 3;
+    /** Corner radius for pill-shaped buttons (matches bg_uvpro_pill_button.xml). */
+    private static final int PILL_CORNER_RADIUS_DP = 20;
     private static final int COLOR_TX_HIGHLIGHT = 0xFFFF1744; // Bright red
     private static final int COLOR_TX_STROKE = 0xFFFFFFFF; // White stroke
-    private static final int COLOR_REPEATER_LOAD_FILL = 0xFF607D8B;
+    /** Primary full-width pill buttons (beacon settings, plugin settings, etc.). */
+    private static final int COLOR_PILL_BUTTON_PRIMARY = 0xFF455A64;
+    private static final int COLOR_REPEATER_LOAD_FILL = COLOR_PILL_BUTTON_PRIMARY;
     private static final int COLOR_REPEATER_LOAD_ARMED_STROKE = 0xFFFFEB3B;
     private static final String LABEL_LOAD_REPEATER = "Load Selected Repeater";
     private static final String LABEL_SELECT_CHANNEL = "Select Channel";
@@ -635,7 +639,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             chip.setAllCaps(false);
             chip.setText(BluetoothDeviceRegistry.getDisplayTitle(r));
             boolean isSel = selected != null && selected.equalsIgnoreCase(r.address);
-            chip.setBackgroundColor(isSel ? 0xFF00788B : 0xFF3D3D3D);
+            applyPillButtonBackground(chip, isSel ? 0xFF00788B : 0xFF3D3D3D);
             chip.setTextColor(0xFFFFFFFF);
             int px = dip(ctx, 8);
             chip.setPadding(px, px / 2, px, px / 2);
@@ -997,7 +1001,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         boolean enabled = btManager.isRadioSilenceEnabled();
         btnRadioSilence.setBackgroundTintList(null);
         GradientDrawable bg = buildVfoButtonBackground(
-                0xFF607D8B,
+                COLOR_PILL_BUTTON_PRIMARY,
                 enabled ? COLOR_EDIT_SELECTION_BORDER : 0x00000000,
                 enabled ? EDIT_SELECTION_STROKE_DP : 0);
         btnRadioSilence.setBackground(bg);
@@ -1610,10 +1614,22 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private GradientDrawable buildVfoButtonBackground(int fillColor, int strokeColor, int strokeDp) {
         GradientDrawable d = new GradientDrawable();
         d.setShape(GradientDrawable.RECTANGLE);
-        d.setCornerRadius(dip(getMapView().getContext(), 6));
+        d.setCornerRadius(dip(getMapView().getContext(), PILL_CORNER_RADIUS_DP));
         d.setColor(fillColor);
         d.setStroke(dip(getMapView().getContext(), strokeDp), strokeColor);
         return d;
+    }
+
+    private void applyPillButtonBackground(Button button, int fillColor) {
+        if (button == null) {
+            return;
+        }
+        button.setBackgroundTintList(null);
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.RECTANGLE);
+        d.setCornerRadius(dip(button.getContext(), PILL_CORNER_RADIUS_DP));
+        d.setColor(fillColor);
+        button.setBackground(d);
     }
 
     private void updateActiveVfoPulse(Button activeButton,
@@ -1891,7 +1907,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 repeaterLoadArmed ? LABEL_SELECT_CHANNEL : LABEL_LOAD_REPEATER);
         GradientDrawable d = new GradientDrawable();
         d.setShape(GradientDrawable.RECTANGLE);
-        d.setCornerRadius(dip(getMapView().getContext(), 6));
+        d.setCornerRadius(dip(getMapView().getContext(), PILL_CORNER_RADIUS_DP));
         d.setColor(COLOR_REPEATER_LOAD_FILL);
         if (repeaterLoadArmed) {
             d.setStroke(dip(getMapView().getContext(), 3), COLOR_REPEATER_LOAD_ARMED_STROKE);
@@ -2144,6 +2160,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         android.widget.Button btnBluetoothDevices = new android.widget.Button(ctx);
         btnBluetoothDevices.setText("Manage Bluetooth Devices");
+        btnBluetoothDevices.setTextColor(0xFFFFFFFF);
+        btnBluetoothDevices.setTextSize(13f);
+        applyPillButtonBackground(btnBluetoothDevices, 0xFF455A64);
         btnBluetoothDevices.setOnClickListener(v ->
                 com.uvpro.plugin.ui.BluetoothDevicesManagement.show(ctx, null));
         layout.addView(btnBluetoothDevices);

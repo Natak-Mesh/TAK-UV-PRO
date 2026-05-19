@@ -25,6 +25,7 @@ import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.GridLayout;
@@ -127,6 +128,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private View receiveRssiFillRed;
     private android.widget.FrameLayout receiveRssiScaleFrame;
     private boolean receiveRssiScaleBuilt;
+    private int lastReceiveRssiScaleLevel = -1;
 
     private static final int RSSI_SCALE_MAX = 12;
     private static final int[] RSSI_SCALE_TICKS = {1, 2, 4, 6, 8, 10, 11, 12};
@@ -329,6 +331,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         receiveRssiFillGreen = rootView.findViewById(getId("view_receive_rssi_fill_green"));
         receiveRssiFillRed = rootView.findViewById(getId("view_receive_rssi_fill_red"));
         receiveRssiScaleFrame = rootView.findViewById(getId("frame_receive_rssi_scale"));
+        receiveRssiScaleBuilt = false;
         ensureReceiveRssiScaleMarks();
         logText = rootView.findViewById(getId("text_log"));
         encryptionStatusText = rootView.findViewById(getId("text_encryption_status"));
@@ -819,6 +822,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         boolean connected = btManager != null && btManager.isConnected();
         if (!connected || receiveRssi < 0) {
+            lastReceiveRssiScaleLevel = -1;
             receiveRssiText.setText("—");
             if (receiveRssiMeterBlock != null) {
                 receiveRssiMeterBlock.setVisibility(View.GONE);
@@ -826,15 +830,40 @@ public class UVProDropDownReceiver extends DropDownReceiver
             return;
         }
         final int scaleLevel = mapReceiveRssiToScale(receiveRssi);
+        lastReceiveRssiScaleLevel = scaleLevel;
         receiveRssiText.setText(String.format(Locale.US, "%d / %d", scaleLevel, RSSI_SCALE_MAX));
         if (receiveRssiMeterBlock != null && receiveRssiMeterFrame != null
                 && receiveRssiFillGreen != null && receiveRssiFillRed != null) {
             receiveRssiMeterBlock.setVisibility(View.VISIBLE);
-            receiveRssiMeterBlock.post(() -> {
-                applyReceiveRssiFillWidth(scaleLevel);
-                layoutReceiveRssiScale();
-            });
+            scheduleReceiveRssiMeterLayout();
         }
+    }
+
+    private void scheduleReceiveRssiMeterLayout() {
+        if (receiveRssiMeterFrame == null || lastReceiveRssiScaleLevel < 0) {
+            return;
+        }
+        receiveRssiMeterFrame.post(() -> {
+            if (receiveRssiMeterFrame.getWidth() > 0) {
+                applyReceiveRssiFillWidth(lastReceiveRssiScaleLevel);
+                layoutReceiveRssiScale();
+                return;
+            }
+            ViewTreeObserver observer = receiveRssiMeterFrame.getViewTreeObserver();
+            observer.addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+                @Override
+                public void onGlobalLayout() {
+                    ViewTreeObserver current = receiveRssiMeterFrame.getViewTreeObserver();
+                    if (current.isAlive()) {
+                        current.removeOnGlobalLayoutListener(this);
+                    }
+                    if (receiveRssiMeterFrame.getWidth() > 0 && lastReceiveRssiScaleLevel >= 0) {
+                        applyReceiveRssiFillWidth(lastReceiveRssiScaleLevel);
+                        layoutReceiveRssiScale();
+                    }
+                }
+            });
+        });
     }
 
     /** Map radio RSSI (0-15) to on-screen S-scale (0-12). */
@@ -1149,6 +1178,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
             if (btManager.isConnected()) {
                 updateVfoButtons(lastChannelA, lastChannelB, lastDigitalChannel,
                         lastDualWatchEnabled, txVfoB, lastHasRxFocus);
+                if (lastSnapshot != null) {
+                    updateReceiveRssiUi(lastSnapshot.receiveRssi);
+                }
                 return;
             }
             // If actually disconnected, clear to baseline.

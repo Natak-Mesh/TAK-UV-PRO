@@ -695,6 +695,16 @@
                 android:layout_height="wrap_content"
                 android:columnCount="5"
                 android:useDefaultMargins="true" />
+
+            <Button
+                android:id="@+id/btn_digital_only_mode"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="DIGITAL ONLY MODE"
+                android:enabled="false"
+                android:backgroundTint="#FF455A64" />
         </LinearLayout>
 
         <!-- ==================== ACTIONS ==================== -->

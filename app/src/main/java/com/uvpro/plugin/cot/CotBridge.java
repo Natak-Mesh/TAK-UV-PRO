@@ -870,8 +870,29 @@ public class CotBridge {
             marker.setMinLabelRenderResolution(0.0d);
             marker.setMaxLabelRenderResolution(0.1d);
             marker.setMetaString("menu", "menus/default_item_w_type.xml");
+            removeAprsFromContactsPane(uid);
         } catch (Exception e) {
             Log.w(TAG, "applyAprsMarkerPresentation failed uid=" + uid, e);
+        }
+    }
+
+    /**
+     * APRS map markers must not appear in ATAK's Contacts list (map + details panel only).
+     */
+    private void removeAprsFromContactsPane(String uid) {
+        if (uid == null || uid.isEmpty()) {
+            return;
+        }
+        try {
+            Contact existing = Contacts.getInstance().getContactByUuid(uid);
+            if (existing != null) {
+                Contacts.getInstance().removeContact(existing);
+                btechContactUids.remove(uid);
+                btechIdToUid.entrySet().removeIf(e -> uid.equals(e.getValue()));
+                Log.d(TAG, "Removed APRS from Contacts pane uid=" + uid);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "removeAprsFromContactsPane failed uid=" + uid, e);
         }
     }
 

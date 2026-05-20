@@ -47,6 +47,7 @@ import com.uvpro.plugin.beacon.SmartBeacon;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry.BtDeviceRecord;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
+import com.uvpro.plugin.kiss.KissRadioFrequencyControl;
 import com.uvpro.plugin.contacts.ContactTracker;
 import com.uvpro.plugin.contacts.RadioContact;
 import com.uvpro.plugin.cot.CotBridge;
@@ -104,6 +105,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private static final int COLOR_REPEATER_LOAD_ARMED_STROKE = 0xFFFFEB3B;
     private static final String LABEL_LOAD_REPEATER = "Load Selected Repeater";
     private static final String LABEL_SELECT_CHANNEL = "Select Channel";
+    private static final String LABEL_DIGITAL_ONLY = "DIGITAL ONLY MODE";
+    private static final String LABEL_DIGITAL_SELECT_CHANNEL = "Select Channel";
+    private static final String LABEL_DIGITAL_LONG_PRESS_DISABLE =
+            "Long Press to Disable KISS Mode";
     private static final int TARGET_A = 0;
     private static final int TARGET_B = 1;
     private static final int TARGET_DIGITAL = 2;
@@ -146,6 +151,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Button btnScan;
     private Button btnDisconnect;
     private Button btnLoadSelectedRepeater;
+    private Button btnDigitalOnlyMode;
     private Button btnRadioSilence;
     private Button btnRefreshChannels;
     private Button btnVfoA;
@@ -207,6 +213,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private boolean repeaterLoadArmed = false;
     private String repeaterLoadArmedUid;
     private UVProRadioControlManager.RepeaterSpec repeaterLoadArmedSpec;
+    private boolean digitalOnlyArmed = false;
+    private boolean digitalOnlyActive = false;
+    private int digitalOnlyChannelId = -1;
+    private final Runnable digitalOnlyDisconnectHook = this::releaseDigitalOnlyKissLockSilent;
     private boolean pendingOpenToChannelControl = false;
 
     public UVProDropDownReceiver(MapView mapView,
@@ -220,6 +230,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         // Register as listener for connection and contact updates
         btManager.addListener(this);
+        btManager.addBeforeDisconnectHook(digitalOnlyDisconnectHook);
         contactTracker.setListener(this);
     }
 
@@ -304,6 +315,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         // Now attach change listeners so user interactions are wired
         setupListeners();
         updateDigitalEditGuardUi();
+        updateDigitalOnlyButtonUi();
         refreshFavoriteStrip();
         updateScanButtonText();
         updateSelectedRepeaterUi();
@@ -345,6 +357,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnScan = rootView.findViewById(getId("btn_scan"));
         btnDisconnect = rootView.findViewById(getId("btn_disconnect"));
         btnLoadSelectedRepeater = rootView.findViewById(getId("btn_load_selected_repeater"));
+        btnDigitalOnlyMode = rootView.findViewById(getId("btn_digital_only_mode"));
         btnRadioSilence = rootView.findViewById(getId("btn_radio_silence"));
         btnRefreshChannels = rootView.findViewById(getId("btn_refresh_channels"));
         btnVfoA = rootView.findViewById(getId("btn_vfo_a"));
@@ -461,6 +474,16 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         if (btnLoadSelectedRepeater != null) {
             btnLoadSelectedRepeater.setOnClickListener(v -> armSelectedRepeaterLoad());
+        }
+        if (btnDigitalOnlyMode != null) {
+            btnDigitalOnlyMode.setOnClickListener(v -> onDigitalOnlyModeClick());
+            btnDigitalOnlyMode.setOnLongClickListener(v -> {
+                if (digitalOnlyActive) {
+                    disableDigitalOnlyMode();
+                    return true;
+                }
+                return false;
+            });
         }
         if (btnRadioSilence != null) {
             btnRadioSilence.setOnClickListener(v ->
@@ -710,6 +733,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     @Override
     public void onDisconnected(String reason) {
         getMapView().post(() -> {
+            clearDigitalOnlyStateUiOnly();
             updateConnectionUI(false, null);
             appendLog("Disconnected: " + reason);
         });
@@ -798,8 +822,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (!connected) {
             renderChannelGrid(null);
             updateReceiveRssiUi(-1);
+            clearDigitalOnlyStateUiOnly();
         }
         updateRadioSilenceButtonUi();
+        updateDigitalOnlyButtonUi();
     }
 
     private void updateContactCount() {
@@ -1367,6 +1393,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
             loadSelectedRepeaterToRadio(channelId);
             return;
         }
+        if (digitalOnlyArmed) {
+            applyDigitalOnlyToChannel(channelId);
+            return;
+        }
         if (channelTargetDigital) {
             appendLog(String.format(Locale.US,
                     "Setting Digital to CH%02d...", channelId + 1));
@@ -1899,12 +1929,186 @@ public class UVProDropDownReceiver extends DropDownReceiver
         return String.valueOf(tone);
     }
 
+    private void onDigitalOnlyModeClick() {
+        if (!btManager.isConnected()) {
+            Toast.makeText(getMapView().getContext(),
+                    "Connect to the radio first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (digitalOnlyActive) {
+            Toast.makeText(getMapView().getContext(),
+                    "Long press to disable KISS single-frequency mode.",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (digitalOnlyArmed) {
+            setDigitalOnlyArmed(false);
+            appendLog("Digital only mode cancelled.");
+            Toast.makeText(getMapView().getContext(),
+                    "Digital only mode cancelled.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (repeaterLoadArmed) {
+            setRepeaterLoadArmed(false, null, null);
+        }
+        setDigitalOnlyArmed(true);
+        appendLog("Digital only mode armed. Select a digital channel.");
+        Toast.makeText(getMapView().getContext(),
+                "Select a channel for digital-only KISS lock.",
+                Toast.LENGTH_SHORT).show();
+    }
+
+    private void setDigitalOnlyArmed(boolean armed) {
+        digitalOnlyArmed = armed;
+        updateDigitalOnlyButtonUi();
+    }
+
+    private void setDigitalOnlyActive(boolean active, int channelId) {
+        digitalOnlyActive = active;
+        digitalOnlyChannelId = active ? channelId : -1;
+        digitalOnlyArmed = false;
+        updateDigitalOnlyButtonUi();
+    }
+
+    private void clearDigitalOnlyStateUiOnly() {
+        digitalOnlyArmed = false;
+        digitalOnlyActive = false;
+        digitalOnlyChannelId = -1;
+        updateDigitalOnlyButtonUi();
+    }
+
+    private void updateDigitalOnlyButtonUi() {
+        if (btnDigitalOnlyMode == null) {
+            return;
+        }
+        boolean connected = btManager.isConnected();
+        btnDigitalOnlyMode.setEnabled(connected);
+        String label;
+        if (digitalOnlyActive) {
+            label = LABEL_DIGITAL_LONG_PRESS_DISABLE;
+        } else if (digitalOnlyArmed) {
+            label = LABEL_DIGITAL_SELECT_CHANNEL;
+        } else {
+            label = LABEL_DIGITAL_ONLY;
+        }
+        btnDigitalOnlyMode.setText(label);
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.RECTANGLE);
+        d.setCornerRadius(dip(getMapView().getContext(), PILL_CORNER_RADIUS_DP));
+        d.setColor(COLOR_REPEATER_LOAD_FILL);
+        if (digitalOnlyArmed) {
+            d.setStroke(dip(getMapView().getContext(), 3), COLOR_REPEATER_LOAD_ARMED_STROKE);
+        } else {
+            d.setStroke(dip(getMapView().getContext(), 1), 0x00000000);
+        }
+        btnDigitalOnlyMode.setBackgroundTintList(null);
+        btnDigitalOnlyMode.setBackground(d);
+    }
+
+    private void applyDigitalOnlyToChannel(int channelId) {
+        if (radioControlManager == null) {
+            appendLog("Radio control unavailable");
+            Toast.makeText(getMapView().getContext(),
+                    "Radio control unavailable", Toast.LENGTH_SHORT).show();
+            setDigitalOnlyArmed(false);
+            return;
+        }
+        final int selectedChannelId = channelId;
+        double freqMHz = resolveChannelRxMHz(selectedChannelId);
+        setDigitalOnlyArmed(false);
+        appendLog(String.format(Locale.US,
+                "Digital only: programming CH%02d and KISS lock...",
+                selectedChannelId + 1));
+        new Thread(() -> {
+            UVProRadioControlManager.ProgramResult result =
+                    radioControlManager.setDigitalChannel(selectedChannelId);
+            boolean lockOk = false;
+            if (result.success && freqMHz > 0) {
+                lockOk = KissRadioFrequencyControl.lockFrequency(
+                        btManager, (float) freqMHz);
+            }
+            final boolean finalLockOk = lockOk;
+            final double finalFreq = freqMHz;
+            getMapView().post(() -> {
+                if (result.success && finalLockOk) {
+                    lastDigitalChannel = selectedChannelId;
+                    setDigitalOnlyActive(true, selectedChannelId);
+                    appendLog(String.format(Locale.US,
+                            "Digital only active on CH%02d at %.5f MHz (KISS locked).",
+                            selectedChannelId + 1, finalFreq));
+                    Toast.makeText(getMapView().getContext(),
+                            "Digital only mode active. Long press button to disable.",
+                            Toast.LENGTH_LONG).show();
+                    rerenderGridFromLastSnapshot();
+                } else if (result.success) {
+                    appendLog("Digital channel set, but KISS frequency lock failed.");
+                    Toast.makeText(getMapView().getContext(),
+                            "Channel set; KISS lock failed. Check connection.",
+                            Toast.LENGTH_LONG).show();
+                } else {
+                    appendLog(result.message);
+                    Toast.makeText(getMapView().getContext(),
+                            result.message, Toast.LENGTH_LONG).show();
+                }
+            });
+        }, "uvpro-digital-only").start();
+    }
+
+    private double resolveChannelRxMHz(int channelId) {
+        if (lastSnapshot != null && lastSnapshot.channels != null
+                && channelId >= 0 && channelId < lastSnapshot.channels.length) {
+            UVProRadioControlManager.ChannelSummary ch = lastSnapshot.channels[channelId];
+            if (ch != null) {
+                if (ch.rxFreqMHz > 0) {
+                    return ch.rxFreqMHz;
+                }
+                if (ch.txFreqMHz > 0) {
+                    return ch.txFreqMHz;
+                }
+            }
+        }
+        return 0.0;
+    }
+
+    private void disableDigitalOnlyMode() {
+        new Thread(() -> {
+            boolean unlocked = KissRadioFrequencyControl.unlockFrequency(btManager);
+            getMapView().post(() -> {
+                clearDigitalOnlyStateUiOnly();
+                if (unlocked) {
+                    appendLog("Digital only / KISS frequency lock disabled.");
+                    Toast.makeText(getMapView().getContext(),
+                            "KISS single-frequency mode disabled.",
+                            Toast.LENGTH_SHORT).show();
+                } else {
+                    appendLog("KISS unlock failed or radio not connected.");
+                    Toast.makeText(getMapView().getContext(),
+                            "Could not send KISS unlock.", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }, "uvpro-digital-only-off").start();
+    }
+
+    /** Called from {@link BtConnectionManager} before the BT socket is closed. */
+    private void releaseDigitalOnlyKissLockSilent() {
+        if (!digitalOnlyActive && !KissRadioFrequencyControl.isFrequencyLocked()) {
+            return;
+        }
+        KissRadioFrequencyControl.unlockFrequency(btManager);
+        digitalOnlyActive = false;
+        digitalOnlyArmed = false;
+        digitalOnlyChannelId = -1;
+    }
+
     private void armSelectedRepeaterLoad() {
         if (radioControlManager == null) {
             appendLog("Radio control unavailable");
             Toast.makeText(getMapView().getContext(),
                     "Radio control unavailable", Toast.LENGTH_SHORT).show();
             return;
+        }
+        if (digitalOnlyArmed) {
+            setDigitalOnlyArmed(false);
         }
         if (repeaterLoadArmed) {
             setRepeaterLoadArmed(false, null, null);

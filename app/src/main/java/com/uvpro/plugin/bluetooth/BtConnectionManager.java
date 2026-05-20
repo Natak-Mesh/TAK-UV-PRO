@@ -82,6 +82,10 @@ public class BtConnectionManager {
     private final CopyOnWriteArrayList<RawDataListener> rawDataListeners =
             new CopyOnWriteArrayList<>();
 
+    /** Invoked while the socket is still open, before streams are closed. */
+    private final CopyOnWriteArrayList<Runnable> beforeDisconnectHooks =
+            new CopyOnWriteArrayList<>();
+
     public interface ConnectionListener {
         void onConnected(BluetoothDevice device);
         void onDisconnected(String reason);
@@ -530,6 +534,7 @@ public class BtConnectionManager {
     }
 
     private void cleanup() {
+        runBeforeDisconnectHooks();
         try {
             if (inputStream != null) inputStream.close();
         } catch (IOException ignored) {}
@@ -599,6 +604,26 @@ public class BtConnectionManager {
 
     public void removeRawDataListener(RawDataListener listener) {
         rawDataListeners.remove(listener);
+    }
+
+    public void addBeforeDisconnectHook(Runnable hook) {
+        if (hook != null) {
+            beforeDisconnectHooks.add(hook);
+        }
+    }
+
+    public void removeBeforeDisconnectHook(Runnable hook) {
+        beforeDisconnectHooks.remove(hook);
+    }
+
+    private void runBeforeDisconnectHooks() {
+        for (Runnable hook : beforeDisconnectHooks) {
+            try {
+                hook.run();
+            } catch (Exception e) {
+                Log.w(TAG, "beforeDisconnect hook failed: " + e.getMessage());
+            }
+        }
     }
 
     private void notifyConnected(BluetoothDevice device) {

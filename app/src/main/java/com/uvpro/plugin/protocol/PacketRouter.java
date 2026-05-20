@@ -319,17 +319,7 @@ public class PacketRouter {
             if (aprsTrackManager != null) {
                 aprsTrackManager.recordPosition(uid, mapCall, pos);
             }
-            cotBridge.registerBtechContactUid(uid);
-            cotBridge.registerBtechContactId(normalized, uid);
-            String radioTrunc = CallsignUtil.toRadioCallsign(normalized);
-            if (radioTrunc != null && !radioTrunc.isEmpty()
-                    && !radioTrunc.equalsIgnoreCase(normalized)) {
-                cotBridge.registerBtechContactId(radioTrunc, uid);
-            }
-            MapView mv = MapView.getMapView();
-            if (mv != null) {
-                mv.post(() -> linkRadioIndividualContactToMapMarker(normalized, uid, 0));
-            }
+            // Map marker only — do not register IndividualContact (not actionable in Contacts pane).
             return;
         }
 

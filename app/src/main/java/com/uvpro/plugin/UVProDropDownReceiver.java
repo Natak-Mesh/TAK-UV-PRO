@@ -151,6 +151,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Button btnScan;
     private Button btnDisconnect;
     private Button btnLoadSelectedRepeater;
+    private Button btnTxPower;
     private Button btnDigitalOnlyMode;
     private Button btnRadioSilence;
     private Button btnRefreshChannels;
@@ -201,6 +202,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private int lastChannelB = -1;
     private int lastDigitalChannel = -1;
     private boolean lastDualWatchEnabled = false;
+    private int currentTxPowerLevel = UVProRadioControlManager.TX_POWER_LOW;
     private boolean lastHasRxFocus = false;
     private ValueAnimator activeVfoPulseAnimator;
     private Button pulsingVfoButton;
@@ -316,6 +318,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         setupListeners();
         updateDigitalEditGuardUi();
         updateDigitalOnlyButtonUi();
+        updateTxPowerButtonUi();
         refreshFavoriteStrip();
         updateScanButtonText();
         updateSelectedRepeaterUi();
@@ -357,6 +360,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnScan = rootView.findViewById(getId("btn_scan"));
         btnDisconnect = rootView.findViewById(getId("btn_disconnect"));
         btnLoadSelectedRepeater = rootView.findViewById(getId("btn_load_selected_repeater"));
+        btnTxPower = rootView.findViewById(getId("btn_tx_power"));
         btnDigitalOnlyMode = rootView.findViewById(getId("btn_digital_only_mode"));
         btnRadioSilence = rootView.findViewById(getId("btn_radio_silence"));
         btnRefreshChannels = rootView.findViewById(getId("btn_refresh_channels"));
@@ -474,6 +478,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         if (btnLoadSelectedRepeater != null) {
             btnLoadSelectedRepeater.setOnClickListener(v -> armSelectedRepeaterLoad());
+        }
+        if (btnTxPower != null) {
+            btnTxPower.setOnClickListener(v -> cycleTxPower());
         }
         if (btnDigitalOnlyMode != null) {
             btnDigitalOnlyMode.setOnClickListener(v -> onDigitalOnlyModeClick());
@@ -723,6 +730,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             updateScanButtonText();
             // Auto-populate channel grid immediately after radio connect.
             refreshChannelGridFullAsync();
+            refreshTxPowerFromRadioAsync();
             // Follow-up read: some radios return channel/settings a moment later.
             getMapView().postDelayed(this::refreshChannelGridAsync, 900L);
         });
@@ -827,6 +835,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         updateRadioSilenceButtonUi();
         updateDigitalOnlyButtonUi();
+        updateTxPowerButtonUi();
+        if (!connected) {
+            currentTxPowerLevel = UVProRadioControlManager.TX_POWER_LOW;
+        }
     }
 
     private void updateContactCount() {
@@ -1123,6 +1135,51 @@ public class UVProDropDownReceiver extends DropDownReceiver
         Log.d(TAG, message);
     }
 
+    private void refreshTxPowerFromRadioAsync() {
+        if (radioControlManager == null) {
+            return;
+        }
+        new Thread(() -> {
+            int level = radioControlManager.readTxPowerLevel();
+            getMapView().post(() -> {
+                currentTxPowerLevel = level;
+                updateTxPowerButtonUi();
+            });
+        }, "uvpro-read-tx-power").start();
+    }
+
+    private void cycleTxPower() {
+        if (radioControlManager == null || !btManager.isConnected()) {
+            Toast.makeText(getMapView().getContext(),
+                    "Connect to the radio first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final int next = (currentTxPowerLevel + 1) % 3;
+        appendLog("Setting TX power...");
+        new Thread(() -> {
+            UVProRadioControlManager.ProgramResult result =
+                    radioControlManager.setTxPowerLevel(next);
+            getMapView().post(() -> {
+                appendLog(result.message);
+                Toast.makeText(getMapView().getContext(), result.message,
+                        result.success ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
+                refreshTxPowerFromRadioAsync();
+            });
+        }, "uvpro-set-tx-power").start();
+    }
+
+    private void updateTxPowerButtonUi() {
+        if (btnTxPower == null) {
+            return;
+        }
+        boolean connected = btManager.isConnected();
+        btnTxPower.setEnabled(connected);
+        btnTxPower.setText("TX Power "
+                + UVProRadioControlManager.txPowerLabel(currentTxPowerLevel));
+        btnTxPower.setBackgroundTintList(
+                android.content.res.ColorStateList.valueOf(COLOR_PILL_BUTTON_PRIMARY));
+    }
+
     private void updateSelectedRepeaterUi() {
         if (selectedRepeaterText == null || btnLoadSelectedRepeater == null) {
             return;
@@ -1148,14 +1205,22 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void refreshChannelGridAsync() {
-        refreshChannelGridAsync(false);
+        refreshChannelGridAsync(false, -1);
+    }
+
+    private void refreshChannelGridAsync(int forceRefreshChannelId) {
+        refreshChannelGridAsync(false, forceRefreshChannelId);
     }
 
     private void refreshChannelGridFullAsync() {
-        refreshChannelGridAsync(true);
+        refreshChannelGridAsync(true, -1);
     }
 
     private void refreshChannelGridAsync(boolean fullSnapshot) {
+        refreshChannelGridAsync(fullSnapshot, -1);
+    }
+
+    private void refreshChannelGridAsync(boolean fullSnapshot, int forceRefreshChannelId) {
         if (radioControlManager == null || channelsGrid == null) {
             return;
         }
@@ -1170,7 +1235,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             UVProRadioControlManager.RadioControlSnapshot snapshot =
                     fullSnapshot
                             ? radioControlManager.readSnapshot(30)
-                            : radioControlManager.readSnapshotFast(30);
+                            : radioControlManager.readSnapshotFast(30, forceRefreshChannelId);
             getMapView().post(() -> {
                 try {
                     renderChannelGrid(snapshot);
@@ -1882,7 +1947,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                             Toast.makeText(ctx, result.message,
                                     result.success ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
                             if (result.success) {
-                                refreshChannelGridAsync();
+                                refreshChannelGridAsync(channel.channelId);
                             }
                         });
                     }, "uvpro-program-manual-channel").start();
@@ -2641,6 +2706,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
             stopActiveVfoPulse();
         } else {
             refreshChannelGridFullAsync();
+            if (btManager.isConnected()) {
+                refreshTxPowerFromRadioAsync();
+            }
             if (pendingOpenToChannelControl) {
                 scheduleScrollToRepeaterLoadSection();
                 pendingOpenToChannelControl = false;

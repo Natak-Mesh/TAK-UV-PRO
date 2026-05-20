@@ -73,6 +73,11 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
         }
     }
 
+    /** Device settings TX power (2-bit {@code vfol_tx_power_x} / {@code vfo2_tx_power_x}). */
+    public static final int TX_POWER_LOW = 0;
+    public static final int TX_POWER_MED = 1;
+    public static final int TX_POWER_HIGH = 2;
+
     public static class ChannelSummary {
         public final int channelId;
         public final String name;
@@ -433,6 +438,14 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
     }
 
     public RadioControlSnapshot readSnapshotFast(int maxChannels) {
+        return readSnapshotFast(maxChannels, -1);
+    }
+
+    /**
+     * Fast snapshot; {@code forceRefreshChannelId} is always re-read from the radio
+     * (e.g. after manual channel programming).
+     */
+    public RadioControlSnapshot readSnapshotFast(int maxChannels, int forceRefreshChannelId) {
         if (!btManager.isConnected()) {
             notificationRegistrationOk = false;
             return null;
@@ -488,6 +501,9 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
             currentChannel = normalizeToGridChannel(currentChannel, count);
 
             // Update only relevant channels for fast event-driven refreshes.
+            if (forceRefreshChannelId >= 0 && forceRefreshChannelId < count) {
+                ensureChannelCached(forceRefreshChannelId, count, true);
+            }
             ensureChannelCached(channelA, count);
             ensureChannelCached(channelB, count);
             ensureChannelCached(digitalChannel, count);
@@ -819,12 +835,320 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
                 }
             }
 
+            refreshChannelCache(channelId);
             return new ProgramResult(true, "Channel " + (channelId + 1) + " saved.");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new ProgramResult(false, "Interrupted while programming channel.");
         } catch (Exception e) {
             return new ProgramResult(false, "Programming error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Re-read one channel from the radio and update the snapshot cache.
+     */
+    public void refreshChannelCache(int channelId) {
+        if (!btManager.isConnected() || channelId < 0 || channelId >= cachedChannels.length) {
+            return;
+        }
+        try {
+            ensureChannelCached(channelId, cachedChannelCount > 0 ? cachedChannelCount : 30, true);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Read TX power from the channel memory the radio actually transmits on.
+     * Prefers the digital/APRS channel ({@code autoShareLocCh}), then the active VFO channel.
+     */
+    public int readTxPowerLevel() {
+        if (!btManager.isConnected()) {
+            return TX_POWER_LOW;
+        }
+        try {
+            CommandReply readSettings = sendCommandSync(
+                    BASIC_GROUP, CMD_READ_SETTINGS, new byte[0], 2500);
+            if (readSettings == null || readSettings.status != STATUS_SUCCESS
+                    || readSettings.payload == null || readSettings.payload.length < 12) {
+                return TX_POWER_LOW;
+            }
+            SettingsState state = SettingsState.parse(readSettings.payload);
+            if (state == null) {
+                return TX_POWER_LOW;
+            }
+            int count = 30;
+            int digitalCh = normalizeDigitalChannel(state.autoShareLocCh, count);
+            if (digitalCh >= 0) {
+                int fromDigital = readChannelTxPowerLevel(digitalCh);
+                if (fromDigital >= 0) {
+                    return fromDigital;
+                }
+            }
+            int analogCh = state.vfoX == 2
+                    ? normalizeToGridChannel(state.channelB, count)
+                    : normalizeToGridChannel(state.channelA, count);
+            if (analogCh >= 0) {
+                int fromAnalog = readChannelTxPowerLevel(analogCh);
+                if (fromAnalog >= 0) {
+                    return fromAnalog;
+                }
+            }
+            TxPowerBits bits = parseTxPowerBits(readSettings.payload);
+            if (bits != null) {
+                boolean activeVfoB = bits.vfoX == 2;
+                return clampTxPowerLevel(activeVfoB ? bits.vfo2TxPowerX : bits.vfo1TxPowerX);
+            }
+            return TX_POWER_LOW;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return TX_POWER_LOW;
+        }
+    }
+
+    /**
+     * Set TX power on device settings and on channel memories (digital + VFO A/B).
+     * Channel power flags are what the firmware uses for actual RF output.
+     */
+    public ProgramResult setTxPowerLevel(int level) {
+        if (!btManager.isConnected()) {
+            return new ProgramResult(false, "Radio not connected.");
+        }
+        int clamped = clampTxPowerLevel(level);
+        try {
+            CommandReply readSettings = sendCommandSync(
+                    BASIC_GROUP, CMD_READ_SETTINGS, new byte[0], 2500);
+            if (readSettings == null || readSettings.status != STATUS_SUCCESS
+                    || readSettings.payload == null || readSettings.payload.length < 12) {
+                return new ProgramResult(false, "Could not read radio settings.");
+            }
+            SettingsState state = SettingsState.parse(readSettings.payload);
+            if (state == null) {
+                return new ProgramResult(false, "Could not parse radio settings.");
+            }
+
+            byte[] modified = modifySettingsRaw(
+                    readSettings.payload, null, null, null, null, null, null,
+                    clamped, clamped);
+            if (modified == null) {
+                return new ProgramResult(false, "Could not build TX power settings.");
+            }
+            CommandReply writeSettings = sendCommandSync(
+                    BASIC_GROUP, CMD_WRITE_SETTINGS, modified, 2500);
+            boolean settingsAcked = writeSettings != null
+                    && writeSettings.status == STATUS_SUCCESS;
+
+            int count = 30;
+            java.util.LinkedHashSet<Integer> channelIds = new java.util.LinkedHashSet<>();
+            int digitalCh = normalizeDigitalChannel(state.autoShareLocCh, count);
+            if (digitalCh >= 0) {
+                channelIds.add(digitalCh);
+            }
+            int chA = normalizeToGridChannel(state.channelA, count);
+            int chB = normalizeToGridChannel(state.channelB, count);
+            if (chA >= 0) {
+                channelIds.add(chA);
+            }
+            if (chB >= 0) {
+                channelIds.add(chB);
+            }
+            CommandReply htStatus = sendCommandSync(
+                    BASIC_GROUP, CMD_GET_HT_STATUS, new byte[0], 1500);
+            if (htStatus != null && htStatus.status == STATUS_SUCCESS
+                    && htStatus.payload != null) {
+                int current = normalizeToGridChannel(
+                        parseCurrentChannelIdFromHtStatus(htStatus.payload), count);
+                if (current >= 0) {
+                    channelIds.add(current);
+                }
+            }
+
+            int channelsUpdated = 0;
+            for (int ch : channelIds) {
+                if (writeChannelTxPower(ch, clamped)) {
+                    channelsUpdated++;
+                    refreshChannelCache(ch);
+                }
+            }
+
+            boolean settingsVerified = verifySettingsTxPower(clamped);
+            boolean anyChannelVerified = false;
+            for (int ch : channelIds) {
+                if (readChannelTxPowerLevel(ch) == clamped) {
+                    anyChannelVerified = true;
+                    break;
+                }
+            }
+
+            if (channelsUpdated == 0 && !settingsVerified) {
+                return new ProgramResult(false,
+                        "Radio did not accept TX power (settings and channels).");
+            }
+            if (!settingsAcked && !settingsVerified && !anyChannelVerified) {
+                return new ProgramResult(false, "TX power write not confirmed by radio.");
+            }
+
+            String label = txPowerLabel(clamped);
+            Log.i(TAG, "TX power set to " + label + " settingsAck=" + settingsAcked
+                    + " channels=" + channelsUpdated + "/" + channelIds.size());
+            return new ProgramResult(true, "TX power set to " + label + ".");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new ProgramResult(false, "Interrupted while setting TX power.");
+        }
+    }
+
+    private int readChannelTxPowerLevel(int channelId) throws InterruptedException {
+        CommandReply readChannel = sendCommandSync(
+                BASIC_GROUP, CMD_READ_RF_CH, new byte[]{(byte) channelId}, 2500);
+        if (readChannel == null || readChannel.status != STATUS_SUCCESS
+                || readChannel.payload == null || readChannel.payload.length < 14) {
+            return -1;
+        }
+        return txPowerFromChannelBytes(readChannel.payload);
+    }
+
+    private boolean writeChannelTxPower(int channelId, int level) throws InterruptedException {
+        CommandReply readChannel = sendCommandSync(
+                BASIC_GROUP, CMD_READ_RF_CH, new byte[]{(byte) channelId}, 2500);
+        if (readChannel == null || readChannel.status != STATUS_SUCCESS
+                || readChannel.payload == null || readChannel.payload.length < 14) {
+            return false;
+        }
+        byte[] patched = applyTxPowerToChannelBytes(readChannel.payload, level);
+        CommandReply writeChannel = sendCommandSync(
+                BASIC_GROUP, CMD_WRITE_RF_CH, patched, 2500);
+        if (writeChannel != null && writeChannel.status == STATUS_SUCCESS) {
+            return true;
+        }
+        return readChannelTxPowerLevel(channelId) == level;
+    }
+
+    private boolean verifySettingsTxPower(int level) throws InterruptedException {
+        CommandReply readSettings = sendCommandSync(
+                BASIC_GROUP, CMD_READ_SETTINGS, new byte[0], 2500);
+        if (readSettings == null || readSettings.status != STATUS_SUCCESS
+                || readSettings.payload == null || readSettings.payload.length < 12) {
+            return false;
+        }
+        TxPowerBits bits = parseTxPowerBits(readSettings.payload);
+        if (bits == null) {
+            return false;
+        }
+        return bits.vfo1TxPowerX == level && bits.vfo2TxPowerX == level;
+    }
+
+    /** Per-channel TX power in RF channel block (HT Commander / APRS101). */
+    private static int txPowerFromChannelBytes(byte[] payload) {
+        if (payload.length < 14) {
+            return TX_POWER_LOW;
+        }
+        boolean high = (payload[13] & 0x40) != 0;
+        boolean med = (payload[13] & 0x02) != 0;
+        if (high) {
+            return TX_POWER_HIGH;
+        }
+        if (med) {
+            return TX_POWER_MED;
+        }
+        return TX_POWER_LOW;
+    }
+
+    private static byte[] applyTxPowerToChannelBytes(byte[] payload, int level) {
+        byte[] out = payload.clone();
+        if (out.length < 14) {
+            return out;
+        }
+        int clamped = clampTxPowerLevel(level);
+        boolean high = clamped == TX_POWER_HIGH;
+        boolean med = clamped == TX_POWER_MED;
+        out[13] = (byte) ((out[13] & 0xB0) | (high ? 0x40 : 0) | (med ? 0x02 : 0));
+        // Allow channel power flags to drive RF output (not locked to a fixed level).
+        if (out.length >= 15) {
+            out[14] = (byte) (out[14] & ~0x20);
+        }
+        return out;
+    }
+
+    public static String txPowerLabel(int level) {
+        switch (clampTxPowerLevel(level)) {
+            case TX_POWER_MED:
+                return "MED";
+            case TX_POWER_HIGH:
+                return "HIGH";
+            default:
+                return "LOW";
+        }
+    }
+
+    private static int clampTxPowerLevel(int level) {
+        if (level <= TX_POWER_LOW) {
+            return TX_POWER_LOW;
+        }
+        if (level >= TX_POWER_HIGH) {
+            return TX_POWER_HIGH;
+        }
+        return TX_POWER_MED;
+    }
+
+    private static final class TxPowerBits {
+        final int vfoX;
+        final int vfo1TxPowerX;
+        final int vfo2TxPowerX;
+
+        TxPowerBits(int vfoX, int vfo1TxPowerX, int vfo2TxPowerX) {
+            this.vfoX = vfoX;
+            this.vfo1TxPowerX = vfo1TxPowerX;
+            this.vfo2TxPowerX = vfo2TxPowerX;
+        }
+    }
+
+    private static TxPowerBits parseTxPowerBits(byte[] rawSettings) {
+        try {
+            if (rawSettings.length < 12) {
+                return null;
+            }
+            BitReader reader = new BitReader(rawSettings);
+            reader.readInt(4);
+            reader.readInt(4);
+            reader.readBool();
+            reader.readInt(1);
+            reader.readInt(2);
+            reader.readInt(4);
+            reader.readBool();
+            reader.readBool();
+            reader.readBool();
+            reader.readBool();
+            reader.readInt(3);
+            reader.readInt(4);
+            reader.readInt(5);
+            reader.readInt(2);
+            reader.readInt(3);
+            reader.readBool();
+            reader.readBool();
+            reader.readBool();
+            reader.readInt(3);
+            reader.readInt(5);
+            reader.readInt(2);
+            reader.readInt(4);
+            reader.readInt(6);
+            reader.readBool();
+            reader.readBool();
+            reader.readBool();
+            reader.readBool();
+            reader.readInt(5);
+            int vfoX = reader.readInt(2);
+            reader.readBool();
+            reader.readInt(4);
+            reader.readInt(4);
+            reader.readInt(2);
+            reader.readInt(4);
+            int vfo1TxPowerX = reader.readInt(2);
+            int vfo2TxPowerX = reader.readInt(2);
+            return new TxPowerBits(vfoX, vfo1TxPowerX, vfo2TxPowerX);
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -865,12 +1189,17 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
     }
 
     private void ensureChannelCached(int channelId, int count) throws InterruptedException {
+        ensureChannelCached(channelId, count, false);
+    }
+
+    private void ensureChannelCached(int channelId, int count, boolean forceRefresh)
+            throws InterruptedException {
         if (channelId < 0 || channelId >= count) {
             return;
         }
         synchronized (snapshotCacheLock) {
             cachedChannelCount = count;
-            if (cachedChannels[channelId] != null) {
+            if (!forceRefresh && cachedChannels[channelId] != null) {
                 return;
             }
         }
@@ -1292,7 +1621,7 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
         } else {
             newA = channelId;
         }
-        return modifySettingsRaw(rawSettings, newA, newB, null, null, null, null);
+        return modifySettingsRaw(rawSettings, newA, newB, null, null, null, null, null, null);
     }
 
     private static byte[] modifySettingsRaw(byte[] rawSettings,
@@ -1302,6 +1631,19 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
                                             Integer newSquelch,
                                             Integer newDigitalChannel,
                                             Integer newVfoX) {
+        return modifySettingsRaw(rawSettings, newChannelA, newChannelB, newDoubleChannel,
+                newSquelch, newDigitalChannel, newVfoX, null, null);
+    }
+
+    private static byte[] modifySettingsRaw(byte[] rawSettings,
+                                            Integer newChannelA,
+                                            Integer newChannelB,
+                                            Integer newDoubleChannel,
+                                            Integer newSquelch,
+                                            Integer newDigitalChannel,
+                                            Integer newVfoX,
+                                            Integer newVfo1TxPower,
+                                            Integer newVfo2TxPower) {
         try {
             if (rawSettings.length < 12) {
                 return null;
@@ -1357,6 +1699,10 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
             int nextSquelch = newSquelch != null ? newSquelch : squelchLevel;
             int nextDigitalChannel = newDigitalChannel != null ? newDigitalChannel : autoShareLocCh;
             int nextVfoX = newVfoX != null ? newVfoX : vfoX;
+            int nextVfo1TxPower = newVfo1TxPower != null
+                    ? clampTxPowerLevel(newVfo1TxPower) : vfolTxPowerX;
+            int nextVfo2TxPower = newVfo2TxPower != null
+                    ? clampTxPowerLevel(newVfo2TxPower) : vfo2TxPowerX;
 
             BitWriter writer = new BitWriter(12);
             writer.writeInt(nextA & 0x0F, 4);
@@ -1393,8 +1739,8 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
             writer.writeInt((nextB >> 4) & 0x0F, 4);
             writer.writeInt(wxMode, 2);
             writer.writeInt(noaaCh, 4);
-            writer.writeInt(vfolTxPowerX, 2);
-            writer.writeInt(vfo2TxPowerX, 2);
+            writer.writeInt(nextVfo1TxPower, 2);
+            writer.writeInt(nextVfo2TxPower, 2);
             writer.writeBool(disDigitalMute);
             writer.writeBool(signalingEccEn);
             writer.writeBool(chDataLock);

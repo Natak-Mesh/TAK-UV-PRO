@@ -1,15 +1,20 @@
 package com.uvpro.plugin.ui;
 
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Color;
 import android.util.Log;
+import android.view.MotionEvent;
 
+import com.atakmap.android.ipc.AtakBroadcast;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.android.widgets.LinearLayoutWidget;
+import com.atakmap.android.widgets.MapWidget;
 import com.atakmap.android.widgets.MarkerIconWidget;
 import com.atakmap.android.widgets.RootLayoutWidget;
 import com.atakmap.coremap.maps.assets.Icon;
 import com.uvpro.plugin.R;
+import com.uvpro.plugin.UVProDropDownReceiver;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -24,8 +29,10 @@ import java.io.InputStream;
  * Icons are written to the app's files dir so ATAK's GL renderer can load
  * them via file:// URI (android.resource:// URIs don't resolve cross-APK in
  * ATAK's OpenGL widget renderer).
+ *
+ * Tap opens the UV-PRO plugin panel (same as Menu → Tools → UV-PRO).
  */
-public class RadioStatusOverlay extends MarkerIconWidget {
+public class RadioStatusOverlay extends MarkerIconWidget implements MapWidget.OnClickListener {
 
     private static final String TAG = "UVPro.StatusOverlay";
     private static final int ICON_WIDTH  = 64;
@@ -47,8 +54,25 @@ public class RadioStatusOverlay extends MarkerIconWidget {
         Log.d(TAG, "disconnectedUri=" + disconnectedUri);
         brLayout.addWidget(this);
         setMargins(0f, 0f, 4f, 20f); // small right + bottom gap from screen edge
+        setTouchable(true);
+        addOnClickListener(this);
         applyIcon(false);
         Log.d(TAG, "Widget installed in BOTTOM_RIGHT");
+    }
+
+    @Override
+    public void onMapWidgetClick(MapWidget widget, MotionEvent event) {
+        openPluginPanel();
+    }
+
+    private static void openPluginPanel() {
+        try {
+            AtakBroadcast.getInstance().sendBroadcast(
+                    new Intent(UVProDropDownReceiver.SHOW_PLUGIN));
+            Log.d(TAG, "Status icon tapped — opening UV-PRO panel");
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to open UV-PRO panel from status icon", e);
+        }
     }
 
     public static void install(Context pluginContext) {
@@ -77,6 +101,7 @@ public class RadioStatusOverlay extends MarkerIconWidget {
     public static void uninstall() {
         if (instance == null) return;
         try {
+            instance.removeOnClickListener(instance);
             RootLayoutWidget root =
                     (RootLayoutWidget) instance.mapView.getComponentExtra("rootLayoutWidget");
             root.getLayout(RootLayoutWidget.BOTTOM_RIGHT).removeWidget(instance);

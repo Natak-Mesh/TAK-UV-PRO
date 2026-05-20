@@ -715,6 +715,14 @@
                 android:textStyle="bold"
                 android:paddingBottom="4dp" />
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Plugin settings: tap the button below. Full ATAK list: Settings → Tool Preferences → UV-PRO Settings."
+                android:textColor="#FF888888"
+                android:textSize="11sp"
+                android:paddingBottom="6dp" />
+
             <Button
                 android:id="@+id/btn_settings"
                 style="@style/UvproPillButton.Beacon"

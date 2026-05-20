@@ -73,6 +73,7 @@ public class PacketRouter {
     private final ChatBridge chatBridge;
     private final ContactTracker contactTracker;
     private final PacketFragmenter.Reassembler reassembler;
+    private final PingReplyScheduler pingReplyScheduler;
     private EncryptionManager encryptionManager;
     private AprsTrackManager aprsTrackManager;
 
@@ -92,6 +93,7 @@ public class PacketRouter {
         this.chatBridge = chatBridge;
         this.contactTracker = contactTracker;
         this.reassembler = new PacketFragmenter.Reassembler();
+        this.pingReplyScheduler = new PingReplyScheduler(cotBridge);
     }
 
     public void setAprsTrackManager(AprsTrackManager aprsTrackManager) {
@@ -228,8 +230,15 @@ public class PacketRouter {
                 if (!callsign.equalsIgnoreCase(pingCall)) {
                     chatBridge.onPeerActivity(pingCall);
                 }
-                // Send ping reply if enabled
-                sendPingReply();
+                schedulePingReply();
+                break;
+
+            case UVProPacket.TYPE_NET_SLOT_CONFIG:
+                MapView slotMv = MapView.getMapView();
+                if (slotMv != null) {
+                    NetSlotConfig.applyFromNetwork(
+                            slotMv.getContext(), packet.getPayload(), callsign);
+                }
                 break;
 
             case UVProPacket.TYPE_ACK:
@@ -580,27 +589,11 @@ public class PacketRouter {
         }
     }
 
-    /** Send our current GPS position as a ping reply if the setting is enabled. */
-    private void sendPingReply() {
-        try {
-            MapView mv = MapView.getMapView();
-            if (mv == null) return;
-            if (!com.uvpro.plugin.ui.SettingsFragment.isPingReplyEnabled(mv.getContext())) return;
-
-            com.atakmap.android.maps.PointMapItem self = mv.getSelfMarker();
-            if (self == null) return;
-
-            com.atakmap.coremap.maps.coords.GeoPoint gp = self.getPoint();
-            double speedMs = 0.0, course = 0.0;
-            try { speedMs = Double.parseDouble(self.getMetaString("Speed",  "0")); } catch (Exception ignored) {}
-            try { course  = Double.parseDouble(self.getMetaString("course", "0")); } catch (Exception ignored) {}
-
-            cotBridge.sendPositionOverRadio(
-                    gp.getLatitude(), gp.getLongitude(),
-                    gp.getAltitude(), (float) speedMs, (float) course, -1);
-            Log.d(TAG, "Ping reply sent");
-        } catch (Exception e) {
-            Log.w(TAG, "sendPingReply failed: " + e.getMessage());
+    private void schedulePingReply() {
+        MapView mv = MapView.getMapView();
+        if (mv == null) {
+            return;
         }
+        pingReplyScheduler.scheduleReply(mv.getContext());
     }
 }

@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   0x04 = Ping/discovery
  *   0x05 = Acknowledgment
  *   0x06 = CoT fragment (for large CoT that exceeds one frame)
+ *   0x07 = Net slot config (ping-reply slot count / timing)
  *
  * This sits INSIDE the AX.25 info field, which sits INSIDE a KISS frame:
  *   KISS → AX.25 → UVProPacket
@@ -33,6 +34,7 @@ public class UVProPacket {
     public static final byte TYPE_PING = 0x04;
     public static final byte TYPE_ACK = 0x05;
     public static final byte TYPE_COT_FRAGMENT = 0x06;
+    public static final byte TYPE_NET_SLOT_CONFIG = 0x07;
 
     /** GeoChat delivered receipt (CoT type {@code b-t-f-d}). */
     public static final byte ACK_KIND_DELIVERED = 1;

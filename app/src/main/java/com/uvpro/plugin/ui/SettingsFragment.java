@@ -2,15 +2,28 @@ package com.uvpro.plugin.ui;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Typeface;
 import android.os.Bundle;
 import android.preference.Preference;
 import android.preference.PreferenceCategory;
 import android.preference.PreferenceManager;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.Button;
+import android.widget.CompoundButton;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.Switch;
+import android.widget.TextView;
+import android.widget.Toast;
 
 import com.atakmap.android.chat.ChatManagerMapComponent;
 import com.atakmap.android.gui.PanPreference;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.android.preference.PluginPreferenceFragment;
+import com.uvpro.plugin.protocol.NetSlotConfig;
+import com.uvpro.plugin.protocol.UVProRadioServices;
 
 /**
  * Settings screen for the UVPro plugin.
@@ -37,6 +50,11 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String PREF_SA_RELAY_ENABLED = "uvpro_sa_relay_enabled";
     public static final String PREF_RF_TO_TAK_UPLINK_ENABLED = "uvpro_rf_to_tak_uplink_enabled";
     public static final String PREF_PING_REPLY_ENABLED = "uvpro_ping_reply_enabled";
+
+    public static final String KEY_CAT_ADMINISTRATION = "uvpro_cat_administration";
+    public static final String KEY_ADMIN_LEADERSHIP_WARNING = "uvpro_admin_leadership_warning";
+    public static final String KEY_DISTRIBUTE_NET_SLOTS = "uvpro_distribute_net_slots";
+    public static final String KEY_ADMIN_CURRENT_SLOT_STATUS = "uvpro_admin_current_slot_status";
 
     /** Injected after inflate — some ATAK builds omit custom Pan* prefs from XML. */
     public static final String KEY_BLUETOOTH_DEVICES = "uvpro_bluetooth_devices";
@@ -71,7 +89,15 @@ public class SettingsFragment extends PluginPreferenceFragment
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        Context ctx = getContext();
+        if (ctx == null) {
+            ctx = staticPluginContext;
+        }
+        if (ctx != null) {
+            NetSlotConfig.ensureDefaults(ctx);
+        }
         ensureBluetoothDevicesPreference();
+        wireAdministrationPreferences();
     }
 
     /**
@@ -163,6 +189,8 @@ public class SettingsFragment extends PluginPreferenceFragment
         super.onResume();
         getPreferenceManager().getSharedPreferences()
                 .registerOnSharedPreferenceChangeListener(this);
+        styleAdminLeadershipWarning();
+        updateAdminControlsEnabled();
         updateSummaries();
     }
 
@@ -176,7 +204,93 @@ public class SettingsFragment extends PluginPreferenceFragment
     @Override
     public void onSharedPreferenceChanged(SharedPreferences prefs,
                                           String key) {
+        if (NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED.equals(key)) {
+            updateAdminControlsEnabled();
+        }
+        if (NetSlotConfig.PREF_SLOT_COUNT.equals(key)
+                || NetSlotConfig.PREF_SLOT_TIME_SEC.equals(key)) {
+            normalizeSlotPreferences(prefs);
+        }
         updateSummaries();
+    }
+
+    private void wireAdministrationPreferences() {
+        Preference distribute = findPreference(KEY_DISTRIBUTE_NET_SLOTS);
+        if (distribute != null) {
+            distribute.setOnPreferenceClickListener(preference -> {
+                Context ctx = getActivity() != null ? getActivity() : getContext();
+                if (ctx == null && MapView.getMapView() != null) {
+                    ctx = MapView.getMapView().getContext();
+                }
+                if (ctx == null) {
+                    return true;
+                }
+                if (!getPrefs(ctx).getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false)) {
+                    Toast.makeText(ctx, "Enable administrative settings first",
+                            Toast.LENGTH_LONG).show();
+                    return true;
+                }
+                SharedPreferences prefs = getPrefs(ctx);
+                normalizeSlotPreferences(prefs);
+                int slots = NetSlotConfig.getSlotCount(ctx);
+                float slotSec = NetSlotConfig.getSlotTimeSec(ctx);
+                NetSlotConfig.saveLocalSlotSettings(ctx, slots, slotSec);
+                if (!UVProRadioServices.isConnected()) {
+                    Toast.makeText(ctx, "Connect to radio before distributing slot settings",
+                            Toast.LENGTH_LONG).show();
+                    return true;
+                }
+                if (UVProRadioServices.distributeNetSlotConfig(ctx)) {
+                    Toast.makeText(ctx,
+                            "Slot config sent (" + slots + " slots, "
+                                    + slotSec + " s)",
+                            Toast.LENGTH_LONG).show();
+                    updateSummaries();
+                } else {
+                    Toast.makeText(ctx, "Failed to send slot config over radio",
+                            Toast.LENGTH_LONG).show();
+                }
+                return true;
+            });
+        }
+        updateAdminControlsEnabled();
+    }
+
+    private void styleAdminLeadershipWarning() {
+        Preference warning = findPreference(KEY_ADMIN_LEADERSHIP_WARNING);
+        if (warning != null) {
+            warning.setTitle("For Team Leadership ONLY — Do not use unless directed by higher");
+        }
+    }
+
+    private void updateAdminControlsEnabled() {
+        SharedPreferences prefs = getPreferenceManager().getSharedPreferences();
+        boolean adminOn = prefs.getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false);
+        setPreferenceEnabled(NetSlotConfig.PREF_SLOT_COUNT, adminOn);
+        setPreferenceEnabled(NetSlotConfig.PREF_SLOT_TIME_SEC, adminOn);
+        setPreferenceEnabled(KEY_DISTRIBUTE_NET_SLOTS, adminOn);
+    }
+
+    private void setPreferenceEnabled(String key, boolean enabled) {
+        Preference p = findPreference(key);
+        if (p != null) {
+            p.setEnabled(enabled);
+        }
+    }
+
+    private void normalizeSlotPreferences(SharedPreferences prefs) {
+        int slots = NetSlotConfig.getSlotCount(
+                MapView.getMapView() != null
+                        ? MapView.getMapView().getContext()
+                        : staticPluginContext);
+        float sec = NetSlotConfig.getSlotTimeSec(
+                MapView.getMapView() != null
+                        ? MapView.getMapView().getContext()
+                        : staticPluginContext);
+        prefs.edit()
+                .putString(NetSlotConfig.PREF_SLOT_COUNT, String.valueOf(slots))
+                .putString(NetSlotConfig.PREF_SLOT_TIME_SEC, String.valueOf(sec))
+                .apply();
     }
 
     private void updateSummaries() {
@@ -216,6 +330,36 @@ public class SettingsFragment extends PluginPreferenceFragment
             pingReplyPref.setSummary(on
                     ? "On — reply to incoming pings with your position"
                     : "Off");
+        }
+
+        Context ctx = MapView.getMapView() != null
+                ? MapView.getMapView().getContext()
+                : staticPluginContext;
+        if (ctx != null) {
+            int slots = NetSlotConfig.getSlotCount(ctx);
+            float slotSec = NetSlotConfig.getSlotTimeSec(ctx);
+            Preference slotCountPref = findPreference(NetSlotConfig.PREF_SLOT_COUNT);
+            if (slotCountPref != null) {
+                slotCountPref.setSummary("Ping-reply slots: " + slots
+                        + " (slot index from callsign hash)");
+            }
+            Preference slotTimePref = findPreference(NetSlotConfig.PREF_SLOT_TIME_SEC);
+            if (slotTimePref != null) {
+                slotTimePref.setSummary(String.format(
+                        java.util.Locale.US,
+                        "Seconds between slot starts: %.1f s", slotSec));
+            }
+            Preference currentStatus = findPreference(KEY_ADMIN_CURRENT_SLOT_STATUS);
+            if (currentStatus != null) {
+                String status = String.format(java.util.Locale.US,
+                        "Slot count: %d — Slot time: %.1f s", slots, slotSec);
+                String issuer = prefs.getString(NetSlotConfig.PREF_LAST_NET_SLOT_ISSUER, "");
+                int seq = prefs.getInt(NetSlotConfig.PREF_NET_SLOT_CONFIG_SEQ, 0);
+                if (seq > 0 && issuer != null && !issuer.isEmpty()) {
+                    status += "\nLast net update from " + issuer;
+                }
+                currentStatus.setSummary(status);
+            }
         }
     }
 
@@ -331,5 +475,176 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static String getEncryptionPassphrase(Context context) {
         return getPrefs(context)
                 .getString(PREF_ENCRYPTION_PASSPHRASE, "");
+    }
+
+    /**
+     * Administration block for ping-reply slot net config (Tools prefs or plugin dialog).
+     */
+    public static final class AdministrationUi {
+        public Switch adminEnabled;
+        public EditText editSlotCount;
+        public EditText editSlotTime;
+        public Button btnDistribute;
+        public TextView currentStatus;
+        View[] gatedViews;
+    }
+
+    /** Adds Administration section views to a scrollable dialog layout. */
+    public static AdministrationUi appendAdministrationSection(Context ctx, LinearLayout layout) {
+        AdministrationUi ui = new AdministrationUi();
+
+        TextView header = new TextView(ctx);
+        header.setText("\nAdministration");
+        header.setTextColor(0xFF00BCD4);
+        header.setTextSize(14);
+        header.setTypeface(Typeface.DEFAULT_BOLD);
+        layout.addView(header);
+
+        TextView warning = new TextView(ctx);
+        warning.setText("For Team Leadership ONLY — Do not use unless directed by higher");
+        warning.setTextColor(0xFFFFFFFF);
+        warning.setTextSize(12);
+        warning.setTypeface(Typeface.DEFAULT_BOLD);
+        warning.setPadding(0, 8, 0, 8);
+        layout.addView(warning);
+
+        LinearLayout rowAdmin = new LinearLayout(ctx);
+        rowAdmin.setOrientation(LinearLayout.HORIZONTAL);
+        rowAdmin.setGravity(Gravity.CENTER_VERTICAL);
+        TextView labelAdmin = new TextView(ctx);
+        labelAdmin.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        labelAdmin.setText("Enable administrative settings");
+        labelAdmin.setTextColor(0xFFFFFFFF);
+        labelAdmin.setTextSize(13);
+        rowAdmin.addView(labelAdmin);
+        ui.adminEnabled = new Switch(ctx);
+        ui.adminEnabled.setChecked(getPrefs(ctx).getBoolean(
+                NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false));
+        rowAdmin.addView(ui.adminEnabled);
+        layout.addView(rowAdmin);
+
+        TextView labelSlots = new TextView(ctx);
+        labelSlots.setText("\nSlot count");
+        labelSlots.setTextColor(0xFFAAAAAA);
+        layout.addView(labelSlots);
+        ui.editSlotCount = new EditText(ctx);
+        ui.editSlotCount.setText(String.valueOf(NetSlotConfig.getSlotCount(ctx)));
+        ui.editSlotCount.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        ui.editSlotCount.setTextColor(0xFFFFFFFF);
+        layout.addView(ui.editSlotCount);
+
+        TextView labelTime = new TextView(ctx);
+        labelTime.setText("Slot time (seconds)");
+        labelTime.setTextColor(0xFFAAAAAA);
+        layout.addView(labelTime);
+        ui.editSlotTime = new EditText(ctx);
+        ui.editSlotTime.setText(String.valueOf(NetSlotConfig.getSlotTimeSec(ctx)));
+        ui.editSlotTime.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
+                | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        ui.editSlotTime.setTextColor(0xFFFFFFFF);
+        layout.addView(ui.editSlotTime);
+
+        ui.btnDistribute = new Button(ctx);
+        ui.btnDistribute.setText("Distribute to net");
+        ui.btnDistribute.setTextColor(0xFFFFFFFF);
+        ui.btnDistribute.setOnClickListener(v -> distributeNetSlotsFromUi(ctx, ui));
+        layout.addView(ui.btnDistribute);
+
+        TextView distributeHint = new TextView(ctx);
+        distributeHint.setText(
+                "Ensure all stations are in radio range to receive slot assignments");
+        distributeHint.setTextColor(0xFF888888);
+        distributeHint.setTextSize(11);
+        distributeHint.setPadding(0, 4, 0, 12);
+        layout.addView(distributeHint);
+
+        ui.currentStatus = new TextView(ctx);
+        ui.currentStatus.setTextColor(0xFF00BCD4);
+        ui.currentStatus.setTextSize(12);
+        ui.currentStatus.setPadding(0, 4, 0, 8);
+        layout.addView(ui.currentStatus);
+
+        ui.gatedViews = new View[]{
+                ui.editSlotCount, ui.editSlotTime, ui.btnDistribute
+        };
+        ui.adminEnabled.setOnCheckedChangeListener((buttonView, isChecked) ->
+                applyAdministrationGating(ui, isChecked));
+        applyAdministrationGating(ui, ui.adminEnabled.isChecked());
+        refreshAdministrationStatus(ctx, ui);
+        return ui;
+    }
+
+    public static void saveAdministrationFromUi(Context ctx, AdministrationUi ui) {
+        if (ctx == null || ui == null) {
+            return;
+        }
+        SharedPreferences prefs = getPrefs(ctx);
+        prefs.edit()
+                .putBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED,
+                        ui.adminEnabled.isChecked())
+                .apply();
+        try {
+            int slots = Integer.parseInt(ui.editSlotCount.getText().toString().trim());
+            float sec = Float.parseFloat(ui.editSlotTime.getText().toString().trim());
+            NetSlotConfig.saveLocalSlotSettings(ctx, slots, sec);
+        } catch (Exception ignored) {
+            NetSlotConfig.saveLocalSlotSettings(ctx,
+                    NetSlotConfig.DEFAULT_SLOT_COUNT,
+                    NetSlotConfig.DEFAULT_SLOT_TIME_SEC);
+        }
+    }
+
+    public static void refreshAdministrationStatus(Context ctx, AdministrationUi ui) {
+        if (ctx == null || ui == null || ui.currentStatus == null) {
+            return;
+        }
+        int slots = NetSlotConfig.getSlotCount(ctx);
+        float sec = NetSlotConfig.getSlotTimeSec(ctx);
+        String status = String.format(java.util.Locale.US,
+                "Currently set on this device: %d slots, %.1f s slot time", slots, sec);
+        SharedPreferences prefs = getPrefs(ctx);
+        String issuer = prefs.getString(NetSlotConfig.PREF_LAST_NET_SLOT_ISSUER, "");
+        int seq = prefs.getInt(NetSlotConfig.PREF_NET_SLOT_CONFIG_SEQ, 0);
+        if (seq > 0 && issuer != null && !issuer.isEmpty()) {
+            status += "\nLast net update from " + issuer;
+        }
+        ui.currentStatus.setText(status);
+    }
+
+    private static void applyAdministrationGating(AdministrationUi ui, boolean enabled) {
+        if (ui.gatedViews == null) {
+            return;
+        }
+        float alpha = enabled ? 1f : 0.38f;
+        for (View v : ui.gatedViews) {
+            if (v != null) {
+                v.setEnabled(enabled);
+                v.setAlpha(alpha);
+            }
+        }
+    }
+
+    private static void distributeNetSlotsFromUi(Context ctx, AdministrationUi ui) {
+        if (!ui.adminEnabled.isChecked()) {
+            Toast.makeText(ctx, "Enable administrative settings first", Toast.LENGTH_LONG).show();
+            return;
+        }
+        saveAdministrationFromUi(ctx, ui);
+        if (!UVProRadioServices.isConnected()) {
+            Toast.makeText(ctx, "Connect to radio before distributing slot settings",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        int slots = NetSlotConfig.getSlotCount(ctx);
+        float sec = NetSlotConfig.getSlotTimeSec(ctx);
+        if (UVProRadioServices.distributeNetSlotConfig(ctx)) {
+            Toast.makeText(ctx,
+                    "Slot config sent (" + slots + " slots, " + sec + " s)",
+                    Toast.LENGTH_LONG).show();
+            refreshAdministrationStatus(ctx, ui);
+        } else {
+            Toast.makeText(ctx, "Failed to send slot config over radio", Toast.LENGTH_LONG).show();
+        }
     }
 }

@@ -28,7 +28,9 @@ import com.uvpro.plugin.contacts.ContactTracker;
 import com.uvpro.plugin.cot.CotBridge;
 import com.uvpro.plugin.chat.ChatBridge;
 import com.uvpro.plugin.crypto.EncryptionManager;
+import com.uvpro.plugin.protocol.NetSlotConfig;
 import com.uvpro.plugin.protocol.PacketRouter;
+import com.uvpro.plugin.protocol.UVProRadioServices;
 import com.uvpro.plugin.radio.UVProRadioControlManager;
 import com.uvpro.plugin.ui.RadioStatusOverlay;
 import com.uvpro.plugin.ui.SettingsFragment;
@@ -262,6 +264,9 @@ try {
         chatBridge.setBtManager(btConnectionManager);
         chatBridge.setEncryptionManager(encryptionManager);
 
+        NetSlotConfig.ensureDefaults(view.getContext());
+        UVProRadioServices.install(btConnectionManager, encryptionManager);
+
         // 6. Create the drop-down UI receiver
         dropDownReceiver = new UVProDropDownReceiver(
                 view, pluginContext, btConnectionManager, contactTracker);
@@ -405,6 +410,7 @@ try {
             encryptionManager.dispose();
             encryptionManager = null;
         }
+        UVProRadioServices.clear();
         if (btConnectionManager != null) {
             btConnectionManager.disconnect();
             btConnectionManager = null;

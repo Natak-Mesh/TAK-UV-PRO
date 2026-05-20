@@ -2512,6 +2512,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         // Team color is controlled by ATAK core settings (locationTeam). Plugin no longer overrides it.
 
+        SettingsFragment.AdministrationUi adminUi =
+                SettingsFragment.appendAdministrationSection(ctx, layout);
+
         scrollView.addView(layout);
 
         new AlertDialog.Builder(ctx)
@@ -2543,6 +2546,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     if (!newRetryMax.isEmpty()) {
                         editor.putString(SettingsFragment.PREF_RETRY_MAX, newRetryMax);
                     }
+
+                    SettingsFragment.saveAdministrationFromUi(ctx, adminUi);
+                    SettingsFragment.refreshAdministrationStatus(ctx, adminUi);
 
                     editor.apply();
                     appendLog("Settings saved");

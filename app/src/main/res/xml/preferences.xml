@@ -97,4 +97,55 @@
 
     </PreferenceCategory>
 
+    <PreferenceCategory
+        android:key="uvpro_cat_administration"
+        android:title="Administration">
+
+        <Preference
+            android:key="uvpro_admin_leadership_warning"
+            android:title="For Team Leadership ONLY"
+            android:summary="Do not use unless directed by higher"
+            android:selectable="false"
+            android:persistent="false"
+            android:enabled="true" />
+
+        <com.atakmap.android.gui.PanCheckBoxPreference
+            android:key="uvpro_admin_settings_enabled"
+            android:title="Enable administrative settings"
+            android:summary="Unlock slot assignment controls for net leadership"
+            android:defaultValue="false" />
+
+        <com.atakmap.android.gui.PanEditTextPreference
+            android:key="uvpro_ping_slot_count"
+            android:title="Slot count"
+            android:summary="Ping-reply slots (default 20)"
+            android:defaultValue="20"
+            android:dialogTitle="Slot count"
+            android:inputType="number" />
+
+        <com.atakmap.android.gui.PanEditTextPreference
+            android:key="uvpro_ping_slot_time_sec"
+            android:title="Slot time"
+            android:summary="Seconds between slot start times (default 2.5 s)"
+            android:defaultValue="2.5"
+            android:dialogTitle="Slot time (seconds)"
+            android:inputType="numberDecimal" />
+
+        <Preference
+            android:key="uvpro_distribute_net_slots"
+            android:title="Distribute to net"
+            android:summary="Ensure all stations are in radio range to receive slot assignments"
+            android:persistent="false"
+            android:selectable="true" />
+
+        <Preference
+            android:key="uvpro_admin_current_slot_status"
+            android:title="Currently set on this device"
+            android:summary="Slot count: 20 — Slot time: 2.5 s"
+            android:selectable="false"
+            android:persistent="false"
+            android:enabled="true" />
+
+    </PreferenceCategory>
+
 </PreferenceScreen>

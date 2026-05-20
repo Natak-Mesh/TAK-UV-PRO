@@ -9,9 +9,10 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Position Sharing (PLI)** | ✅ Working | Your ATAK position is beaconed over radio at a configurable interval. Incoming positions appear as contacts on the map. |
 | **Smart Beaconing (APRS-style)** | ✅ Working | APRS-standard SmartBeaconing + corner pegging: speed-proportional rate, turn-threshold slope, and minimum turn time. Seven parameters configurable in Settings → Manage Smart Beacon Settings. |
 | **Dynamic CoT Stale Window** | ✅ Working | Contact `stale` timestamp now tracks current beacon policy (fixed interval or Smart Beacon profile) so receivers do not grey contacts prematurely. |
-| **Ping Reply** | ✅ Working | Automatically replies to incoming pings with your current GPS position. Toggle on/off in Settings. |
+| **Ping / Ping Reply** | ✅ Working | **Send Ping** broadcasts a discovery ping; **Send Ping Reply** (Settings) auto-replies to incoming pings with your GPS position. Replies use **slotted timing** (default 20 slots × 2.5 s) keyed by callsign hash to reduce collisions. |
+| **Net slot administration** | ✅ Working | Team leadership can set slot count/time and **Distribute to net** (`TYPE_NET_SLOT_CONFIG`); receivers auto-apply newer assignments. In **Settings → Tool Preferences → UV-PRO Settings → Administration** or **Plugin Settings** (bottom of dialog). |
 | **Bluetooth Scan & Connect** | ✅ Working | Instant picker showing previously-connected radios with live green/gray availability dots. Auto-connects to last used radio on ATAK startup. |
-| **Radio Connection Status Overlay** | ✅ Working | Persistent icon in the lower-right ATAK map corner showing connection state. Green box = connected; dark box = disconnected. |
+| **Radio Connection Status Overlay** | ✅ Working | Persistent BTECH icon in the lower-right map corner (green = connected, desaturated = disconnected). **Tap the icon** to open the UV-PRO panel (same as Menu → Tools → UV-PRO). |
 | **GeoChat over RF (contact-centric)** | ✅ Working | Chat to radio peers using ATAK's native Contacts/GeoChat UI (plugin contacts route via RF transport). |
 | **GeoChat delivery receipts (checkmarks)** | ✅ Working | ATAK's native single-checkmark (delivered) and double-checkmark (read) appear on the sender's chat window. |
 | **Retry on no ACK + delivery failure alert** | ✅ Working | If no delivered ACK within the configured interval, message is retransmitted up to max retries. If all retries exhausted, a persistent alert appears. Retry interval and max retries adjustable in Settings. |
@@ -21,7 +22,6 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Contact Tracking** | ✅ Working | Radios in range tracked as contacts with callsign, last-seen time, and position. |
 | **Map Repeater Load/Tune (KML)** | ✅ Working | Tap a repeater placemark from imported KML, arm **Load Selected Repeater**, then tap a destination channel to program/tune it (TX/RX + CTCSS/DCS). |
 | **Bluetooth Auto-Reconnect** | ✅ Working | Three-strategy SPP connection with exponential backoff reconnect (up to 5 attempts). |
-| **Ping Transport (internal)** | ✅ Working | Ping encode/send/receive logic is still supported internally, but the quick-action UI button is currently hidden. |
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
 ## How It Works
@@ -204,9 +204,10 @@ Use the **official ProGuard apply-mapping** from the ATAK/takrepo pipeline when 
 |---------|-------------|
 | **AES-256-GCM switch** | Enable encryption (enter the shared secret first) |
 | **Send Beacon** | Immediately broadcast your current position |
+| **Send Ping** | Broadcast a discovery ping to radios in range |
 | **Long Press for Radio Silence** | Toggle TX block on/off (RX remains active). Active state is highlighted with an orange border. |
 | **Load Selected Repeater** | Arms repeater load mode (yellow border + `Select Channel` label), then writes/tunes selected repeater to the tapped channel |
-| **Settings** | Configure beacon interval, SA Relay, and other plugin options (team color is controlled by ATAK core settings) |
+| **Plugin Settings** | Beacon interval, ping reply, SA Relay, encryption, retries, and **Administration** (slot count/time, distribute to net). Full list also under ATAK **Settings → Tool Preferences → UV-PRO Settings**. |
 
 ### Repeater workflow (KML)
 
@@ -252,9 +253,12 @@ app/src/main/java/com/uvpro/plugin/
 │   ├── Ax25Frame.java            # AX.25 frame builder/parser
 │   └── AprsParser.java           # APRS position parser
 ├── protocol/
-│   ├── UVProPacket.java      # Binary packet format
+│   ├── UVProPacket.java          # Binary packet format
 │   ├── PacketRouter.java         # Routes incoming packets to subsystems
-│   └── PacketFragmenter.java     # Fragment/reassemble large packets
+│   ├── PacketFragmenter.java     # Fragment/reassemble large packets
+│   ├── NetSlotConfig.java        # Ping-reply slots + net distribution
+│   ├── PingReplyScheduler.java   # Slotted GPS ping replies
+│   └── UVProRadioServices.java   # Live radio TX for administration
 ├── cot/
 │   ├── CotBridge.java            # CoT ↔ radio relay
 │   └── CotBuilder.java           # Build CoT events from radio data

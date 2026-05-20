@@ -396,6 +396,7 @@ public class BtConnectionManager {
             outputStream.write(wireBytes);
             outputStream.flush();
             markIoActivity();
+            packetRouter.notifyPacketTransmitted();
             Log.d(TAG, "Sent KISS frame: " + wireBytes.length + " bytes");
             return true;
         } catch (IOException e) {

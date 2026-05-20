@@ -209,6 +209,14 @@ public class SettingsFragment extends PluginPreferenceFragment
                     ? "On — network PLI/markers/routes relayed over radio when connected"
                     : "Off");
         }
+
+        Preference pingReplyPref = findPreference(PREF_PING_REPLY_ENABLED);
+        if (pingReplyPref != null) {
+            boolean on = prefs.getBoolean(PREF_PING_REPLY_ENABLED, true);
+            pingReplyPref.setSummary(on
+                    ? "On — reply to incoming pings with your position"
+                    : "Off");
+        }
     }
 
     @Override

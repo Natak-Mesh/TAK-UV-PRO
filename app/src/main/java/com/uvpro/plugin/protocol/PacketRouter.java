@@ -81,6 +81,9 @@ public class PacketRouter {
 
     public interface PacketCountListener {
         void onPacketReceived();
+
+        /** One AX.25 frame successfully sent over KISS (beacon, chat, CoT, ping, etc.). */
+        void onPacketTransmitted();
     }
 
     public PacketRouter(CotBridge cotBridge, ChatBridge chatBridge,
@@ -97,6 +100,13 @@ public class PacketRouter {
 
     public void setPacketCountListener(PacketCountListener listener) {
         this.packetCountListener = listener;
+    }
+
+    /** Called by {@link com.uvpro.plugin.bluetooth.BtConnectionManager} after a successful KISS TX. */
+    public void notifyPacketTransmitted() {
+        if (packetCountListener != null) {
+            packetCountListener.onPacketTransmitted();
+        }
     }
 
     public void setEncryptionManager(EncryptionManager em) {

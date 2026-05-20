@@ -32,6 +32,12 @@
             android:entries="@array/beacon_interval_labels"
             android:entryValues="@array/beacon_interval_values" />
 
+        <com.atakmap.android.gui.PanCheckBoxPreference
+            android:key="uvpro_ping_reply_enabled"
+            android:title="Send Ping Reply"
+            android:summary="Automatically reply to incoming pings with your position"
+            android:defaultValue="true" />
+
         <com.atakmap.android.gui.PanListPreference
             android:key="uvpro_retry_interval_min"
             android:title="Retry Interval"

@@ -322,137 +322,6 @@
 
         </LinearLayout>
 
-        <!-- ==================== BEACON (interval display) ==================== -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="#FF2D2D2D"
-            android:padding="12dp"
-            android:layout_marginBottom="8dp">
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="BEACON"
-                android:textColor="#FF00BCD4"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:paddingBottom="4dp" />
-
-            <Button
-                android:id="@+id/btn_send_beacon"
-                style="@style/UvproPillButton.Beacon"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
-                android:text="Send Beacon"
-                android:backgroundTint="#FF455A64" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:paddingTop="4dp">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Smart Beacon"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp" />
-
-                <Switch
-                    android:id="@+id/switch_smart_beacon"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" />
-            </LinearLayout>
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Adapts beacon rate to speed and heading changes."
-                android:textColor="#FF888888"
-                android:textSize="11sp"
-                android:paddingTop="2dp"
-                android:paddingBottom="4dp" />
-
-            <Button
-                android:id="@+id/btn_manage_smart_beacon_settings"
-                style="@style/UvproPillButton.Beacon"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Smart Beacon Settings"
-                android:backgroundTint="#FF455A64" />
-
-            <LinearLayout
-                android:id="@+id/row_beacon_interval"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:paddingTop="8dp">
-
-                <TextView
-                    android:id="@+id/text_gps_beacon_interval_label"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="GPS Beacon Interval"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp" />
-
-                <TextView
-                    android:id="@+id/text_beacon_interval"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="60s"
-                    android:textColor="#FF00BCD4"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/btn_manage_plugin_beacon_settings"
-                style="@style/UvproPillButton.Beacon"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Beacon Settings"
-                android:backgroundTint="#FF455A64" />
-        </LinearLayout>
-
-        <!-- ==================== RADIO INFO ==================== -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:background="#FF2D2D2D"
-            android:padding="12dp"
-            android:layout_marginBottom="8dp">
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="RADIO"
-                android:textColor="#FF00BCD4"
-                android:textSize="12sp"
-                android:textStyle="bold"
-                android:paddingBottom="4dp" />
-
-            <Button
-                android:id="@+id/btn_radio_silence"
-                style="@style/UvproPillButton.Beacon"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Long Press for Radio Silence"
-                android:backgroundTint="#FF455A64" />
-        </LinearLayout>
-
         <!-- ==================== CHANNEL CONTROL ==================== -->
         <LinearLayout
             android:layout_width="match_parent"
@@ -470,6 +339,15 @@
                 android:textSize="12sp"
                 android:textStyle="bold"
                 android:paddingBottom="4dp" />
+
+            <Button
+                android:id="@+id/btn_radio_silence"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="Long Press for Radio Silence"
+                android:backgroundTint="#FF455A64" />
 
             <TextView
                 android:layout_width="match_parent"
@@ -704,6 +582,118 @@
                 android:layout_marginTop="8dp"
                 android:text="DIGITAL ONLY MODE"
                 android:enabled="false"
+                android:backgroundTint="#FF455A64" />
+        </LinearLayout>
+
+        <!-- ==================== BEACON (interval display) ==================== -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#FF2D2D2D"
+            android:padding="12dp"
+            android:layout_marginBottom="8dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="BEACON"
+                android:textColor="#FF00BCD4"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:paddingBottom="4dp" />
+
+            <Button
+                android:id="@+id/btn_send_beacon"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp"
+                android:text="Send Beacon"
+                android:backgroundTint="#FF455A64" />
+
+            <Button
+                android:id="@+id/btn_send_ping"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="Send Ping"
+                android:backgroundTint="#FF455A64" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="4dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Smart Beacon"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_smart_beacon"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Adapts beacon rate to speed and heading changes."
+                android:textColor="#FF888888"
+                android:textSize="11sp"
+                android:paddingTop="2dp"
+                android:paddingBottom="4dp" />
+
+            <Button
+                android:id="@+id/btn_manage_smart_beacon_settings"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Smart Beacon Settings"
+                android:backgroundTint="#FF455A64" />
+
+            <LinearLayout
+                android:id="@+id/row_beacon_interval"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="8dp">
+
+                <TextView
+                    android:id="@+id/text_gps_beacon_interval_label"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="GPS Beacon Interval"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/text_beacon_interval"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="60s"
+                    android:textColor="#FF00BCD4"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btn_manage_plugin_beacon_settings"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Beacon Settings"
                 android:backgroundTint="#FF455A64" />
         </LinearLayout>
 

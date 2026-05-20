@@ -793,7 +793,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         getMapView().post(this::updatePacketCount);
     }
 
-    public void incrementTxCount() {
+    @Override
+    public void onPacketTransmitted() {
         txCount++;
         getMapView().post(this::updatePacketCount);
     }
@@ -2450,16 +2451,29 @@ public class UVProDropDownReceiver extends DropDownReceiver
         layout.addView(editRetryMax);
 
         // Ping Reply
+        LinearLayout rowPingReply = new LinearLayout(ctx);
+        rowPingReply.setOrientation(LinearLayout.HORIZONTAL);
+        rowPingReply.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        rowPingReply.setPadding(0, 20, 0, 0);
+
+        TextView labelPingReply = new TextView(ctx);
+        labelPingReply.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        labelPingReply.setText("Send Ping Reply");
+        labelPingReply.setTextColor(0xFFFFFFFF);
+        labelPingReply.setTextSize(13);
+        rowPingReply.addView(labelPingReply);
+
         Switch switchPingReply = new Switch(ctx);
-        switchPingReply.setText("Send Ping Reply");
-        switchPingReply.setTextColor(0xFFCCCCCC);
         switchPingReply.setChecked(SettingsFragment.isPingReplyEnabled(ctx));
-        layout.addView(switchPingReply);
+        rowPingReply.addView(switchPingReply);
+        layout.addView(rowPingReply);
 
         TextView hintPingReply = new TextView(ctx);
         hintPingReply.setText("Automatically reply to incoming pings with your position.");
         hintPingReply.setTextColor(0xFF888888);
-        hintPingReply.setTextSize(12);
+        hintPingReply.setTextSize(11);
+        hintPingReply.setPadding(0, 2, 0, 0);
         layout.addView(hintPingReply);
 
         // SA Relay — moved to bottom
@@ -2510,8 +2524,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     editor.putBoolean(SettingsFragment.PREF_RF_TO_TAK_UPLINK_ENABLED,
                             switchRfToTakUplink.isChecked());
 
-                    prefs.edit().putBoolean(SettingsFragment.PREF_PING_REPLY_ENABLED,
-                            switchPingReply.isChecked()).apply();
+                    editor.putBoolean(SettingsFragment.PREF_PING_REPLY_ENABLED,
+                            switchPingReply.isChecked());
 
                     String newBeacon = editBeacon.getText().toString().trim();
                     if (!newBeacon.isEmpty()) {
@@ -2559,8 +2573,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 cotBridge.sendPositionOverRadio(
                         gp.getLatitude(), gp.getLongitude(),
                         gp.getAltitude(), 0, 0, -1);
-                txCount++;
-                updatePacketCount();
                 appendLog("Beacon sent");
             } else {
                 appendLog("No self-location available");
@@ -2590,8 +2602,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
                                 .createUVProFrame(callsign, 0, packetBytes);
                 byte[] ax25 = frame.encode();
                 btManager.sendKissFrame(ax25);
-                txCount++;
-                updatePacketCount();
                 appendLog("Ping sent");
             } catch (Exception e) {
                 appendLog("Ping failed: " + e.getMessage());

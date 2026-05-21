@@ -8,6 +8,7 @@ import android.util.Log;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.android.maps.PointMapItem;
 import com.uvpro.plugin.cot.CotBridge;
+import com.uvpro.plugin.protocol.RfTxArbitrator;
 import com.uvpro.plugin.ui.SettingsFragment;
 
 /**
@@ -43,6 +44,7 @@ public final class PingReplyScheduler {
         long delayMs = NetSlotConfig.computeReplyDelayMs(context, callsign);
         int slot = NetSlotConfig.computeSlotIndex(callsign, NetSlotConfig.getSlotCount(context));
         cancelPending();
+        RfTxArbitrator.get().setPingReplyPending(true);
         final Context appCtx = context.getApplicationContext();
         pendingReply = () -> transmitReply(appCtx);
         handler.postDelayed(pendingReply, delayMs);
@@ -54,10 +56,12 @@ public final class PingReplyScheduler {
             handler.removeCallbacks(pendingReply);
             pendingReply = null;
         }
+        RfTxArbitrator.get().setPingReplyPending(false);
     }
 
     private void transmitReply(Context context) {
         pendingReply = null;
+        RfTxArbitrator.get().setPingReplyPending(false);
         if (!SettingsFragment.isPingReplyEnabled(context)) {
             return;
         }

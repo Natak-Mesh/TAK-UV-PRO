@@ -95,15 +95,55 @@ public final class AprsInfoFormatter {
         return existing + "\n\nTelemetry (latest)\n  " + line + "\n";
     }
 
-    public static String withContactStats(String body, RadioContact contact) {
-        if (contact == null) {
-            return body;
+    /**
+     * Remove a previously stored Activity block (may contain a stale "Last heard" snapshot).
+     */
+    public static String stripActivitySection(String body) {
+        if (body == null || body.isEmpty()) {
+            return "";
         }
-        StringBuilder sb = new StringBuilder(body != null ? body : "");
+        int idx = body.lastIndexOf("\n\nActivity\n");
+        if (idx >= 0) {
+            return body.substring(0, idx).trim();
+        }
+        return body;
+    }
+
+    /**
+     * Live Activity footer for the details panel — must not be cached on the map item.
+     */
+    public static String formatActivitySection(RadioContact contact) {
+        if (contact == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
         sb.append("\n\nActivity\n");
         sb.append("  Packets: ").append(contact.getPacketCount()).append('\n');
-        sb.append("  Last heard: ").append(contact.getAgeSec()).append(" s ago\n");
+        sb.append("  Last heard: ").append(formatAgeAgo(contact.getAgeSec())).append('\n');
         sb.append("  Status: ").append(contact.getStatus()).append('\n');
         return sb.toString();
+    }
+
+    private static String formatAgeAgo(long ageSec) {
+        if (ageSec < 0) {
+            ageSec = 0;
+        }
+        if (ageSec < 90) {
+            return ageSec + " s ago";
+        }
+        if (ageSec < 3600) {
+            long min = ageSec / 60;
+            long sec = ageSec % 60;
+            if (sec == 0) {
+                return min + " min ago";
+            }
+            return min + " min " + sec + " s ago";
+        }
+        long hours = ageSec / 3600;
+        long min = (ageSec % 3600) / 60;
+        if (min == 0) {
+            return hours + " h ago";
+        }
+        return hours + " h " + min + " min ago";
     }
 }

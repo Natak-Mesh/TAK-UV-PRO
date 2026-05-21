@@ -1603,10 +1603,37 @@ try {
                         + "mph, course=" + String.format("%.0f", course) + "°)");
             }
 
-            cotBridge.sendPositionOverRadio(
-                    gp.getLatitude(), gp.getLongitude(),
-                    gp.getAltitude(), (float) speedMs, (float) course, -1);
-            Log.d(TAG, "Periodic beacon sent");
+            boolean disableAtak = com.uvpro.plugin.ui.SettingsFragment
+                    .isAprsDisableAtakTraffic(beaconCtx);
+            boolean aprsArmed = com.uvpro.plugin.ui.SettingsFragment.isAprsTxArmed(beaconCtx);
+            boolean openRlSent = false;
+            if (!aprsArmed && disableAtak) {
+                // APRS TX was disarmed; restore normal ATAK traffic automatically.
+                com.uvpro.plugin.ui.SettingsFragment.setAprsDisableAtakTraffic(beaconCtx, false);
+                disableAtak = false;
+                Log.d(TAG, "Disable ATAK traffic auto-cleared (APRS TX disarmed)");
+            }
+
+            if (!disableAtak) {
+                cotBridge.sendPositionOverRadio(
+                        gp.getLatitude(), gp.getLongitude(),
+                        gp.getAltitude(), (float) speedMs, (float) course, -1);
+                openRlSent = true;
+                Log.d(TAG, "Periodic OPENRL beacon sent");
+            }
+
+            if (aprsArmed && !openRlSent
+                    && !com.uvpro.plugin.protocol.RfTxArbitrator.get().shouldDeferAprsBeacon()) {
+                boolean aprsOk = com.uvpro.plugin.aprs.AprsOutboundTransmitter.sendPositionBeacon(
+                        beaconCtx, btConnectionManager);
+                if (aprsOk) {
+                    Log.d(TAG, "Periodic APRS beacon sent");
+                }
+            } else if (aprsArmed && openRlSent) {
+                Log.d(TAG, "Periodic APRS beacon skipped (OPENRL sent this cycle)");
+            } else if (aprsArmed) {
+                Log.d(TAG, "Periodic APRS beacon skipped (OPENRL priority)");
+            }
         } catch (Exception e) {
             Log.e(TAG, "Error sending periodic beacon", e);
         }

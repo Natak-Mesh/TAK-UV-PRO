@@ -114,6 +114,14 @@ public class AprsDetailsDropDownReceiver extends DropDownReceiver
                 body = rc.getLastAprsDetailsText();
             }
         }
+        body = AprsInfoFormatter.stripActivitySection(body);
+        if (contactTracker != null) {
+            RadioContact rc = contactTracker.getContact(callsign);
+            if (rc != null) {
+                contactTracker.refreshContactStatus(rc);
+                body = body + AprsInfoFormatter.formatActivitySection(rc);
+            }
+        }
         if (body.isEmpty()) {
             body = "No APRS metadata stored yet.\n\n"
                     + "Wait for the next position packet from this station.";

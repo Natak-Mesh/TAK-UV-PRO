@@ -144,6 +144,13 @@ public class ContactTracker {
         return contacts.get(normalizeCallsign(callsign));
     }
 
+    /** Recompute ACTIVE/STALE/LOST from {@link RadioContact#getLastSeen()} before UI display. */
+    public void refreshContactStatus(RadioContact contact) {
+        if (contact != null) {
+            contact.updateStatus(STALE_THRESHOLD_MS, LOST_THRESHOLD_MS);
+        }
+    }
+
     /**
      * Liveness only: bump {@link RadioContact#touch} if the contact exists
      * (e.g. APRS telemetry with no new coordinates).

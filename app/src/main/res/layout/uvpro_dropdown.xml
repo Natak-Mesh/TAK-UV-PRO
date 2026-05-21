@@ -703,6 +703,134 @@
                 android:backgroundTint="#FF455A64" />
         </LinearLayout>
 
+        <!-- ==================== APRS ==================== -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#FF2D2D2D"
+            android:padding="12dp"
+            android:layout_marginBottom="8dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="APRS"
+                android:textColor="#FF00BCD4"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:paddingBottom="4dp" />
+
+            <Button
+                android:id="@+id/btn_aprs_tx_arm"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp"
+                android:text="Long Press for APRS TX"
+                android:backgroundTint="#FF455A64" />
+
+            <TextView
+                android:id="@+id/text_aprs_status_call"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Call: (not set)"
+                android:textColor="#FFCCCCCC"
+                android:textSize="12sp"
+                android:paddingTop="4dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="4dp"
+                android:paddingBottom="6dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Icon:"
+                    android:textColor="#FFCCCCCC"
+                    android:textSize="12sp"
+                    android:paddingEnd="8dp" />
+
+                <ImageView
+                    android:id="@+id/image_aprs_status_icon"
+                    android:layout_width="32dp"
+                    android:layout_height="32dp"
+                    android:scaleType="fitCenter"
+                    android:contentDescription="APRS icon preview"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/text_aprs_status_icon"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="(not set)"
+                    android:textColor="#FF888888"
+                    android:textSize="12sp"
+                    android:paddingStart="4dp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/text_aprs_status_message"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="APRS Message: No Message"
+                android:textColor="#FFCCCCCC"
+                android:textSize="12sp"
+                android:paddingTop="2dp"
+                android:paddingBottom="4dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="4dp"
+                android:paddingBottom="4dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Disable ATAK traffic"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_aprs_disable_atak"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="When off, ATAK (UV-PRO) beacons share the GPS beacon timer; ATAK traffic wins if both are due."
+                android:textColor="#FF888888"
+                android:textSize="11sp"
+                android:paddingBottom="6dp" />
+
+            <Button
+                android:id="@+id/btn_send_aprs_beacon"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:text="Send APRS Beacon"
+                android:backgroundTint="#FF455A64" />
+
+            <Button
+                android:id="@+id/btn_edit_aprs_settings"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Edit APRS Settings"
+                android:backgroundTint="#FF455A64" />
+        </LinearLayout>
+
         <!-- ==================== ACTIONS ==================== -->
         <LinearLayout
             android:layout_width="match_parent"

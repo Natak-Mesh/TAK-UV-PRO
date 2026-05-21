@@ -3,6 +3,7 @@ package com.uvpro.plugin.cot;
 import android.content.Context;
 import android.content.Intent;
 import android.content.BroadcastReceiver;
+import android.graphics.Bitmap;
 import android.util.Log;
 
 import com.atakmap.android.contact.Contact;
@@ -10,11 +11,13 @@ import com.atakmap.android.contact.Contacts;
 import com.atakmap.android.contact.IndividualContact;
 import com.atakmap.android.contact.PluginConnector;
 import com.atakmap.android.cot.CotMapComponent;
+import com.atakmap.android.util.IconUtilities;
 import com.atakmap.android.ipc.AtakBroadcast;
 import com.atakmap.android.icons.UserIcon;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.comms.CommsLogger;
 import com.atakmap.comms.CommsMapComponent;
+import com.atakmap.coremap.maps.assets.Icon;
 import com.atakmap.coremap.cot.event.CotEvent;
 
 import com.uvpro.plugin.BuildConfig;
@@ -102,6 +105,9 @@ public class CotBridge {
     /** Short de-dupe window so PreSend + COT_PLACED do not double-transmit the same event. */
     private final Map<String, Long> recentLocalRelayKeys = new ConcurrentHashMap<>();
     private static final long LOCAL_RELAY_DEDUPE_MS = 1500L;
+    private static final int APRS_ICON_TARGET_PX = 52;
+    /** Cache upscaled APRS icons by iconset path to avoid per-refresh bitmap work. */
+    private final Map<String, Icon> aprsUpscaledIconCache = new ConcurrentHashMap<>();
 
     /**
      * Inbound network CoT types eligible for SA Relay (network → radio).
@@ -648,6 +654,7 @@ public class CotBridge {
             return;
         }
 
+        com.uvpro.plugin.protocol.RfTxArbitrator.get().markOpenRlTxStart();
         try {
             String xml = event.toString();
             byte[] compressed = CotBuilder.compressCot(xml);
@@ -689,6 +696,8 @@ public class CotBridge {
             }
         } catch (Exception e) {
             Log.e(TAG, "Error sending CoT over radio", e);
+        } finally {
+            com.uvpro.plugin.protocol.RfTxArbitrator.get().markOpenRlTxEnd();
         }
     }
 
@@ -717,6 +726,7 @@ public class CotBridge {
                                       float speed, float course, int battery) {
         if (btManager == null || !btManager.isConnected()) return;
 
+        com.uvpro.plugin.protocol.RfTxArbitrator.get().markOpenRlTxStart();
         try {
             UVProPacket packet = UVProPacket.createGpsPacket(
                     com.uvpro.plugin.util.CallsignUtil.toRadioCallsign(localCallsign),
@@ -743,6 +753,8 @@ public class CotBridge {
             btManager.sendKissFrame(ax25);
         } catch (Exception e) {
             Log.e(TAG, "Error sending position over radio", e);
+        } finally {
+            com.uvpro.plugin.protocol.RfTxArbitrator.get().markOpenRlTxEnd();
         }
     }
 
@@ -866,6 +878,7 @@ public class CotBridge {
             item.setMetaBoolean(META_UVPRO_APRS, true);
             com.atakmap.android.maps.Marker marker =
                     (com.atakmap.android.maps.Marker) item;
+            applyAprsUpscaledIcon(marker, iconPath);
             marker.setShowLabel(true);
             marker.setMinLabelRenderResolution(0.0d);
             marker.setMaxLabelRenderResolution(0.1d);
@@ -873,6 +886,45 @@ public class CotBridge {
             removeAprsFromContactsPane(uid);
         } catch (Exception e) {
             Log.w(TAG, "applyAprsMarkerPresentation failed uid=" + uid, e);
+        }
+    }
+
+    /**
+     * UserIcon PNGs from APRS iconset can render small at some DPI/zoom combinations.
+     * Replace marker icon with an upscaled bitmap for better readability.
+     */
+    private void applyAprsUpscaledIcon(com.atakmap.android.maps.Marker marker, String iconPath) {
+        if (marker == null || iconPath == null || iconPath.isEmpty()) {
+            return;
+        }
+        try {
+            Icon cached = aprsUpscaledIconCache.get(iconPath);
+            if (cached == null) {
+                UserIcon userIcon = UserIcon.GetIconFromIconsetPath(
+                        iconPath, true, this.mapView.getContext());
+                if (userIcon == null || userIcon.getBitMap() == null) {
+                    return;
+                }
+                Bitmap src = userIcon.getBitMap();
+                int srcW = Math.max(1, src.getWidth());
+                int srcH = Math.max(1, src.getHeight());
+                float scale = Math.max(
+                        (float) APRS_ICON_TARGET_PX / (float) srcW,
+                        (float) APRS_ICON_TARGET_PX / (float) srcH);
+                int outW = Math.max(APRS_ICON_TARGET_PX, Math.round(srcW * scale));
+                int outH = Math.max(APRS_ICON_TARGET_PX, Math.round(srcH * scale));
+                Bitmap scaled = Bitmap.createScaledBitmap(src, outW, outH, true);
+                String encoded = IconUtilities.encodeBitmap(scaled);
+                if (encoded == null || encoded.isEmpty()) {
+                    return;
+                }
+                cached = new Icon.Builder().setImageUri(0, encoded).build();
+                aprsUpscaledIconCache.put(iconPath, cached);
+            }
+            marker.setMetaBoolean("adapt_marker_icon", false);
+            marker.setIcon(cached);
+        } catch (Exception e) {
+            Log.w(TAG, "applyAprsUpscaledIcon failed path=" + iconPath, e);
         }
     }
 

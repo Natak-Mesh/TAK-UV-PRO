@@ -10,18 +10,23 @@ import android.preference.PreferenceManager;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CompoundButton;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import com.atakmap.android.chat.ChatManagerMapComponent;
 import com.atakmap.android.gui.PanPreference;
+import com.atakmap.android.ipc.AtakBroadcast;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.android.preference.PluginPreferenceFragment;
+import com.atakmap.app.SettingsActivity;
 import com.uvpro.plugin.protocol.NetSlotConfig;
 import com.uvpro.plugin.protocol.UVProRadioServices;
 
@@ -37,6 +42,8 @@ import com.uvpro.plugin.protocol.UVProRadioServices;
  */
 public class SettingsFragment extends PluginPreferenceFragment
         implements SharedPreferences.OnSharedPreferenceChangeListener {
+    private static final int COLOR_STD_BLUE = 0xFF1976D2;
+    private static final int COLOR_WHITE = 0xFFFFFFFF;
 
     /** Key registered with {@code ToolsPreferenceFragment} in {@link com.uvpro.plugin.UVProMapComponent}. */
     public static final String TOOL_SETTINGS_KEY = "uvproPreference";
@@ -50,6 +57,18 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String PREF_SA_RELAY_ENABLED = "uvpro_sa_relay_enabled";
     public static final String PREF_RF_TO_TAK_UPLINK_ENABLED = "uvpro_rf_to_tak_uplink_enabled";
     public static final String PREF_PING_REPLY_ENABLED = "uvpro_ping_reply_enabled";
+
+    public static final String PREF_APRS_CALLSIGN = "uvpro_aprs_callsign";
+    public static final String PREF_APRS_SSID = "uvpro_aprs_ssid";
+    public static final String PREF_APRS_SYMBOL_TABLE = "uvpro_aprs_symbol_table";
+    public static final String PREF_APRS_SYMBOL_CODE = "uvpro_aprs_symbol_code";
+    public static final String PREF_APRS_ICON_SELECTED = "uvpro_aprs_icon_selected";
+    public static final String PREF_APRS_MESSAGE = "uvpro_aprs_message";
+    public static final String PREF_APRS_TX_ARMED = "uvpro_aprs_tx_armed";
+    public static final String PREF_APRS_DISABLE_ATAK_TRAFFIC = "uvpro_aprs_disable_atak_traffic";
+
+    public static final String KEY_CAT_APRS = "uvpro_cat_aprs";
+    public static final String KEY_APRS_ICON = "uvpro_aprs_icon";
 
     public static final String KEY_CAT_ADMINISTRATION = "uvpro_cat_administration";
     public static final String KEY_ADMIN_LEADERSHIP_WARNING = "uvpro_admin_leadership_warning";
@@ -97,6 +116,7 @@ public class SettingsFragment extends PluginPreferenceFragment
             NetSlotConfig.ensureDefaults(ctx);
         }
         ensureBluetoothDevicesPreference();
+        wireAprsPreferences();
         wireAdministrationPreferences();
     }
 
@@ -256,6 +276,43 @@ public class SettingsFragment extends PluginPreferenceFragment
         updateAdminControlsEnabled();
     }
 
+    private void wireAprsPreferences() {
+        Preference iconPref = findPreference(KEY_APRS_ICON);
+        if (iconPref != null) {
+            updateAprsIconSummary(iconPref);
+            iconPref.setOnPreferenceClickListener(p -> {
+                Context ctx = getContext();
+                if (ctx == null) {
+                    ctx = staticPluginContext;
+                }
+                if (ctx != null) {
+                    com.uvpro.plugin.aprs.AprsIconPickerDialog.show(
+                            ctx, staticPluginContext,
+                            () -> updateAprsIconSummary(iconPref));
+                }
+                return true;
+            });
+        }
+    }
+
+    private void updateAprsIconSummary(Preference iconPref) {
+        Context ctx = getContext();
+        if (ctx == null) {
+            ctx = staticPluginContext;
+        }
+        if (ctx == null || iconPref == null) {
+            return;
+        }
+        if (!isAprsIconSelected(ctx)) {
+            iconPref.setSummary("(not set) — tap to choose");
+            return;
+        }
+        char t = getAprsSymbolTable(ctx);
+        char c = getAprsSymbolCode(ctx);
+        iconPref.setSummary(com.uvpro.plugin.aprs.AprsSymbolCatalog.labelFor(t, c)
+                + " (" + t + c + ")");
+    }
+
     private void styleAdminLeadershipWarning() {
         Preference warning = findPreference(KEY_ADMIN_LEADERSHIP_WARNING);
         if (warning != null) {
@@ -330,6 +387,11 @@ public class SettingsFragment extends PluginPreferenceFragment
             pingReplyPref.setSummary(on
                     ? "On — reply to incoming pings with your position"
                     : "Off");
+        }
+
+        Preference aprsIconPref = findPreference(KEY_APRS_ICON);
+        if (aprsIconPref != null) {
+            updateAprsIconSummary(aprsIconPref);
         }
 
         Context ctx = MapView.getMapView() != null
@@ -477,6 +539,308 @@ public class SettingsFragment extends PluginPreferenceFragment
                 .getString(PREF_ENCRYPTION_PASSPHRASE, "");
     }
 
+    public static String getAprsCallsign(Context context) {
+        String cs = getPrefs(context).getString(PREF_APRS_CALLSIGN, "");
+        return cs != null ? cs.trim().toUpperCase(java.util.Locale.US) : "";
+    }
+
+    public static int getAprsSsid(Context context) {
+        String val = getPrefs(context).getString(PREF_APRS_SSID, "9");
+        try {
+            int ssid = Integer.parseInt(val);
+            if (ssid < 0) {
+                return 0;
+            }
+            if (ssid > 15) {
+                return 15;
+            }
+            return ssid;
+        } catch (NumberFormatException e) {
+            return 9;
+        }
+    }
+
+    public static boolean isAprsIconSelected(Context context) {
+        return getPrefs(context).getBoolean(PREF_APRS_ICON_SELECTED, false);
+    }
+
+    public static char getAprsSymbolTable(Context context) {
+        String s = getPrefs(context).getString(PREF_APRS_SYMBOL_TABLE, "/");
+        if (s == null || s.isEmpty()) {
+            return '/';
+        }
+        return s.charAt(0);
+    }
+
+    public static char getAprsSymbolCode(Context context) {
+        String s = getPrefs(context).getString(PREF_APRS_SYMBOL_CODE, ">");
+        if (s == null || s.isEmpty()) {
+            return '>';
+        }
+        return s.charAt(0);
+    }
+
+    public static String getAprsMessage(Context context) {
+        String m = getPrefs(context).getString(PREF_APRS_MESSAGE, "");
+        return m != null ? m : "";
+    }
+
+    public static boolean isAprsTxArmed(Context context) {
+        return getPrefs(context).getBoolean(PREF_APRS_TX_ARMED, false);
+    }
+
+    public static void setAprsTxArmed(Context context, boolean armed) {
+        getPrefs(context).edit().putBoolean(PREF_APRS_TX_ARMED, armed).apply();
+    }
+
+    public static boolean isAprsDisableAtakTraffic(Context context) {
+        return getPrefs(context).getBoolean(PREF_APRS_DISABLE_ATAK_TRAFFIC, false);
+    }
+
+    public static void setAprsDisableAtakTraffic(Context context, boolean disabled) {
+        getPrefs(context).edit().putBoolean(PREF_APRS_DISABLE_ATAK_TRAFFIC, disabled).apply();
+    }
+
+    /** Ham base call: 1 letter + digit + 1–3 letters, or 2 letters + digit + 1–3 letters. */
+    public static boolean isValidAprsCallsign(String baseCall) {
+        if (baseCall == null) {
+            return false;
+        }
+        String c = baseCall.trim().toUpperCase(java.util.Locale.US);
+        return c.matches("^[A-Z][0-9][A-Z]{1,3}$")
+                || c.matches("^[A-Z]{2}[0-9][A-Z]{1,3}$");
+    }
+
+    public static String formatAprsDisplayCall(Context context) {
+        String base = getAprsCallsign(context);
+        if (!isValidAprsCallsign(base)) {
+            return "(not set)";
+        }
+        int ssid = getAprsSsid(context);
+        return ssid > 0 ? base + "-" + ssid : base;
+    }
+
+    /**
+     * Opens ATAK Tool Preferences for this plugin (Settings → Tool Preferences → UV-PRO).
+     */
+    public static void openToolPreferences(Context context) {
+        launchPluginSettings(TOOL_SETTINGS_KEY, null, context);
+    }
+
+    /**
+     * Opens plugin settings scrolled to the APRS category.
+     */
+    public static void openAprsSettings(Context context) {
+        launchPluginSettings(TOOL_SETTINGS_KEY, KEY_CAT_APRS, context);
+    }
+
+    private static void launchPluginSettings(String toolKey, String prefKey, Context context) {
+        try {
+            SettingsActivity.start(toolKey, prefKey);
+        } catch (Exception e) {
+            android.util.Log.w("UVPro.Settings", "launchPluginSettings failed: " + e.getMessage());
+            if (context != null) {
+                try {
+                    android.content.Intent intent = new android.content.Intent(
+                            "com.atakmap.app.ADVANCED_SETTINGS");
+                    intent.putExtra("toolkey", toolKey);
+                    if (prefKey != null) {
+                        intent.putExtra("prefkey", prefKey);
+                    }
+                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                    AtakBroadcast.getInstance().sendBroadcast(intent);
+                } catch (Exception e2) {
+                    Toast.makeText(context,
+                            "Open Settings → Tool Preferences → UV-PRO Settings",
+                            Toast.LENGTH_LONG).show();
+                }
+            }
+        }
+    }
+
+    /**
+     * APRS outbound fields for the in-panel Plugin Settings dialog.
+     */
+    public static final class AprsSettingsUi {
+        public EditText editCallsign;
+        public Spinner spinnerSsid;
+        public ImageView iconPreview;
+        public TextView iconNotSet;
+        public EditText editMessage;
+        public String[] ssidValues;
+    }
+
+    /**
+     * Adds APRS section to the Plugin Settings dialog (same window as Actions → Plugin Settings).
+     */
+    public static AprsSettingsUi appendAprsSettingsSection(Context mapCtx, Context pluginCtx,
+                                                           LinearLayout layout) {
+        AprsSettingsUi ui = new AprsSettingsUi();
+        if (mapCtx == null || layout == null) {
+            return ui;
+        }
+
+        TextView header = new TextView(mapCtx);
+        header.setText("\nAPRS");
+        header.setTextColor(0xFF00BCD4);
+        header.setTextSize(14);
+        header.setTypeface(Typeface.DEFAULT_BOLD);
+        layout.addView(header);
+
+        TextView labelCall = new TextView(mapCtx);
+        labelCall.setText("FCC Call Sign");
+        labelCall.setTextColor(0xFFAAAAAA);
+        layout.addView(labelCall);
+        ui.editCallsign = new EditText(mapCtx);
+        ui.editCallsign.setText(getAprsCallsign(mapCtx));
+        ui.editCallsign.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        ui.editCallsign.setTextColor(0xFFFFFFFF);
+        layout.addView(ui.editCallsign);
+
+        TextView labelSsid = new TextView(mapCtx);
+        labelSsid.setText("\nAPRS suffix (SSID)");
+        labelSsid.setTextColor(0xFFAAAAAA);
+        layout.addView(labelSsid);
+        ui.spinnerSsid = new Spinner(mapCtx);
+        if (pluginCtx != null) {
+            android.content.res.Resources res = pluginCtx.getResources();
+            String pkg = pluginCtx.getPackageName();
+            int labelsId = res.getIdentifier("aprs_ssid_labels", "array", pkg);
+            int valuesId = res.getIdentifier("aprs_ssid_values", "array", pkg);
+            if (labelsId != 0 && valuesId != 0) {
+                String[] labels = res.getStringArray(labelsId);
+                ui.ssidValues = res.getStringArray(valuesId);
+                ArrayAdapter<String> adapter = new ArrayAdapter<>(mapCtx,
+                        android.R.layout.simple_spinner_item, labels) {
+                    @Override
+                    public View getView(int position, View convertView, ViewGroup parent) {
+                        View v = super.getView(position, convertView, parent);
+                        if (v instanceof TextView) {
+                            TextView tv = (TextView) v;
+                            tv.setTextColor(COLOR_WHITE);
+                            tv.setBackgroundColor(COLOR_STD_BLUE);
+                            tv.setPadding(dp(mapCtx, 10), dp(mapCtx, 8),
+                                    dp(mapCtx, 10), dp(mapCtx, 8));
+                        }
+                        return v;
+                    }
+
+                    @Override
+                    public View getDropDownView(int position, View convertView, ViewGroup parent) {
+                        View v = super.getDropDownView(position, convertView, parent);
+                        if (v instanceof TextView) {
+                            TextView tv = (TextView) v;
+                            tv.setTextColor(COLOR_WHITE);
+                            tv.setBackgroundColor(COLOR_STD_BLUE);
+                            tv.setPadding(dp(mapCtx, 12), dp(mapCtx, 10),
+                                    dp(mapCtx, 12), dp(mapCtx, 10));
+                        }
+                        return v;
+                    }
+                };
+                adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+                ui.spinnerSsid.setAdapter(adapter);
+                ui.spinnerSsid.setBackgroundColor(COLOR_STD_BLUE);
+                int ssid = getAprsSsid(mapCtx);
+                if (ssid >= 0 && ssid < labels.length) {
+                    ui.spinnerSsid.setSelection(ssid);
+                }
+            }
+        }
+        layout.addView(ui.spinnerSsid);
+
+        TextView labelIcon = new TextView(mapCtx);
+        labelIcon.setText("\nAPRS icon");
+        labelIcon.setTextColor(0xFFAAAAAA);
+        layout.addView(labelIcon);
+
+        LinearLayout iconRow = new LinearLayout(mapCtx);
+        iconRow.setOrientation(LinearLayout.HORIZONTAL);
+        iconRow.setGravity(Gravity.CENTER_VERTICAL);
+        ui.iconPreview = new ImageView(mapCtx);
+        int iconPx = (int) (40 * mapCtx.getResources().getDisplayMetrics().density);
+        LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(iconPx, iconPx);
+        iconLp.setMargins(0, 0, 16, 0);
+        ui.iconPreview.setLayoutParams(iconLp);
+        ui.iconPreview.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        iconRow.addView(ui.iconPreview);
+        ui.iconNotSet = new TextView(mapCtx);
+        ui.iconNotSet.setText("(not set)");
+        ui.iconNotSet.setTextColor(0xFF888888);
+        ui.iconNotSet.setTextSize(12);
+        iconRow.addView(ui.iconNotSet);
+        layout.addView(iconRow);
+
+        Button btnPickIcon = new Button(mapCtx);
+        btnPickIcon.setText("Choose APRS Icon");
+        btnPickIcon.setTextColor(COLOR_WHITE);
+        btnPickIcon.setBackgroundColor(COLOR_STD_BLUE);
+        btnPickIcon.setOnClickListener(v ->
+                com.uvpro.plugin.aprs.AprsIconPickerDialog.show(
+                        mapCtx, pluginCtx, () ->
+                        refreshAprsIconPreviewInDialog(mapCtx, pluginCtx, ui)));
+        layout.addView(btnPickIcon);
+        refreshAprsIconPreviewInDialog(mapCtx, pluginCtx, ui);
+
+        TextView labelMsg = new TextView(mapCtx);
+        labelMsg.setText("\nAPRS message (comment on position)");
+        labelMsg.setTextColor(0xFFAAAAAA);
+        layout.addView(labelMsg);
+        ui.editMessage = new EditText(mapCtx);
+        ui.editMessage.setText(getAprsMessage(mapCtx));
+        ui.editMessage.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        ui.editMessage.setTextColor(0xFFFFFFFF);
+        layout.addView(ui.editMessage);
+
+        return ui;
+    }
+
+    private static void refreshAprsIconPreviewInDialog(Context mapCtx, Context pluginCtx,
+                                                         AprsSettingsUi ui) {
+        if (ui == null || ui.iconPreview == null || ui.iconNotSet == null) {
+            return;
+        }
+        if (!isAprsIconSelected(mapCtx)) {
+            ui.iconPreview.setVisibility(View.GONE);
+            ui.iconPreview.setImageDrawable(null);
+            ui.iconNotSet.setVisibility(View.VISIBLE);
+            return;
+        }
+        android.graphics.Bitmap bmp = com.uvpro.plugin.aprs.AprsIconPreviewLoader
+                .loadSelectedIconBitmap(mapCtx, pluginCtx);
+        if (bmp != null) {
+            ui.iconPreview.setImageBitmap(bmp);
+            ui.iconPreview.setVisibility(View.VISIBLE);
+            ui.iconNotSet.setVisibility(View.GONE);
+        } else {
+            ui.iconPreview.setVisibility(View.GONE);
+            ui.iconNotSet.setVisibility(View.VISIBLE);
+            ui.iconNotSet.setText("(not set)");
+        }
+    }
+
+    public static void saveAprsSettingsFromUi(Context ctx, AprsSettingsUi ui) {
+        if (ctx == null || ui == null) {
+            return;
+        }
+        SharedPreferences.Editor editor = getPrefs(ctx).edit();
+        if (ui.editCallsign != null) {
+            editor.putString(PREF_APRS_CALLSIGN,
+                    ui.editCallsign.getText().toString().trim().toUpperCase(java.util.Locale.US));
+        }
+        if (ui.spinnerSsid != null && ui.ssidValues != null) {
+            int pos = ui.spinnerSsid.getSelectedItemPosition();
+            if (pos >= 0 && pos < ui.ssidValues.length) {
+                editor.putString(PREF_APRS_SSID, ui.ssidValues[pos]);
+            }
+        }
+        if (ui.editMessage != null) {
+            editor.putString(PREF_APRS_MESSAGE, ui.editMessage.getText().toString());
+        }
+        editor.apply();
+    }
+
     /**
      * Administration block for ping-reply slot net config (Tools prefs or plugin dialog).
      */
@@ -547,7 +911,8 @@ public class SettingsFragment extends PluginPreferenceFragment
 
         ui.btnDistribute = new Button(ctx);
         ui.btnDistribute.setText("Distribute to net");
-        ui.btnDistribute.setTextColor(0xFFFFFFFF);
+        ui.btnDistribute.setTextColor(COLOR_WHITE);
+        ui.btnDistribute.setBackgroundColor(COLOR_STD_BLUE);
         ui.btnDistribute.setOnClickListener(v -> distributeNetSlotsFromUi(ctx, ui));
         layout.addView(ui.btnDistribute);
 
@@ -646,5 +1011,12 @@ public class SettingsFragment extends PluginPreferenceFragment
         } else {
             Toast.makeText(ctx, "Failed to send slot config over radio", Toast.LENGTH_LONG).show();
         }
+    }
+
+    private static int dp(Context ctx, int value) {
+        if (ctx == null) {
+            return value;
+        }
+        return Math.round(value * ctx.getResources().getDisplayMetrics().density);
     }
 }

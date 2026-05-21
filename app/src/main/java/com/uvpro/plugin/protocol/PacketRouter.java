@@ -142,6 +142,7 @@ public class PacketRouter {
 
         // Check if this is an UV-PRO custom packet
         if ("OPENRL".equals(destCall)) {
+            RfTxArbitrator.get().markInboundOpenRl();
             byte[] infoField = frame.getInfoField();
 
             // Decrypt if encryption is enabled
@@ -331,7 +332,6 @@ public class PacketRouter {
             final String uid = "ANDROID-" + normalized;
             String aprsDetails = AprsInfoFormatter.formatPosition(mapCall, pos);
             if (rcAprs != null) {
-                aprsDetails = AprsInfoFormatter.withContactStats(aprsDetails, rcAprs);
                 rcAprs.setLastAprsDetailsText(aprsDetails);
             }
             cotBridge.setAprsMarkerDetails(uid, aprsDetails);
@@ -375,9 +375,9 @@ public class PacketRouter {
                                 c.getLongitude(), c.getAltitude(), c.getSpeed(),
                                 c.getCourse(), aprsTeam, symTab, symCode,
                                 telemSummary);
-                        String details = AprsInfoFormatter.withTelemetry(
-                                c.getLastAprsDetailsText(), telem);
-                        details = AprsInfoFormatter.withContactStats(details, c);
+                        String details = AprsInfoFormatter.stripActivitySection(
+                                c.getLastAprsDetailsText());
+                        details = AprsInfoFormatter.withTelemetry(details, telem);
                         c.setLastAprsDetailsText(details);
                         cotBridge.setAprsMarkerDetails("ANDROID-" + mapCall.trim().toUpperCase(Locale.US),
                                 details);

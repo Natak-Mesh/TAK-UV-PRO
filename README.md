@@ -22,6 +22,7 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Contact Tracking** | ✅ Working | Radios in range tracked as contacts with callsign, last-seen time, and position. |
 | **Map Repeater Load/Tune (KML)** | ✅ Working | Tap a repeater placemark from imported KML, arm **Load Selected Repeater**, then tap a destination channel to program/tune it (TX/RX + CTCSS/DCS). |
 | **TX Power (LOW / MED / HIGH)** | ✅ Working | **TX Power** button in the Radio panel (left of Dual Watch) cycles transmit power and writes both device settings and per-channel RF memory (digital/APRS + active VFO channels). Syncs from the radio on connect. |
+| **APRS TX mode (plugin-generated over KISS)** | ✅ Working | Optional APRS beacon TX runs in parallel with UV-PRO traffic. Requires FCC call + icon in settings, supports manual **Send APRS Beacon**, and can temporarily disable ATAK position beacons when desired. |
 | **Channel grid refresh** | ✅ Working | After long-press manual channel edit/save, the channel grid re-reads that slot from the radio so labels/frequencies match what was programmed. |
 | **Bluetooth Auto-Reconnect** | ✅ Working | Three-strategy SPP connection with exponential backoff reconnect (up to 5 attempts). |
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
@@ -205,12 +206,14 @@ Use the **official ProGuard apply-mapping** from the ATAK/takrepo pipeline when 
 | Control | What It Does |
 |---------|-------------|
 | **AES-256-GCM switch** | Enable encryption (enter the shared secret first) |
-| **Send Beacon** | Immediately broadcast your current position |
+| **Send Beacon** | Immediately broadcast your current ATAK/UV-PRO position beacon |
 | **Send Ping** | Broadcast a discovery ping to radios in range |
+| **Long Press for APRS TX** | Arm/disarm APRS position TX (manual + scheduled APRS beacons only when armed) |
+| **Send APRS Beacon** | Manually transmit one APRS position beacon now |
 | **Long Press for Radio Silence** | Toggle TX block on/off (RX remains active). Active state is highlighted with an orange border. |
 | **Load Selected Repeater** | Arms repeater load mode (yellow border + `Select Channel` label), then writes/tunes selected repeater to the tapped channel |
 | **TX Power** | Tap to cycle **LOW → MED → HIGH**; updates global VFO settings and channel power flags on the digital/APRS channel plus active VFO slots |
-| **Plugin Settings** | Beacon interval, ping reply, SA Relay, encryption, retries, and **Administration** (slot count/time, distribute to net). Full list also under ATAK **Settings → Tool Preferences → UV-PRO Settings**. |
+| **Plugin Settings** | APRS (FCC call, SSID, icon grid picker, message), Beacon, ping reply, SA Relay, encryption, retries, and **Administration** (slot count/time, distribute to net). Full list also under ATAK **Settings → Tool Preferences → UV-PRO Settings**. |
 
 ### Repeater workflow (KML)
 

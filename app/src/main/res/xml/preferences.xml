@@ -59,6 +59,44 @@
     </PreferenceCategory>
 
     <PreferenceCategory
+        android:key="uvpro_cat_aprs"
+        android:title="APRS">
+
+        <com.atakmap.android.gui.PanEditTextPreference
+            android:key="uvpro_aprs_callsign"
+            android:title="FCC Call Sign"
+            android:summary="Ham radio call (required for APRS TX when armed)"
+            android:defaultValue=""
+            android:dialogTitle="FCC Call Sign"
+            android:inputType="textCapCharacters" />
+
+        <com.atakmap.android.gui.PanListPreference
+            android:key="uvpro_aprs_ssid"
+            android:title="APRS suffix (SSID)"
+            android:summary="Standard APRS SSID 0–15"
+            android:defaultValue="9"
+            android:dialogTitle="APRS suffix"
+            android:entries="@array/aprs_ssid_labels"
+            android:entryValues="@array/aprs_ssid_values" />
+
+        <Preference
+            android:key="uvpro_aprs_icon"
+            android:title="APRS icon"
+            android:summary="Map symbol for your position beacons"
+            android:persistent="false"
+            android:selectable="true" />
+
+        <com.atakmap.android.gui.PanEditTextPreference
+            android:key="uvpro_aprs_message"
+            android:title="APRS message"
+            android:summary="Comment text appended to position reports"
+            android:defaultValue=""
+            android:dialogTitle="APRS message"
+            android:inputType="text" />
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
         android:key="uvpro_cat_security"
         android:title="Security">
 

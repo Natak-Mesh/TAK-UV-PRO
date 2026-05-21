@@ -147,6 +147,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Switch switchSmartBeacon;
     private Button btnManageSmartBeaconSettings;
     private Button btnManagePluginBeaconSettings;
+    private Button btnAprsTxArm;
+    private TextView textAprsStatusCall;
+    private android.widget.ImageView imageAprsStatusIcon;
+    private TextView textAprsStatusIcon;
+    private TextView textAprsStatusMessage;
+    private Switch switchAprsDisableAtak;
+    private Button btnSendAprsBeacon;
+    private Button btnEditAprsSettings;
     private TextView teamColorText;
     private Button btnScan;
     private Button btnDisconnect;
@@ -356,6 +364,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
         switchSmartBeacon = rootView.findViewById(getId("switch_smart_beacon"));
         btnManageSmartBeaconSettings = rootView.findViewById(getId("btn_manage_smart_beacon_settings"));
         btnManagePluginBeaconSettings = rootView.findViewById(getId("btn_manage_plugin_beacon_settings"));
+        btnAprsTxArm = rootView.findViewById(getId("btn_aprs_tx_arm"));
+        textAprsStatusCall = rootView.findViewById(getId("text_aprs_status_call"));
+        imageAprsStatusIcon = rootView.findViewById(getId("image_aprs_status_icon"));
+        textAprsStatusIcon = rootView.findViewById(getId("text_aprs_status_icon"));
+        textAprsStatusMessage = rootView.findViewById(getId("text_aprs_status_message"));
+        switchAprsDisableAtak = rootView.findViewById(getId("switch_aprs_disable_atak"));
+        btnSendAprsBeacon = rootView.findViewById(getId("btn_send_aprs_beacon"));
+        btnEditAprsSettings = rootView.findViewById(getId("btn_edit_aprs_settings"));
         teamColorText = rootView.findViewById(getId("text_team_color"));
         btnScan = rootView.findViewById(getId("btn_scan"));
         btnDisconnect = rootView.findViewById(getId("btn_disconnect"));
@@ -475,6 +491,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnManagePluginBeaconSettings != null) {
             btnManagePluginBeaconSettings.setOnClickListener(v -> showSettingsDialog());
         }
+        wireAprsSection();
 
         if (btnLoadSelectedRepeater != null) {
             btnLoadSelectedRepeater.setOnClickListener(v -> armSelectedRepeaterLoad());
@@ -834,6 +851,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             clearDigitalOnlyStateUiOnly();
         }
         updateRadioSilenceButtonUi();
+        updateAprsSectionUi();
         updateDigitalOnlyButtonUi();
         updateTxPowerButtonUi();
         if (!connected) {
@@ -1061,6 +1079,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         } catch (Exception ignored) {
         }
         updateRadioSilenceButtonUi();
+        updateAprsSectionUi();
     }
 
     private void updateRadioSilenceButtonUi() {
@@ -2471,10 +2490,20 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 com.uvpro.plugin.ui.BluetoothDevicesManagement.show(ctx, null));
         layout.addView(btnBluetoothDevices);
 
+        SettingsFragment.AprsSettingsUi aprsUi =
+                SettingsFragment.appendAprsSettingsSection(ctx, pluginContext, layout);
+
+        TextView headerBeacon = new TextView(ctx);
+        headerBeacon.setText("\nBeacon");
+        headerBeacon.setTextColor(0xFF00BCD4);
+        headerBeacon.setTextSize(14);
+        headerBeacon.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        layout.addView(headerBeacon);
+
         // Beacon interval field (greyed out when smart beacon is on — toggle is on main panel)
         boolean smartBeaconOn = SmartBeacon.isEnabled(ctx);
         TextView labelBeacon = new TextView(ctx);
-        labelBeacon.setText("\nGPS Beacon Interval (seconds)");
+        labelBeacon.setText("GPS Beacon Interval (seconds)");
         labelBeacon.setTextColor(smartBeaconOn ? 0xFF666666 : 0xFFAAAAAA);
         layout.addView(labelBeacon);
         EditText editBeacon = new EditText(ctx);
@@ -2541,11 +2570,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
         hintPingReply.setPadding(0, 2, 0, 0);
         layout.addView(hintPingReply);
 
-        // SA Relay — moved to bottom
-        TextView labelSaRelay = new TextView(ctx);        labelSaRelay.setText("\nSA Relay");
-        labelSaRelay.setTextColor(0xFFFFFFFF);
-        labelSaRelay.setTextSize(16);
-        layout.addView(labelSaRelay);
+        TextView headerSaRelay = new TextView(ctx);
+        headerSaRelay.setText("\nSA Relay");
+        headerSaRelay.setTextColor(0xFF00BCD4);
+        headerSaRelay.setTextSize(14);
+        headerSaRelay.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        layout.addView(headerSaRelay);
         Switch switchSaRelay = new Switch(ctx);
         switchSaRelay.setText("Re-broadcast TAK network positions over radio");
         switchSaRelay.setTextColor(0xFFCCCCCC);
@@ -2614,6 +2644,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
                     SettingsFragment.saveAdministrationFromUi(ctx, adminUi);
                     SettingsFragment.refreshAdministrationStatus(ctx, adminUi);
+                    SettingsFragment.saveAprsSettingsFromUi(ctx, aprsUi);
 
                     editor.apply();
                     appendLog("Settings saved");
@@ -2621,7 +2652,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     appendLog("RF -> TAK Uplink "
                             + (switchRfToTakUplink.isChecked() ? "enabled" : "disabled"));
                     if (rootView != null) {
-                        getMapView().post(() -> updateStatusFields());
+                        getMapView().post(() -> {
+                            updateStatusFields();
+                            updateAprsSectionUi();
+                        });
                     }
                     try {
                         AtakBroadcast.getInstance().sendBroadcast(
@@ -2635,6 +2669,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private void sendManualBeacon() {
         if (cotBridge != null && btManager.isConnected()) {
+            Context ctx = getMapView().getContext();
+            if (SettingsFragment.isAprsDisableAtakTraffic(ctx)) {
+                appendLog("OPENRL beacon skipped (Disable ATAK traffic)");
+                return;
+            }
             // Get self location from ATAK
             com.atakmap.android.maps.MapItem self =
                     getMapView().getSelfMarker();
@@ -2650,6 +2689,140 @@ public class UVProDropDownReceiver extends DropDownReceiver
             }
         } else {
             appendLog("Not connected");
+        }
+    }
+
+    private void wireAprsSection() {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (btnAprsTxArm != null) {
+            btnAprsTxArm.setOnClickListener(v ->
+                    Toast.makeText(ctx, "Long press to arm/disarm APRS TX.",
+                            Toast.LENGTH_SHORT).show());
+            btnAprsTxArm.setOnLongClickListener(v -> {
+                if (ctx == null) {
+                    return true;
+                }
+                boolean armed = SettingsFragment.isAprsTxArmed(ctx);
+                if (!armed && !SettingsFragment.isValidAprsCallsign(
+                        SettingsFragment.getAprsCallsign(ctx))) {
+                    Toast.makeText(ctx,
+                            "Set a valid APRS callsign in Edit APRS Settings first.",
+                            Toast.LENGTH_LONG).show();
+                    return true;
+                }
+                boolean nextArmed = !armed;
+                SettingsFragment.setAprsTxArmed(ctx, nextArmed);
+                if (!nextArmed && SettingsFragment.isAprsDisableAtakTraffic(ctx)) {
+                    // Safety: if APRS TX is disarmed, ATAK traffic must not remain disabled.
+                    SettingsFragment.setAprsDisableAtakTraffic(ctx, false);
+                }
+                updateAprsSectionUi();
+                appendLog(!armed ? "APRS TX armed" : "APRS TX disarmed");
+                return true;
+            });
+        }
+        if (switchAprsDisableAtak != null && ctx != null) {
+            switchAprsDisableAtak.setOnCheckedChangeListener((buttonView, isChecked) ->
+                    SettingsFragment.setAprsDisableAtakTraffic(ctx, isChecked));
+        }
+        if (btnSendAprsBeacon != null) {
+            btnSendAprsBeacon.setOnClickListener(v -> sendManualAprsBeacon());
+        }
+        if (btnEditAprsSettings != null) {
+            btnEditAprsSettings.setOnClickListener(v -> showSettingsDialog());
+        }
+        updateAprsSectionUi();
+    }
+
+    private void updateAprsSectionUi() {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        if (textAprsStatusCall != null) {
+            textAprsStatusCall.setText("Call: " + SettingsFragment.formatAprsDisplayCall(ctx));
+        }
+        if (textAprsStatusMessage != null) {
+            String msg = SettingsFragment.getAprsMessage(ctx);
+            if (msg != null) {
+                msg = msg.trim();
+            }
+            if (msg == null || msg.isEmpty()) {
+                textAprsStatusMessage.setText("APRS Message: No Message");
+            } else {
+                textAprsStatusMessage.setText("APRS Message: " + msg);
+            }
+        }
+        if (imageAprsStatusIcon != null && textAprsStatusIcon != null) {
+            if (!com.uvpro.plugin.aprs.AprsIconPreviewLoader.isIconSelected(ctx)) {
+                imageAprsStatusIcon.setVisibility(android.view.View.GONE);
+                imageAprsStatusIcon.setImageDrawable(null);
+                textAprsStatusIcon.setVisibility(android.view.View.VISIBLE);
+                textAprsStatusIcon.setText("(not set)");
+            } else {
+                android.graphics.Bitmap bmp =
+                        com.uvpro.plugin.aprs.AprsIconPreviewLoader.loadSelectedIconBitmap(
+                                ctx, pluginContext);
+                if (bmp != null) {
+                    imageAprsStatusIcon.setImageBitmap(bmp);
+                    imageAprsStatusIcon.setVisibility(android.view.View.VISIBLE);
+                    textAprsStatusIcon.setVisibility(android.view.View.GONE);
+                } else {
+                    imageAprsStatusIcon.setVisibility(android.view.View.GONE);
+                    imageAprsStatusIcon.setImageDrawable(null);
+                    textAprsStatusIcon.setVisibility(android.view.View.VISIBLE);
+                    textAprsStatusIcon.setText("(not set)");
+                }
+            }
+        }
+        if (switchAprsDisableAtak != null) {
+            boolean aprsArmed = SettingsFragment.isAprsTxArmed(ctx);
+            boolean disableAtak = SettingsFragment.isAprsDisableAtakTraffic(ctx);
+            if (!aprsArmed && disableAtak) {
+                // Self-heal stale state from prior sessions/builds.
+                SettingsFragment.setAprsDisableAtakTraffic(ctx, false);
+                disableAtak = false;
+            }
+            switchAprsDisableAtak.setOnCheckedChangeListener(null);
+            switchAprsDisableAtak.setChecked(disableAtak);
+            switchAprsDisableAtak.setOnCheckedChangeListener((buttonView, isChecked) ->
+                    SettingsFragment.setAprsDisableAtakTraffic(ctx, isChecked));
+        }
+        if (btnAprsTxArm != null) {
+            boolean armed = SettingsFragment.isAprsTxArmed(ctx);
+            btnAprsTxArm.setBackgroundTintList(null);
+            android.graphics.drawable.GradientDrawable bg =
+                    new android.graphics.drawable.GradientDrawable();
+            bg.setCornerRadius(24f);
+            bg.setColor(0xFF455A64);
+            if (armed) {
+                bg.setStroke(4, 0xFFFF9800);
+            }
+            btnAprsTxArm.setBackground(bg);
+            btnAprsTxArm.setText(armed
+                    ? "Long Press for APRS TX (ARMED)"
+                    : "Long Press for APRS TX");
+        }
+    }
+
+    private void sendManualAprsBeacon() {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        if (!SettingsFragment.isAprsTxArmed(ctx)) {
+            appendLog("Arm APRS TX first (long press)");
+            return;
+        }
+        if (btManager == null || !btManager.isConnected()) {
+            appendLog("Not connected");
+            return;
+        }
+        if (com.uvpro.plugin.aprs.AprsOutboundTransmitter
+                .sendPositionBeacon(ctx, btManager, false)) {
+            appendLog("APRS beacon sent");
+        } else {
+            appendLog("APRS beacon failed (OPENRL active / callsign / icon / location / silence)");
         }
     }
 

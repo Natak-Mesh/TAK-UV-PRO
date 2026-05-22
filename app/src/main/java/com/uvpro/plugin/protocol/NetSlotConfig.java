@@ -94,6 +94,18 @@ public final class NetSlotConfig {
         return (long) (index * slotSec * 1000.0f);
     }
 
+    /**
+     * Short outbound stagger for operator-initiated group/contact-list CoT (not the full
+     * ping-reply slot span). Spreads collisions when several leaders sync groups at once.
+     */
+    public static long computeGroupSyncStaggerMs(Context context, String callsign) {
+        int buckets = 8;
+        int index = computeSlotIndex(callsign, buckets);
+        float slotSec = getSlotTimeSec(context);
+        long stagger = (long) ((index % 4) * (slotSec * 250.0f));
+        return Math.min(stagger, 1500L);
+    }
+
     public static byte[] encodePayload(int slotCount, float slotTimeSec, int sequence, String issuerCallsign) {
         int tenths = Math.round(clampSlotTime(slotTimeSec) * 10f);
         byte[] call = padCallsign(issuerCallsign);

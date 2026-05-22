@@ -556,6 +556,13 @@ public class PacketRouter {
 
             Contacts contacts = Contacts.getInstance();
             Contact existing = contacts.getContactByUuid(uid);
+            if (!(existing instanceof IndividualContact) && normalized != null
+                    && !normalized.isEmpty()) {
+                Contact byCallsign = contacts.getFirstContactWithCallsign(normalized);
+                if (byCallsign instanceof IndividualContact) {
+                    existing = byCallsign;
+                }
+            }
 
             if (existing instanceof IndividualContact) {
                 IndividualContact ic = (IndividualContact) existing;

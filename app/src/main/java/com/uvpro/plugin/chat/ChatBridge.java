@@ -299,6 +299,7 @@ public class ChatBridge {
             }
 
             boolean peerThreadResolved = false;
+            boolean keepGroupThread = isLikelyGroupConversationThread(chatRoom);
             if (rfDestinationLooksLikeSelf(chatRoom.trim())
                     && senderUid != null && !senderUid.isEmpty()
                     && (selfUid == null || !selfUid.equals(senderUid))) {
@@ -308,13 +309,14 @@ public class ChatBridge {
                 peerThreadResolved = true;
             }
 
-            if (!peerThreadResolved && selfUid != null && destUid != null
+            if (!peerThreadResolved && !keepGroupThread && selfUid != null && destUid != null
                     && selfUid.equals(destUid)
                     && senderUid != null && !selfUid.equals(senderUid)) {
                 Log.d(TAG, "Inbound DM: destination is self — thread id → remote " + senderUid
                         + " (RF room was " + chatRoom + ")");
                 chatRoom = senderUid;
-            } else if (!peerThreadResolved && senderUid != null && !senderUid.isEmpty()
+            } else if (!peerThreadResolved && !keepGroupThread
+                    && senderUid != null && !senderUid.isEmpty()
                     && (selfUid == null || !selfUid.equals(senderUid))) {
                 Log.d(TAG, "Inbound DM: thread id " + chatRoom + " → " + senderUid
                         + " (match contact chat)");
@@ -327,6 +329,12 @@ public class ChatBridge {
 
         Log.d(TAG, "Injecting radio message (mid=" + radioPacketMessageId + "): "
                 + fromCallsign + " → " + chatRoom + ": " + message);
+
+        if (GeoChatContactListHelper.isContactListUpdateMessage(message)
+                && radioPacketMessageId > 0) {
+            Log.w(TAG, "Received compact [UPDATED CONTACTS] without hierarchy — "
+                    + "group sync requires full CoT over RF; ask sender to update plugin");
+        }
 
         // Maintain a plugin unread counter for Contacts icon badge.
         // (Native GeoChat unread tracking is not reliably reflected for plugin contacts on all builds.)
@@ -390,6 +398,24 @@ public class ChatBridge {
         return false;
     }
 
+    private boolean isLikelyGroupConversationThread(String threadIdRaw) {
+        if (threadIdRaw == null) {
+            return false;
+        }
+        String threadId = threadIdRaw.trim();
+        if (threadId.isEmpty() || "All Chat Rooms".equalsIgnoreCase(threadId)) {
+            return false;
+        }
+        try {
+            Contact c = Contacts.getInstance().getContactByUuid(threadId);
+            if (c instanceof com.atakmap.android.contact.GroupContact) {
+                return true;
+            }
+        } catch (Exception ignored) {
+        }
+        return threadId.matches("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+    }
+
     public static String syntheticAndroidUid(String callsign) {
         if (callsign == null) {
             return "";
@@ -411,6 +437,45 @@ public class ChatBridge {
     /**
      * Ensure an ATAK contact exists for APRS GeoChat routing, then return the contact UID.
      */
+    /**
+     * One ANDROID-* (or existing) UID per callsign — avoids duplicate JESTER/SMOKEY rows when
+     * GeoChat uses device UID, link UID, and callsign forms interchangeably.
+     */
+    public static String resolveCanonicalPeerUid(String callsignRaw, String... candidateUids) {
+        String callsign = callsignRaw != null ? callsignRaw.trim().toUpperCase(Locale.US) : "";
+        try {
+            Contacts contacts = Contacts.getInstance();
+            if (!callsign.isEmpty()) {
+                Contact byCallsign = contacts.getFirstContactWithCallsign(callsign);
+                if (byCallsign != null && !byCallsign.getUID().isEmpty()) {
+                    return byCallsign.getUID();
+                }
+                return syntheticAndroidUid(callsign);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "resolveCanonicalPeerUid callsign lookup failed", e);
+        }
+        if (candidateUids != null) {
+            for (String raw : candidateUids) {
+                if (raw == null || raw.trim().isEmpty()) {
+                    continue;
+                }
+                String uid = raw.trim();
+                try {
+                    Contact c = Contacts.getInstance().getContactByUuid(uid);
+                    if (c != null) {
+                        return c.getUID();
+                    }
+                } catch (Exception ignored) {
+                }
+                if (uid.toUpperCase(Locale.US).startsWith(ANDROID_UID_PREFIX)) {
+                    return uid.toUpperCase(Locale.US);
+                }
+            }
+        }
+        return "";
+    }
+
     public static String ensurePluginChatContact(String callsignRaw, String preferredUid) {
         String uid = preferredUid;
         if (uid == null || uid.trim().isEmpty()) {
@@ -432,6 +497,12 @@ public class ChatBridge {
 
         try {
             Contacts contacts = Contacts.getInstance();
+            if (!callsign.isEmpty()) {
+                Contact byCallsign = contacts.getFirstContactWithCallsign(callsign);
+                if (byCallsign instanceof IndividualContact) {
+                    return byCallsign.getUID();
+                }
+            }
             Contact existing = contacts.getContactByUuid(uid);
             if (existing instanceof IndividualContact) {
                 return uid;
@@ -466,6 +537,68 @@ public class ChatBridge {
         } catch (Exception e) {
             Log.e(TAG, "ensurePluginChatContact failed callsign=" + callsignRaw
                     + " uid=" + uid, e);
+            return "";
+        }
+    }
+
+    /**
+     * Ensures the exact destination UID exists in Contacts (for ATAK send lookup by UID).
+     * Unlike {@link #ensurePluginChatContact(String, String)}, this does not canonicalize by
+     * callsign first, because group-send uses exact toUID matching.
+     */
+    public static String ensurePluginChatContactExactUid(String callsignRaw, String preferredUid) {
+        String uid = preferredUid != null ? preferredUid.trim().toUpperCase(Locale.US) : "";
+        if (uid.isEmpty()) {
+            return "";
+        }
+        String callsign = callsignRaw != null ? callsignRaw.trim().toUpperCase(Locale.US) : "";
+        if (callsign.isEmpty() && uid.startsWith(ANDROID_UID_PREFIX)) {
+            callsign = uid.substring(ANDROID_UID_PREFIX.length());
+        }
+        if (callsign.isEmpty()) {
+            callsign = uid;
+        }
+        try {
+            Contacts contacts = Contacts.getInstance();
+            Contact existing = contacts.getContactByUuid(uid);
+            if (existing instanceof IndividualContact) {
+                IndividualContact ic = (IndividualContact) existing;
+                com.atakmap.android.contact.Connector conn =
+                        ic.getConnector(PluginConnector.CONNECTOR_TYPE);
+                if (!(conn instanceof PluginConnector)
+                        || !ACTION_PLUGIN_CONTACT_GEOCHAT_SEND.equals(conn.getConnectionString())) {
+                    ic.addConnector(new PluginConnector(ACTION_PLUGIN_CONTACT_GEOCHAT_SEND));
+                }
+                if (ic.getConnector(IpConnector.CONNECTOR_TYPE) == null) {
+                    ic.addConnector(new IpConnector((String) null));
+                }
+                return uid;
+            }
+            if (existing != null) {
+                return uid;
+            }
+            MapItem item = null;
+            MapView mv = MapView.getMapView();
+            if (mv != null && mv.getRootGroup() != null) {
+                item = mv.getRootGroup().deepFindUID(uid);
+            }
+            IndividualContact c = new IndividualContact(callsign, uid, item);
+            c.addConnector(new PluginConnector(ACTION_PLUGIN_CONTACT_GEOCHAT_SEND));
+            c.addConnector(new IpConnector((String) null));
+            if (mv != null) {
+                try {
+                    AtakPreferences prefs = new AtakPreferences(mv.getContext());
+                    prefs.set("contact.connector.default." + c.getUID(),
+                            PluginConnector.CONNECTOR_TYPE);
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to set default connector for exact uid " + uid, e);
+                }
+            }
+            contacts.addContact(c);
+            return uid;
+        } catch (Exception e) {
+            Log.e(TAG, "ensurePluginChatContactExactUid failed callsign=" + callsignRaw
+                    + " uid=" + preferredUid, e);
             return "";
         }
     }
@@ -984,8 +1117,10 @@ public class ChatBridge {
             return false;
         }
 
-        if (!cotBridge.isBtechOutboundChatDestination(conversationId, null)) {
-            return false;
+        // ACTION_PLUGIN_CONTACT_GEOCHAT_SEND is emitted only for destinations carrying
+        // our PluginConnector; do not gate on conversationId (group UUIDs are valid).
+        if (GeoChatContactListHelper.bundleIsGroupContactSync(b)) {
+            Log.i(TAG, "Plugin GeoChat bundle contains paths; relaying compact RF chat fallback");
         }
 
         if (isAprsContactUid(conversationId)) {
@@ -1009,6 +1144,16 @@ public class ChatBridge {
         if (lineUid == null) {
             maybeLogPluginGeoChatBundleKeysMissingUid(b);
         }
+        if (skipIfDuplicateOutboundGeoChatLine(lineUid)) {
+            return true;
+        }
+
+        if (isLikelyGroupConversationThread(conversationId)) {
+            String wrapped = wrapGatewayMessage("", conversationId, msg);
+            Log.i(TAG, "Plugin GeoChat group bundle → compact gateway relay lineUid=" + lineUid);
+            sendChatOverRadio(localCallsign, conversationId, wrapped, lineUid);
+            return true;
+        }
 
         String room = "All Chat Rooms";
         if (conversationId != null) {
@@ -1024,7 +1169,12 @@ public class ChatBridge {
 
         Log.d(TAG, "Relay outgoing plugin-contact GeoChat to radio room=" + room
                 + " lineUid=" + lineUid);
-        sendChatOverRadio(localCallsign, room, msg, lineUid);
+        String outbound = msg;
+        if (isLikelyGroupConversationThread(conversationId)) {
+            // TYPE_CHAT room is 6 bytes on-wire; preserve full group conversationId in payload.
+            outbound = wrapGatewayMessage("", conversationId, msg);
+        }
+        sendChatOverRadio(localCallsign, room, outbound, lineUid);
         return true;
     }
 
@@ -1091,6 +1241,13 @@ public class ChatBridge {
                 if (toUid == null) toUid = intent.getStringExtra("toUid");
                 if (toUid == null) toUid = intent.getStringExtra("uid");
                 if (chatRoom == null) chatRoom = intent.getStringExtra("room");
+                if (toUid != null && !toUid.trim().isEmpty()) {
+                    String trimmed = toUid.trim();
+                    if (trimmed.toUpperCase(Locale.US).startsWith(ANDROID_UID_PREFIX)) {
+                        String cs = trimmed.substring(ANDROID_UID_PREFIX.length());
+                        ensurePluginChatContactExactUid(cs, trimmed);
+                    }
+                }
 
                 // Log intent shape for field discovery (keep it short).
                 try {
@@ -1143,6 +1300,12 @@ public class ChatBridge {
                 Log.d(TAG, "Relaying outgoing chat (SEND_MESSAGE) to radio: " + message
                         + " lineUid=" + lineUid);
                 if (gatewayRelay) {
+                    if (isLikelyGroupConversationThread(chatRoom)) {
+                        // Group messages are already relayed as full b-t-f by CotBridge paths.
+                        // Gateway compact chat here causes duplicate/random individual threads.
+                        Log.d(TAG, "Skipping gateway compact relay for group thread " + chatRoom);
+                        return;
+                    }
                     String wrapped = wrapGatewayMessage(toUid, chatRoom, message);
                     String rfRoom = toUid != null && !toUid.isEmpty()
                             ? toUid
@@ -1198,12 +1361,45 @@ public class ChatBridge {
                 return;
             }
 
-            Log.d(TAG, "Relaying outgoing chat to radio: " + message + " lineUid=" + lineUid);
-            sendChatOverRadio(localCallsign, chatRoom, message, lineUid);
+            Log.d(TAG, "Relaying outgoing chat (COT intent) to radio: " + message
+                    + " lineUid=" + lineUid);
+            relayOutboundGeoChatCot(event);
 
         } catch (Exception e) {
             Log.e(TAG, "Error handling outgoing chat", e);
         }
+    }
+
+    /**
+     * Outbound GeoChat to radio contacts: full slotted CoT for group/contact-list sync,
+     * otherwise compact {@code TYPE_CHAT} for ACK correlation.
+     */
+    public void relayOutboundGeoChatCot(CotEvent event) {
+        if (!relayOutgoing) {
+            return;
+        }
+        if (btManager == null || !btManager.isConnected()) {
+            return;
+        }
+        if (event == null || !"b-t-f".equals(event.getType())) {
+            return;
+        }
+        if (cotBridge == null || !cotBridge.shouldRelayGeoChatToRadio(event)) {
+            return;
+        }
+
+        String lineUid = resolveOutboundGeoChatLineUid(event);
+        if (skipIfDuplicateOutboundGeoChatLine(lineUid)) {
+            return;
+        }
+
+        if (GeoChatContactListHelper.requiresFullCotRelay(event)) {
+            Log.i(TAG, "Group/contact-list GeoChat → full CoT (brief stagger) uid=" + lineUid);
+            cotBridge.scheduleSlottedGroupContactCotRelay(event);
+            return;
+        }
+
+        relayOutboundGeoChatCotAsCompact(event);
     }
 
     /**
@@ -1376,9 +1572,28 @@ public class ChatBridge {
      * Notify peer over RF that their chat frame was received (GeoChat delivered).
      */
     public void sendRadioChatAck(int wireMessageId, byte ackKind) {
+        sendRadioChatAck(wireMessageId, ackKind, 0);
+    }
+
+    private void sendRadioChatAck(int wireMessageId, byte ackKind, int deferAttempt) {
         if (!relayOutgoing || btManager == null || !btManager.isConnected()) {
             return;
         }
+        if (com.uvpro.plugin.protocol.RfTxArbitrator.get().shouldDeferRfChatAck()) {
+            if (deferAttempt < 24) {
+                android.os.Handler h = new android.os.Handler(
+                        android.os.Looper.getMainLooper());
+                h.postDelayed(() -> sendRadioChatAck(wireMessageId, ackKind, deferAttempt + 1),
+                        400L);
+            } else {
+                Log.w(TAG, "Chat ACK deferred too long; dropping mid=" + wireMessageId);
+            }
+            return;
+        }
+        transmitRadioChatAckNow(wireMessageId, ackKind);
+    }
+
+    private void transmitRadioChatAckNow(int wireMessageId, byte ackKind) {
         try {
             UVProPacket packet =
                     UVProPacket.createChatAckPacket(wireMessageId, ackKind);

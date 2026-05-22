@@ -15,6 +15,7 @@ public final class RfTxArbitrator {
     private volatile long openRlGuardUntilMs;
     private volatile boolean openRlTxInFlight;
     private volatile boolean pingReplyPending;
+    private volatile boolean slottedTxPending;
 
     private RfTxArbitrator() {
     }
@@ -40,6 +41,10 @@ public final class RfTxArbitrator {
         pingReplyPending = pending;
     }
 
+    public void setSlottedTxPending(boolean pending) {
+        slottedTxPending = pending;
+    }
+
     /** True when an APRS beacon should be skipped this cycle. */
     public boolean shouldDeferAprsBeacon() {
         if (openRlTxInFlight) {
@@ -48,7 +53,18 @@ public final class RfTxArbitrator {
         if (pingReplyPending) {
             return true;
         }
+        if (slottedTxPending) {
+            return true;
+        }
         return System.currentTimeMillis() < openRlGuardUntilMs;
+    }
+
+    /**
+     * Compact chat ACKs should not key during an in-flight group CoT or slotted OPENRL window.
+     */
+    public boolean shouldDeferRfChatAck() {
+        return openRlTxInFlight || pingReplyPending || slottedTxPending
+                || System.currentTimeMillis() < openRlGuardUntilMs;
     }
 
     /**
@@ -56,6 +72,6 @@ public final class RfTxArbitrator {
      * (or a ping reply is pending), but do not apply passive guard timing.
      */
     public boolean shouldDeferManualAprsBeacon() {
-        return openRlTxInFlight || pingReplyPending;
+        return openRlTxInFlight || pingReplyPending || slottedTxPending;
     }
 }

@@ -6,18 +6,24 @@ import android.content.BroadcastReceiver;
 import android.graphics.Bitmap;
 import android.util.Log;
 
+import android.os.Bundle;
+
+import com.atakmap.android.chat.GeoChatService;
 import com.atakmap.android.contact.Contact;
+import com.atakmap.android.contact.ContactPresenceDropdown;
 import com.atakmap.android.contact.Contacts;
 import com.atakmap.android.contact.IndividualContact;
 import com.atakmap.android.contact.PluginConnector;
 import com.atakmap.android.cot.CotMapComponent;
 import com.atakmap.android.util.IconUtilities;
+import com.atakmap.android.util.NotificationUtil;
 import com.atakmap.android.ipc.AtakBroadcast;
 import com.atakmap.android.icons.UserIcon;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.comms.CommsLogger;
 import com.atakmap.comms.CommsMapComponent;
 import com.atakmap.coremap.maps.assets.Icon;
+import com.atakmap.coremap.cot.event.CotDetail;
 import com.atakmap.coremap.cot.event.CotEvent;
 
 import com.uvpro.plugin.BuildConfig;
@@ -27,11 +33,18 @@ import com.uvpro.plugin.beacon.SmartBeacon;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
 import com.uvpro.plugin.chat.ChatBridge;
 import com.uvpro.plugin.crypto.EncryptionManager;
+import com.uvpro.plugin.chat.GeoChatContactListHelper;
+import com.uvpro.plugin.chat.InboundGroupSyncApplier;
+import com.uvpro.plugin.protocol.RfSlottedCoTScheduler;
+import com.uvpro.plugin.protocol.RfTxArbitrator;
 import com.uvpro.plugin.protocol.UVProPacket;
 import com.uvpro.plugin.protocol.PacketFragmenter;
 import com.uvpro.plugin.ui.SettingsFragment;
+import com.uvpro.plugin.UVProContactHandler;
 
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
@@ -96,6 +109,8 @@ public class CotBridge {
      */
     private final Map<String, String> btechIdToUid = new ConcurrentHashMap<>();
 
+    private final RfSlottedCoTScheduler slottedCoTScheduler = new RfSlottedCoTScheduler();
+
     /** Minimum interval between outgoing SA relays (ms) */
     private static final long SA_RELAY_INTERVAL_MS = 30_000;
     private long lastSaRelay = 0;
@@ -105,9 +120,12 @@ public class CotBridge {
     /** Short de-dupe window so PreSend + COT_PLACED do not double-transmit the same event. */
     private final Map<String, Long> recentLocalRelayKeys = new ConcurrentHashMap<>();
     private static final long LOCAL_RELAY_DEDUPE_MS = 1500L;
+    private static final long INBOUND_CHAT_NOTIFY_DEDUPE_MS = 7000L;
     private static final int APRS_ICON_TARGET_PX = 52;
     /** Cache upscaled APRS icons by iconset path to avoid per-refresh bitmap work. */
     private final Map<String, Icon> aprsUpscaledIconCache = new ConcurrentHashMap<>();
+    /** Avoid duplicate user alerts when redundant RF GeoChat CoT arrives. */
+    private final Map<String, Long> inboundChatNotifyUntil = new ConcurrentHashMap<>();
 
     /**
      * Inbound network CoT types eligible for SA Relay (network → radio).
@@ -232,6 +250,7 @@ public class CotBridge {
     }
 
     private static final String ANDROID_UID_PREFIX = "ANDROID-";
+    private static final long GROUP_CONTACT_COT_REDUNDANT_TX_DELAY_MS = 1200L;
 
     /**
      * ATAK GeoChat/direct destinations sometimes use the literal contact UID label
@@ -517,7 +536,7 @@ public class CotBridge {
                 return;
             }
             markInboundInjectSkipOutboundRelay(event.getUID());
-            dispatchCotEvent(event);
+            deliverInboundGeoChatToAtak(event);
             broadcastReceiptCotPlaced(event);
             Log.d(TAG, "Injected GeoChat receipt type=" + event.getType()
                     + " cotUID=" + event.getUID()
@@ -563,7 +582,11 @@ public class CotBridge {
                 // Mark ALL injected CoT to skip outbound RF relay — prevents the
                 // PreSendProcessor from echoing received items back over the air.
                 markInboundInjectSkipOutboundRelay(event.getUID());
-                dispatchCotEvent(event);
+                if (isGeoChatCotType(event.getType())) {
+                    deliverInboundGeoChatToAtak(event);
+                } else {
+                    dispatchCotEvent(event);
+                }
                 maybeRelayInboundRadioCotToTak(event);
             }
         } catch (Exception e) {
@@ -633,11 +656,274 @@ public class CotBridge {
                 Log.d(TAG, "Injecting chat CoT from " + displayCallsign
                         + " (uid=" + canonicalUid + " midpkt=" + radioPacketMessageId + ")");
                 markInboundInjectSkipOutboundRelay(event.getUID());
-                dispatchCotEvent(event);
+                deliverInboundGeoChatToAtak(event);
                 maybeRelayInboundRadioCotToTak(event);
             }
         } catch (Exception e) {
             Log.e(TAG, "Error injecting chat CoT", e);
+        }
+    }
+
+    private static boolean isGeoChatCotType(String type) {
+        return type != null && type.startsWith("b-t-f");
+    }
+
+    /**
+     * Wi‑Fi/TAK delivers GeoChat through {@link GeoChatService}; internal {@link CotMapComponent}
+     * dispatch alone creates stray contacts and skips {@code hierarchy} group parsing.
+     */
+    private void deliverInboundGeoChatToAtak(CotEvent event) {
+        if (event == null) {
+            return;
+        }
+        boolean hasHierarchy = GeoChatContactListHelper.cotHasContactHierarchy(event);
+        boolean contactListUpdate = GeoChatContactListHelper.isContactListUpdateMessage(
+                extractGeoChatRemarks(event));
+        boolean groupSync = hasHierarchy || contactListUpdate;
+        try {
+            // GeoChatService treats unknown senders as stray IP contacts and can rewrite
+            // conversationId to senderUid — seed the RF peer first.
+            seedInboundGeoChatSender(event, groupSync);
+            if (groupSync) {
+                registerBtechPeersFromGroupHierarchy(event);
+            }
+            GeoChatService.getInstance().onCotEvent(event, new Bundle());
+            Log.i(TAG, "Inbound GeoChat via GeoChatService: type=" + event.getType()
+                    + " uid=" + event.getUID()
+                    + " convo=" + GeoChatContactListHelper.extractConversationId(event)
+                    + " sender=" + GeoChatContactListHelper.extractChatSenderUid(event)
+                    + " hasHierarchy=" + GeoChatContactListHelper.cotHasContactHierarchy(event));
+            if (groupSync) {
+                InboundGroupSyncApplier.applyAfterInboundGroupCot(event, contactListUpdate);
+            }
+            if (!contactListUpdate) {
+                notifyInboundRfChat(event);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "GeoChatService.onCotEvent failed, fallback dispatch", e);
+            dispatchCotEvent(event);
+        }
+    }
+
+    private static String extractGeoChatRemarks(CotEvent event) {
+        if (event == null || event.getDetail() == null) {
+            return null;
+        }
+        CotDetail remarks = event.getDetail().getFirstChildByName(0, "remarks");
+        return remarks != null ? remarks.getInnerText() : null;
+    }
+
+    private void notifyInboundRfChat(CotEvent event) {
+        if (event == null) {
+            return;
+        }
+        String uid = event.getUID();
+        if (uid == null || uid.trim().isEmpty()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        Long until = inboundChatNotifyUntil.get(uid);
+        if (until != null && now < until) {
+            return;
+        }
+        inboundChatNotifyUntil.put(uid, now + INBOUND_CHAT_NOTIFY_DEDUPE_MS);
+
+        String sender = GeoChatContactListHelper.extractChatSenderCallsign(event);
+        if (sender == null || sender.trim().isEmpty()) {
+            sender = GeoChatContactListHelper.extractChatSenderUid(event);
+        }
+        if (sender == null || sender.trim().isEmpty()) {
+            sender = "RF";
+        }
+        String message = extractGeoChatRemarks(event);
+        if (message == null || message.trim().isEmpty()) {
+            message = "New RF chat message";
+        } else if (message.length() > 72) {
+            message = message.substring(0, 72) + "...";
+        }
+        String alert = sender + ": " + message;
+        String conversationId = GeoChatContactListHelper.extractConversationId(event);
+        String conversationName = GeoChatContactListHelper.extractConversationName(event);
+        String notifyTitle = "RF Chat";
+        if (conversationId != null && !conversationId.trim().isEmpty()
+                && !conversationId.toUpperCase(Locale.US).startsWith(ANDROID_UID_PREFIX)) {
+            notifyTitle = "RF Group";
+            if (conversationName != null && !conversationName.trim().isEmpty()) {
+                alert = conversationName.trim() + ": " + message;
+            }
+        }
+        if (conversationId != null && !conversationId.trim().isEmpty()) {
+            int msgId = uid.hashCode() & 0x7FFFFFFF;
+            UVProContactHandler.incrementUnreadOnce(conversationId.trim(), msgId, message);
+        }
+        final String finalAlert = alert;
+        try {
+            android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
+            main.post(() -> {
+                MapView mv = MapView.getMapView();
+                if (mv != null && mv.getContext() != null) {
+                    android.widget.Toast.makeText(
+                            mv.getContext(),
+                            finalAlert,
+                            android.widget.Toast.LENGTH_LONG).show();
+                }
+            });
+        } catch (Exception e) {
+            Log.w(TAG, "Inbound RF chat toast failed uid=" + uid, e);
+        }
+        try {
+            int notifyId = ("rf_chat_" + uid).hashCode() & 0x7FFFFFFF;
+            NotificationUtil.getInstance().postNotification(
+                    notifyId,
+                    NotificationUtil.GeneralIcon.CHAT.getID(),
+                    NotificationUtil.BLUE,
+                    notifyTitle,
+                    "UV-PRO",
+                    finalAlert);
+            Log.i(TAG, "Inbound RF chat notification posted uid=" + uid);
+        } catch (Exception e) {
+            Log.w(TAG, "Inbound RF chat notification failed uid=" + uid, e);
+        }
+    }
+
+    /**
+     * Ensure the sender exists before {@link GeoChatService#onCotEvent} so ATAK does not
+     * synthesize a TCP/UDP {@link IndividualContact} in the root Contacts list.
+     * Group-sync uses a plain ATAK contact (no {@link PluginConnector}) so the sender does
+     * not appear as a stray UV‑PRO peer above the imported group tree.
+     */
+    private void seedInboundGeoChatSender(CotEvent event, boolean groupSync) {
+        String senderUid = GeoChatContactListHelper.extractChatSenderUid(event);
+        String callsign = GeoChatContactListHelper.extractChatSenderCallsign(event);
+        String linkUid = null;
+        CotDetail detail = event != null ? event.getDetail() : null;
+        CotDetail link = detail != null ? detail.getFirstChildByName(0, "link") : null;
+        if (link != null) {
+            linkUid = link.getAttribute("uid");
+        }
+        if (senderUid == null || senderUid.isEmpty()) {
+            senderUid = linkUid;
+        }
+        if (callsign == null || callsign.isEmpty()) {
+            if (senderUid != null && senderUid.startsWith(ANDROID_UID_PREFIX)) {
+                callsign = senderUid.substring(ANDROID_UID_PREFIX.length());
+            } else if (senderUid != null) {
+                callsign = senderUid;
+            }
+        }
+
+        String canonical = ChatBridge.resolveCanonicalPeerUid(callsign, senderUid, linkUid);
+        if (canonical == null || canonical.isEmpty()) {
+            return;
+        }
+
+        if (groupSync) {
+            ensureAtakGeoChatSenderContact(canonical, callsign);
+        } else if (canonical.toUpperCase(Locale.US).startsWith(ANDROID_UID_PREFIX)) {
+            ChatBridge.ensurePluginChatContact(callsign, canonical);
+        } else {
+            ensureAtakGeoChatSenderContact(canonical, callsign);
+        }
+        registerBtechAliases(callsign, canonical, senderUid, linkUid);
+    }
+
+    /** ATAK {@code GeoChatService.sendMessage} errors if peer UID is not in Contacts yet. */
+    private static void ensureOutboundGeoChatDestinationsKnown(String[] toUIDs) {
+        if (toUIDs == null) {
+            return;
+        }
+        for (String raw : toUIDs) {
+            if (raw == null || raw.trim().isEmpty()) {
+                continue;
+            }
+            String uid = raw.trim().toUpperCase(Locale.US);
+            if (!uid.startsWith(ANDROID_UID_PREFIX)) {
+                continue;
+            }
+            String callsign = uid.substring(ANDROID_UID_PREFIX.length());
+            ChatBridge.ensurePluginChatContactExactUid(callsign, uid);
+        }
+    }
+
+    private void registerBtechAliases(String callsign, String canonicalUid, String... aliases) {
+        if (canonicalUid == null || canonicalUid.isEmpty()) {
+            return;
+        }
+        registerBtechContactUid(canonicalUid);
+        if (callsign != null && !callsign.isEmpty()) {
+            registerBtechContactId(callsign, canonicalUid);
+        }
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        seen.add(canonicalUid.toUpperCase(Locale.US));
+        if (aliases != null) {
+            for (String raw : aliases) {
+                if (raw == null || raw.trim().isEmpty()) {
+                    continue;
+                }
+                String uid = raw.trim();
+                String upper = uid.toUpperCase(Locale.US);
+                if (!seen.add(upper)) {
+                    continue;
+                }
+                registerBtechContactUid(upper);
+                if (callsign != null && !callsign.isEmpty()) {
+                    registerBtechContactId(callsign, upper);
+                }
+                if (!upper.startsWith(ANDROID_UID_PREFIX) && upper.matches("[0-9A-F]+")) {
+                    String android = ANDROID_UID_PREFIX + upper;
+                    if (seen.add(android)) {
+                        registerBtechContactUid(android);
+                        if (callsign != null && !callsign.isEmpty()) {
+                            registerBtechContactId(callsign, android);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static void ensureAtakGeoChatSenderContact(String senderUid, String callsign) {
+        if (senderUid == null || senderUid.isEmpty()) {
+            return;
+        }
+        try {
+            Contacts contacts = Contacts.getInstance();
+            String uid = senderUid.trim();
+            Contact existing = contacts.getContactByUuid(uid);
+            if (existing == null) {
+                existing = contacts.getContactByUuid(uid.toUpperCase(Locale.US));
+            }
+            if (existing != null) {
+                return;
+            }
+            String name = callsign != null && !callsign.isEmpty() ? callsign.trim() : uid;
+            contacts.addContact(new IndividualContact(name, uid));
+        } catch (Exception e) {
+            Log.w(TAG, "ensureAtakGeoChatSenderContact failed uid=" + senderUid, e);
+        }
+    }
+
+    /** RF route map only — do not add every group member to the root Contacts pane. */
+    private void registerBtechPeersFromGroupHierarchy(CotEvent event) {
+        if (event == null || chatBridge == null) {
+            return;
+        }
+        String senderUid = GeoChatContactListHelper.extractChatSenderUid(event);
+        for (String uid : GeoChatContactListHelper.collectContactUidsFromGroupCot(event)) {
+            if (uid == null || !uid.startsWith(ANDROID_UID_PREFIX)) {
+                continue;
+            }
+            // Skip sender + local device — only RF-route members already in the group tree.
+            if (senderUid != null && uid.equalsIgnoreCase(senderUid)) {
+                continue;
+            }
+            String localUid = MapView.getDeviceUid();
+            if (localUid != null && uid.equalsIgnoreCase(localUid)) {
+                continue;
+            }
+            String callsign = uid.substring(ANDROID_UID_PREFIX.length());
+            registerBtechContactUid(uid);
+            registerBtechContactId(callsign, uid);
         }
     }
 
@@ -1070,6 +1356,7 @@ public class CotBridge {
             // Log GeoChat BEFORE BT gate — previous bug: early return hid whether PreSend
             // fired at all (shows up as zero lines when BLE disconnected during send tests).
             if ("b-t-f".equals(type)) {
+                ensureOutboundGeoChatDestinationsKnown(toUIDs);
                 Log.d(TAG, "PreSend GeoChat bluetoothOk=" + btConnected
                         + " uid=" + event.getUID()
                         + " toUIDs="
@@ -1135,11 +1422,9 @@ public class CotBridge {
                 Log.d(TAG, "Relaying contact-targeted CoT to radio: type=" + type
                         + " uid=" + event.getUID()
                         + " toUIDs=" + java.util.Arrays.toString(toUIDs));
-                // GeoChat over RF as compact TYPE_CHAT so wire messageId ↔ local GeoChat line UID
-                // is registered for RF delivered/read ACKs. Full TYPE_COT relay never filled that map.
                 if ("b-t-f".equals(type)) {
                     if (chatBridge != null) {
-                        new Thread(() -> chatBridge.relayOutboundGeoChatCotAsCompact(event)).start();
+                        new Thread(() -> chatBridge.relayOutboundGeoChatCot(event)).start();
                         return;
                     }
                 }
@@ -1279,12 +1564,35 @@ public class CotBridge {
         if (!shouldRelayGeoChatToRadio(event)) return;
 
         String uid = event.getUID();
-        Log.d(TAG, "Outbound GeoChat (CommsLogger) → compact relay: uid=" + uid);
+        Log.d(TAG, "Outbound GeoChat (CommsLogger) relay: uid=" + uid);
         if (chatBridge != null) {
-            new Thread(() -> chatBridge.relayOutboundGeoChatCotAsCompact(event)).start();
+            new Thread(() -> chatBridge.relayOutboundGeoChatCot(event)).start();
+        } else if (GeoChatContactListHelper.requiresFullCotRelay(event)) {
+            scheduleSlottedGroupContactCotRelay(event);
         } else {
             new Thread(() -> sendCotOverRadio(event)).start();
         }
+    }
+
+    /**
+     * Full {@code b-t-f} with contact {@code hierarchy} — slotted to reduce RF collisions.
+     */
+    public void scheduleSlottedGroupContactCotRelay(CotEvent event) {
+        if (event == null || btManager == null || !btManager.isConnected()) {
+            return;
+        }
+        RfTxArbitrator.get().setSlottedTxPending(true);
+        slottedCoTScheduler.scheduleGroupContactCot(pluginContext, () -> {
+            Log.i(TAG, "Group/contact-list CoT TX: uid=" + event.getUID());
+            sendCotOverRadio(event);
+            // RF links can drop one fragment; send one delayed duplicate for reliability.
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                if (btManager != null && btManager.isConnected()) {
+                    Log.i(TAG, "Group/contact-list CoT TX (redundant): uid=" + event.getUID());
+                    sendCotOverRadio(event);
+                }
+            }, GROUP_CONTACT_COT_REDUNDANT_TX_DELAY_MS);
+        });
     }
 
     /**

@@ -28,6 +28,14 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Bluetooth Auto-Reconnect** | ✅ Working | Three-strategy SPP connection with exponential backoff reconnect (up to 5 attempts). |
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
+
+### 2026-05-21 Progress Update
+
+- RF group sync now relays full GeoChat CoT `b-t-f` with `hierarchy` and improved inbound handling through ATAK GeoChat paths.
+- RF group/message behavior was validated across a 3-device Wi-Fi↔RF bridge test (group create/send path stable, slot timing confirmed).
+- SA Relay now suppresses unchanged periodic SA/status payloads (`a-*`) per UID, so stationary Wi-Fi contacts are not rebroadcast over RF every 30 seconds when content has not changed.
+- Non-SA traffic (chat, routes, markers, targeted CoT) continues to relay normally.
+
 ## How It Works
 
 ```
@@ -235,6 +243,8 @@ Waypoints, routes, casevac/9-line, drawings, and other CoT items can all be sent
 ### SA Relay
 
 Enable **SA Relay** in Settings to automatically broadcast received network SA (team positions, waypoints, routes) over RF to all radio users on frequency. This is designed for a single designated relay node — **do not enable unless instructed by your team leader.** A per-contact 30-second throttle prevents channel flooding.
+
+As of 2026-05-21, unchanged periodic SA/status payloads (`a-*`) are also suppressed. This avoids repeated rebroadcast of stationary Wi-Fi/TAK contacts whose CoT only changes volatile timestamps.
 
 For deeper implementation details and a full “new agent” handoff (logic trees, key files, known ATAK gotchas), see `HANDOFF.md`.
 

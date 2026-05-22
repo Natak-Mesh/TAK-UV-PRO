@@ -147,6 +147,27 @@ For **architecture / packet flows**, see also `Plugins/Darksteal/HANDOFF.md`.
 
 ---
 
+## 3.1 2026-05-21 RF relay finding (Wi-Fi bridge)
+
+Observed in 3-device test (Jester 15 + Smokey 15 + Jester 25 on Wi-Fi bridge):
+
+- Repeated RF bursts were predominantly `a-f-G-U-C` SA CoT rebroadcast by SA Relay, not plugin beacon spam.
+- The source was inbound Wi-Fi/TAK SA updates from `JESTER_25` being relayed over RF at SA Relay cadence.
+- Plugin beacon interval (for local periodic beaconing) does not govern inbound Wi-Fi SA update cadence.
+
+Mitigation now implemented in `CotBridge.maybeSaRelayInboundNetworkCot`:
+
+- Added per-UID normalized payload signatures (strip volatile CoT attrs `time/start/stale`).
+- For `a-*` SA/status traffic, relay is suppressed when payload is unchanged.
+- Non-SA traffic remains relayed (chat/routes/other CoT paths unaffected).
+
+Operational expectation after patch:
+
+- Stationary Wi-Fi contacts should no longer be rebroadcast every 30s if their SA payload is unchanged.
+- Real content changes (position/team/status detail changes) still relay.
+
+---
+
 ## 4. Source layout (abbreviated)
 
 ```

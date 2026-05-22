@@ -48,6 +48,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Bridges between ATAK CoT events and the radio link.
@@ -117,6 +118,8 @@ public class CotBridge {
 
     /** Per-UID throttle map for SA Relay to prevent channel flooding */
     private final Map<String, Long> saRelayLastSentByUid = new ConcurrentHashMap<>();
+    /** Per-UID payload signature for SA Relay; unchanged payloads are suppressed. */
+    private final Map<String, String> saRelayLastSignatureByUid = new ConcurrentHashMap<>();
     /** Short de-dupe window so PreSend + COT_PLACED do not double-transmit the same event. */
     private final Map<String, Long> recentLocalRelayKeys = new ConcurrentHashMap<>();
     private static final long LOCAL_RELAY_DEDUPE_MS = 1500L;
@@ -134,6 +137,8 @@ public class CotBridge {
     private static final java.util.regex.Pattern SA_RELAY_TYPE_PATTERN =
             java.util.regex.Pattern.compile(
                     "^(a-[a-z]-G|b-m-p|b-m-r)");
+    private static final Pattern COT_TIME_ATTR_PATTERN =
+            Pattern.compile("\\s+(time|start|stale)=\"[^\"]*\"");
     private static final String ALL_CHAT_ROOMS = "All Chat Rooms";
 
     /**
@@ -1507,8 +1512,42 @@ public class CotBridge {
             return;
         }
 
+        // Suppress unchanged periodic SA/status relays (Wi-Fi/TAK contact PLI churn).
+        // Keep non-SA events (routes, markers, chat-like events) forwarding normally.
+        String signature = null;
+        if (type.startsWith("a-")) {
+            signature = buildSaRelaySignature(event);
+            String lastSignature = saRelayLastSignatureByUid.get(uid);
+            if (signature != null && signature.equals(lastSignature)) {
+                Log.d(TAG, "SA Relay: suppressed unchanged payload type=" + type + " uid=" + uid);
+                return;
+            }
+        }
+
         Log.d(TAG, "SA Relay: broadcasting type=" + type + " uid=" + uid);
+        if (signature != null) {
+            saRelayLastSignatureByUid.put(uid, signature);
+        }
         new Thread(() -> sendCotOverRadio(event)).start();
+    }
+
+    /**
+     * Build a stable SA payload signature while ignoring volatile CoT timestamps.
+     * This suppresses periodic retransmit of unchanged network SA.
+     */
+    private static String buildSaRelaySignature(CotEvent event) {
+        if (event == null) {
+            return null;
+        }
+        try {
+            String xml = event.toString();
+            if (xml == null || xml.isEmpty()) {
+                return null;
+            }
+            return COT_TIME_ATTR_PATTERN.matcher(xml).replaceAll("");
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private static boolean isSaRelayEligibleType(String type) {

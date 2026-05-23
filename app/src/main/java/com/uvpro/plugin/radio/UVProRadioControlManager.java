@@ -28,7 +28,9 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
     private static final int CMD_READ_RF_CH = 13;
     private static final int CMD_WRITE_RF_CH = 14;
     private static final int CMD_GET_HT_STATUS = 20;
+    private static final int CMD_SET_REGION = 60;
     private static final int CMD_GET_POSITION = 76;
+    private static final int CMD_GET_DEV_INFO = 4;
     private static final int CMD_REGISTER_NOTIFICATION = 6;
     private static final int CMD_EVENT_NOTIFICATION = 9;
     private static final int EVENT_HT_STATUS_CHANGED = 1;
@@ -80,6 +82,20 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
     public static final int TX_POWER_LOW = 0;
     public static final int TX_POWER_MED = 1;
     public static final int TX_POWER_HIGH = 2;
+    public static final int CHANNELS_PER_GROUP = 30;
+    public static final int DEFAULT_GROUP_COUNT = 6;
+
+    public static final class ChannelGroupInfo {
+        public final int currentGroupIndex;
+        public final int groupCount;
+        public final int totalChannels;
+
+        public ChannelGroupInfo(int currentGroupIndex, int groupCount, int totalChannels) {
+            this.currentGroupIndex = currentGroupIndex;
+            this.groupCount = groupCount;
+            this.totalChannels = totalChannels;
+        }
+    }
 
     public static class ChannelSummary {
         public final int channelId;
@@ -437,6 +453,135 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return null;
+        }
+    }
+
+    /**
+     * Read one channel group (1 group = 30 channels) from radio memory.
+     */
+    public RadioControlSnapshot readSnapshotForGroup(int groupIndex, int maxChannels) {
+        if (!btManager.isConnected()) {
+            notificationRegistrationOk = false;
+            return null;
+        }
+        int groups;
+        try {
+            groups = readRegionCount();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+        int selectedGroup = Math.max(0, Math.min(groups - 1, groupIndex));
+        ChannelGroupInfo info = readCurrentGroupInfo();
+        if (info != null && info.currentGroupIndex != selectedGroup) {
+            ProgramResult switched = setChannelGroup(selectedGroup);
+            if (!switched.success) {
+                Log.w(TAG, "readSnapshotForGroup: failed to sync region to group "
+                        + (selectedGroup + 1) + ": " + switched.message);
+            }
+        }
+        return readSnapshot(Math.max(1, Math.min(CHANNELS_PER_GROUP, maxChannels)));
+    }
+
+    public ChannelGroupInfo readCurrentGroupInfo() {
+        if (!btManager.isConnected()) {
+            return null;
+        }
+        try {
+            CommandReply readSettings = sendCommandSync(
+                    BASIC_GROUP, CMD_READ_SETTINGS, new byte[0], 2500);
+            if (readSettings == null || readSettings.status != STATUS_SUCCESS
+                    || readSettings.payload == null || readSettings.payload.length < 12) {
+                return null;
+            }
+            SettingsState state = SettingsState.parse(readSettings.payload);
+            if (state == null) {
+                return null;
+            }
+            int groups = readRegionCount();
+            int total = CHANNELS_PER_GROUP * groups;
+            int inferredGroup = -1;
+
+            // Primary source: HT status region id (maps to radio channel group/zone).
+            CommandReply htStatusReply = sendCommandSync(
+                    BASIC_GROUP, CMD_GET_HT_STATUS, new byte[0], 2500);
+            if (htStatusReply != null && htStatusReply.status == STATUS_SUCCESS
+                    && htStatusReply.payload != null && htStatusReply.payload.length >= 2) {
+                int region = parseCurrentRegionFromHtStatus(htStatusReply.payload);
+                // Some firmwares report regions as 1..N (human-facing), others 0..N-1.
+                if (region >= 0 && region < groups) {
+                    inferredGroup = region;
+                } else if (region >= 1 && region <= groups) {
+                    inferredGroup = region - 1;
+                }
+            }
+            if (inferredGroup < 0) {
+                // Fallback: settings channels can be absolute on some firmwares.
+                int settingsAGroup = inferGroupIndexFromRawChannel(state.channelA, total, groups);
+                int settingsBGroup = inferGroupIndexFromRawChannel(state.channelB, total, groups);
+                inferredGroup = settingsAGroup >= 0 ? settingsAGroup : settingsBGroup;
+            }
+            if (inferredGroup < 0) {
+                // Unknown/ambiguous on this firmware right now; caller should preserve current UI state.
+                return null;
+            }
+            return new ChannelGroupInfo(inferredGroup, groups, total);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+    }
+
+    public ProgramResult setChannelGroup(int groupIndex) {
+        if (!btManager.isConnected()) {
+            return new ProgramResult(false, "Radio not connected.");
+        }
+        try {
+            int groups = readRegionCount();
+            int targetGroup = Math.max(0, Math.min(groups - 1, groupIndex));
+            CommandReply setRegion = sendCommandSync(
+                    BASIC_GROUP, CMD_SET_REGION, new byte[]{(byte) targetGroup}, 2500);
+            if (setRegion == null || setRegion.status != STATUS_SUCCESS) {
+                return new ProgramResult(false, "Failed to switch channel group.");
+            }
+            // Some firmware variants report region/group ambiguously right after SET_REGION.
+            // Trust a successful ACK from SET_REGION as authoritative.
+            return new ProgramResult(true,
+                    "Group " + (targetGroup + 1) + " selected.");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new ProgramResult(false, "Interrupted while setting group.");
+        }
+    }
+
+    /**
+     * Best-effort seed helper for groups that reject normal verified selection
+     * (e.g. empty group firmware behavior). It sends SET_REGION without readback verification,
+     * then writes CH30 in the selected region.
+     */
+    public ProgramResult seedAprsChannelInGroupBlind(int groupIndex, ManualChannelSpec spec) {
+        if (!btManager.isConnected()) {
+            return new ProgramResult(false, "Radio not connected.");
+        }
+        if (spec == null || spec.rxFreqMHz <= 0.0 || spec.txFreqMHz <= 0.0) {
+            return new ProgramResult(false, "Invalid APRS seed channel.");
+        }
+        try {
+            int groups = readRegionCount();
+            int targetGroup = Math.max(0, Math.min(groups - 1, groupIndex));
+            CommandReply setRegion = sendCommandSync(
+                    BASIC_GROUP, CMD_SET_REGION, new byte[]{(byte) targetGroup}, 2500);
+            if (setRegion == null || setRegion.status != STATUS_SUCCESS) {
+                return new ProgramResult(false, "Could not select Group " + (targetGroup + 1) + " for seeding.");
+            }
+            ProgramResult write = programManualChannel(CHANNELS_PER_GROUP - 1, spec);
+            if (!write.success) {
+                return write;
+            }
+            return new ProgramResult(true, "Seeded APRS in Group " + (targetGroup + 1) + " CH30.");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new ProgramResult(false, "Interrupted while seeding APRS channel.");
         }
     }
 
@@ -845,6 +990,54 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
             return new ProgramResult(false, "Interrupted while programming channel.");
         } catch (Exception e) {
             return new ProgramResult(false, "Programming error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Clears one channel slot so imports can mirror CSV empties.
+     */
+    public ProgramResult clearManualChannel(int channelId) {
+        if (!btManager.isConnected()) {
+            return new ProgramResult(false, "Radio not connected.");
+        }
+        if (channelId < 0 || channelId > 255) {
+            return new ProgramResult(false, "Invalid channel.");
+        }
+        try {
+            RadioChannel channel = new RadioChannel(
+                    channelId,
+                    0, // FM
+                    0.0,
+                    0, // FM
+                    0.0,
+                    null,
+                    null,
+                    false,
+                    false,
+                    false,
+                    0,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    "" // blank name
+            );
+            CommandReply writeChannel = sendCommandSync(
+                    BASIC_GROUP, CMD_WRITE_RF_CH, channel.toBytes(), 2500);
+            if (writeChannel == null || writeChannel.status != STATUS_SUCCESS) {
+                return new ProgramResult(false, "Failed to clear channel " + (channelId + 1) + ".");
+            }
+            refreshChannelCache(channelId);
+            return new ProgramResult(true, "Channel " + (channelId + 1) + " cleared.");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new ProgramResult(false, "Interrupted while clearing channel.");
+        } catch (Exception e) {
+            return new ProgramResult(false, "Clear error: " + e.getMessage());
         }
     }
 
@@ -1815,6 +2008,17 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
         return (payload[2] >> 4) & 0x0F;
     }
 
+    /**
+     * HT status extended bytes encode current region/group:
+     * region = ((payload[2] & 0x0F) << 2) | ((payload[3] >> 6) & 0x03)
+     */
+    private static int parseCurrentRegionFromHtStatus(byte[] payload) {
+        if (payload == null || payload.length < 4) {
+            return -1;
+        }
+        return ((payload[2] & 0x0F) << 2) | ((payload[3] >> 6) & 0x03);
+    }
+
     private static ChannelSummary parseChannelSummary(byte[] payload, int fallbackChannelId) {
         // Keep the UI slot order deterministic: slot index drives channel identity.
         int channelId = Math.max(0, fallbackChannelId);
@@ -1867,6 +2071,78 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
             return raw - 1; // 1-based -> 0-based
         }
         return -1;
+    }
+
+    private static int normalizeToGroupChannel(int raw, int groupStart, int count) {
+        if (raw >= groupStart && raw < (groupStart + count)) {
+            return raw;
+        }
+        if (raw >= 0 && raw < count) {
+            return groupStart + raw;
+        }
+        if (raw >= 1 && raw <= count) {
+            return groupStart + raw - 1;
+        }
+        return -1;
+    }
+
+    /**
+     * Returns a group index only when {@code raw} is a confident absolute channel index.
+     * Ambiguous local ids (0..29 or 1..30) return -1 so callers avoid false resets to group 1.
+     */
+    private static int inferGroupIndexFromRawChannel(int raw, int totalChannels, int groupCount) {
+        if (raw < 0 || totalChannels <= 0 || groupCount <= 0) {
+            return -1;
+        }
+        int idx = -1;
+        // Absolute 0-based
+        if (raw >= CHANNELS_PER_GROUP && raw < totalChannels) {
+            idx = raw;
+        // Absolute 1-based
+        } else if (raw > CHANNELS_PER_GROUP && raw <= totalChannels) {
+            idx = raw - 1;
+        }
+        if (idx < 0) {
+            return -1;
+        }
+        int group = idx / CHANNELS_PER_GROUP;
+        return Math.max(0, Math.min(groupCount - 1, group));
+    }
+
+    private int readChannelCapacity() throws InterruptedException {
+        CommandReply info = sendCommandSync(
+                BASIC_GROUP, CMD_GET_DEV_INFO, new byte[]{3}, 2500);
+        if (info != null && info.status == STATUS_SUCCESS
+                && info.payload != null && info.payload.length >= 9) {
+            int count = info.payload[8] & 0xFF;
+            if (count > 0) {
+                return count;
+            }
+        }
+        return CHANNELS_PER_GROUP * DEFAULT_GROUP_COUNT;
+    }
+
+    /**
+     * Some firmwares report per-group count (30) in GET_DEV_INFO.
+     * Group operations require full memory-map capacity, so enforce 6x30 minimum.
+     */
+    private int readEffectiveChannelCapacity() throws InterruptedException {
+        return Math.max(readChannelCapacity(), CHANNELS_PER_GROUP * DEFAULT_GROUP_COUNT);
+    }
+
+    private int readRegionCount() throws InterruptedException {
+        CommandReply info = sendCommandSync(
+                BASIC_GROUP, CMD_GET_DEV_INFO, new byte[]{3}, 2500);
+        if (info != null && info.status == STATUS_SUCCESS
+                && info.payload != null && info.payload.length >= 8) {
+            int lower = (info.payload[6] & 0x03) << 4;
+            int upper = (info.payload[7] & 0xF0) >> 4;
+            int regionCount = lower + upper;
+            if (regionCount > 0) {
+                return Math.min(regionCount, DEFAULT_GROUP_COUNT);
+            }
+        }
+        return DEFAULT_GROUP_COUNT;
     }
 
     /**

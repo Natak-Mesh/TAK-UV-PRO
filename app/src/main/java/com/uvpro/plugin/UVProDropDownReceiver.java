@@ -60,10 +60,17 @@ import com.uvpro.plugin.radio.UVProRadioControlManager;
 import com.uvpro.plugin.ui.SettingsFragment;
 
 import java.text.SimpleDateFormat;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -167,6 +174,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Button btnDigitalOnlyMode;
     private Button btnRadioSilence;
     private Button btnRefreshChannels;
+    private Button btnInitialChannelGroupSetup;
+    private Button btnChannelGroup;
+    private Button btnImportChannels;
+    private Button btnExportChannels;
     private Button btnVfoA;
     private Button btnVfoB;
     private Button btnDigital;
@@ -218,6 +229,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private int lastDigitalChannel = -1;
     private boolean lastDualWatchEnabled = false;
     private int currentTxPowerLevel = UVProRadioControlManager.TX_POWER_LOW;
+    private int currentChannelGroup = 0;
+    private int availableChannelGroups = UVProRadioControlManager.DEFAULT_GROUP_COUNT;
     private boolean lastHasRxFocus = false;
     private ValueAnimator activeVfoPulseAnimator;
     private Button pulsingVfoButton;
@@ -225,6 +238,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private ObjectAnimator repeaterLoadFocusAnimator;
     private ValueAnimator updateGpsButtonPulseAnimator;
     private GradientDrawable updateGpsButtonPulseDrawable;
+    private ValueAnimator initialGroupSetupPulseAnimator;
+    private GradientDrawable initialGroupSetupPulseDrawable;
     private final AtomicBoolean snapshotReadInFlight = new AtomicBoolean(false);
     private final AtomicBoolean snapshotRefreshPending = new AtomicBoolean(false);
     private final AtomicBoolean snapshotFullRefreshPending = new AtomicBoolean(false);
@@ -394,6 +409,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnDigitalOnlyMode = rootView.findViewById(getId("btn_digital_only_mode"));
         btnRadioSilence = rootView.findViewById(getId("btn_radio_silence"));
         btnRefreshChannels = rootView.findViewById(getId("btn_refresh_channels"));
+        btnInitialChannelGroupSetup = rootView.findViewById(getId("btn_initial_channel_group_setup"));
+        btnChannelGroup = rootView.findViewById(getId("btn_channel_group"));
+        btnImportChannels = rootView.findViewById(getId("btn_import_channels"));
+        btnExportChannels = rootView.findViewById(getId("btn_export_channels"));
         btnVfoA = rootView.findViewById(getId("btn_vfo_a"));
         btnVfoB = rootView.findViewById(getId("btn_vfo_b"));
         btnDigital = rootView.findViewById(getId("btn_digital"));
@@ -557,6 +576,18 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         if (btnRefreshChannels != null) {
             btnRefreshChannels.setOnClickListener(v -> refreshChannelGridFullAsync());
+        }
+        if (btnInitialChannelGroupSetup != null) {
+            btnInitialChannelGroupSetup.setOnClickListener(v -> runInitialChannelGroupSetupAsync());
+        }
+        if (btnChannelGroup != null) {
+            btnChannelGroup.setOnClickListener(v -> cycleChannelGroup());
+        }
+        if (btnImportChannels != null) {
+            btnImportChannels.setOnClickListener(v -> showImportChannelsPicker());
+        }
+        if (btnExportChannels != null) {
+            btnExportChannels.setOnClickListener(v -> exportCurrentGroupChannels());
         }
 
         if (switchDualWatch != null) {
@@ -773,10 +804,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         getMapView().post(() -> {
             updateConnectionUI(true, finalDisplay);
             appendLog("Connected to " + finalDisplay);
+            refreshChannelGroupFromRadioAsync(true);
             refreshFavoriteStrip();
             updateScanButtonText();
-            // Auto-populate channel grid immediately after radio connect.
-            refreshChannelGridFullAsync();
             refreshTxPowerFromRadioAsync();
             // Follow-up read: some radios return channel/settings a moment later.
             getMapView().postDelayed(this::refreshChannelGridAsync, 900L);
@@ -876,6 +906,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnDisconnect != null) btnDisconnect.setEnabled(connected);
         if (btnUpdateGpsFromRadio != null) btnUpdateGpsFromRadio.setEnabled(connected);
         if (switchAugmentGpsFromRadio != null) switchAugmentGpsFromRadio.setEnabled(connected);
+        if (btnInitialChannelGroupSetup != null) btnInitialChannelGroupSetup.setEnabled(connected);
+        if (btnChannelGroup != null) btnChannelGroup.setEnabled(true);
+        if (btnImportChannels != null) btnImportChannels.setEnabled(true);
+        if (btnExportChannels != null) btnExportChannels.setEnabled(true);
         refreshFavoriteStrip();
         updateScanButtonText();
         if (!connected) {
@@ -889,7 +923,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
         updateTxPowerButtonUi();
         if (!connected) {
             currentTxPowerLevel = UVProRadioControlManager.TX_POWER_LOW;
+            currentChannelGroup = 0;
+            availableChannelGroups = UVProRadioControlManager.DEFAULT_GROUP_COUNT;
         }
+        updateChannelGroupButtonUi();
     }
 
     private void updateContactCount() {
@@ -1116,6 +1153,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         updateRadioSilenceButtonUi();
         updateAprsSectionUi();
+        updateChannelGroupButtonUi();
     }
 
     private void requestManualRadioGpsUpdate() {
@@ -1149,6 +1187,454 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
         prefs.edit().putBoolean(RadioGpsBridge.PREF_AUGMENT_GPS_FROM_RADIO, enabled).apply();
+    }
+
+    private void updateChannelGroupButtonUi() {
+        if (btnChannelGroup == null) {
+            return;
+        }
+        btnChannelGroup.setText(String.format(
+                Locale.US, "Group\n%d", currentChannelGroup + 1));
+    }
+
+    private void refreshChannelGroupFromRadioAsync() {
+        refreshChannelGroupFromRadioAsync(false);
+    }
+
+    private void refreshChannelGroupFromRadioAsync(boolean refreshGrid) {
+        if (radioControlManager == null || !btManager.isConnected()) {
+            return;
+        }
+        new Thread(() -> {
+            UVProRadioControlManager.ChannelGroupInfo info =
+                    radioControlManager.readCurrentGroupInfo();
+            if (info == null) {
+                // Startup read can be transiently empty while radio settles.
+                try {
+                    Thread.sleep(250L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                info = radioControlManager.readCurrentGroupInfo();
+            }
+            if (info == null) {
+                return;
+            }
+            final UVProRadioControlManager.ChannelGroupInfo finalInfo = info;
+            getMapView().post(() -> {
+                currentChannelGroup = finalInfo.currentGroupIndex;
+                availableChannelGroups = Math.max(1, finalInfo.groupCount);
+                updateChannelGroupButtonUi();
+                if (refreshGrid) {
+                    refreshChannelGridFullAsync();
+                }
+            });
+        }, "uvpro-read-group").start();
+    }
+
+    private void runInitialChannelGroupSetupAsync() {
+        if (radioControlManager == null || !btManager.isConnected()) {
+            Toast.makeText(getMapView().getContext(),
+                    "Connect to radio first.",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        pulseInitialGroupSetupButtonFeedback();
+        appendLog("Starting Initial Channel Group Setup...");
+        if (btnInitialChannelGroupSetup != null) {
+            btnInitialChannelGroupSetup.setEnabled(false);
+        }
+        new Thread(() -> {
+            try {
+                UVProRadioControlManager.ChannelGroupInfo info = radioControlManager.readCurrentGroupInfo();
+                final int originalGroup = info != null ? info.currentGroupIndex : currentChannelGroup;
+                final int groupCount = info != null
+                        ? Math.max(1, info.groupCount)
+                        : UVProRadioControlManager.DEFAULT_GROUP_COUNT;
+                UVProRadioControlManager.ManualChannelSpec aprsSeed =
+                        new UVProRadioControlManager.ManualChannelSpec(
+                                "APRS",
+                                144.390,
+                                144.390,
+                                null,
+                                null,
+                                true,
+                                false,
+                                true,
+                                true,
+                                -1);
+                int seeded = 0;
+                for (int group = 0; group < groupCount; group++) {
+                    UVProRadioControlManager.ProgramResult select = radioControlManager.setChannelGroup(group);
+                    if (!select.success) {
+                        // Empty groups may reject selection until seeded.
+                        UVProRadioControlManager.ProgramResult blindSeed =
+                                radioControlManager.seedAprsChannelInGroupBlind(group, aprsSeed);
+                        if (blindSeed.success) {
+                            seeded++;
+                        }
+                        continue;
+                    }
+                    UVProRadioControlManager.RadioControlSnapshot snapshot = radioControlManager.readSnapshot(30);
+                    if (isGroupEmpty(snapshot)) {
+                        UVProRadioControlManager.ProgramResult write =
+                                radioControlManager.programManualChannel(
+                                        UVProRadioControlManager.CHANNELS_PER_GROUP - 1,
+                                        aprsSeed);
+                        if (write.success) {
+                            seeded++;
+                        }
+                    }
+                }
+                radioControlManager.setChannelGroup(originalGroup);
+                final int seededCount = seeded;
+                getMapView().post(() -> {
+                    if (btnInitialChannelGroupSetup != null) {
+                        btnInitialChannelGroupSetup.setEnabled(true);
+                    }
+                    stopInitialGroupSetupPulse(true);
+                    refreshChannelGroupFromRadioAsync(true);
+                    appendLog("Channel Group Setup Complete");
+                    showInfoDialog("Channel Group Setup Complete");
+                    if (seededCount > 0) {
+                        appendLog(String.format(Locale.US,
+                                "Seeded APRS on CH30 for %d empty group(s).", seededCount));
+                    }
+                });
+            } catch (Exception e) {
+                getMapView().post(() -> {
+                    if (btnInitialChannelGroupSetup != null) {
+                        btnInitialChannelGroupSetup.setEnabled(true);
+                    }
+                    stopInitialGroupSetupPulse(true);
+                    appendLog("Initial group setup failed: " + e.getMessage());
+                });
+            }
+        }, "uvpro-initial-group-setup").start();
+    }
+
+    private static boolean isGroupEmpty(UVProRadioControlManager.RadioControlSnapshot snapshot) {
+        if (snapshot == null || snapshot.channels == null || snapshot.channels.length == 0) {
+            return true;
+        }
+        for (UVProRadioControlManager.ChannelSummary c : snapshot.channels) {
+            if (c == null) {
+                continue;
+            }
+            boolean hasFreq = c.rxFreqMHz > 0.0 || c.txFreqMHz > 0.0;
+            boolean hasName = c.name != null && !c.name.trim().isEmpty();
+            if (hasFreq || hasName) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void cycleChannelGroup() {
+        if (radioControlManager == null || !btManager.isConnected()) {
+            Toast.makeText(getMapView().getContext(),
+                    "Connect to radio first.",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final int next = (currentChannelGroup + 1) % Math.max(1, availableChannelGroups);
+        appendLog(String.format(Locale.US, "Switching to Group %d...", next + 1));
+        new Thread(() -> {
+            UVProRadioControlManager.ProgramResult result =
+                    radioControlManager.setChannelGroup(next);
+            getMapView().post(() -> {
+                appendLog(result.message);
+                if (result.success) {
+                    currentChannelGroup = next;
+                    updateChannelGroupButtonUi();
+                    refreshChannelGridFullAsync();
+                    verifyGroupSwitchAcceptedAsync(next);
+                } else {
+                    Toast.makeText(getMapView().getContext(),
+                            result.message, Toast.LENGTH_LONG).show();
+                }
+            });
+        }, "uvpro-set-group").start();
+    }
+
+    private void verifyGroupSwitchAcceptedAsync(int expectedGroup) {
+        if (radioControlManager == null || !btManager.isConnected()) {
+            return;
+        }
+        new Thread(() -> {
+            UVProRadioControlManager.ChannelGroupInfo info = radioControlManager.readCurrentGroupInfo();
+            if (info == null) {
+                try {
+                    Thread.sleep(250L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                info = radioControlManager.readCurrentGroupInfo();
+            }
+            if (info != null && info.currentGroupIndex != expectedGroup) {
+                getMapView().post(() -> showInfoDialog(
+                        "Please run \"Initial Channel Group Setup\" under the actions settings of the plugin"));
+            }
+        }, "uvpro-verify-group-switch").start();
+    }
+
+    private void showImportChannelsPicker() {
+        File dir = new File("/sdcard/atak/tools/import");
+        if (!dir.exists() || !dir.isDirectory()) {
+            appendLog("Import folder not found: /atak/tools/import");
+            return;
+        }
+        File[] csv = dir.listFiles(f -> f != null && f.isFile()
+                && f.getName().toLowerCase(Locale.US).endsWith(".csv"));
+        if (csv == null || csv.length == 0) {
+            appendLog("No CSV files found in /atak/tools/import");
+            return;
+        }
+        java.util.Arrays.sort(csv, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+        String[] names = new String[csv.length];
+        for (int i = 0; i < csv.length; i++) {
+            names[i] = csv[i].getName();
+        }
+        final int[] selectedIndex = {-1};
+        new AlertDialog.Builder(getMapView().getContext())
+                .setTitle("Import Channels")
+                .setSingleChoiceItems(names, -1, (d, which) -> selectedIndex[0] = which)
+                .setPositiveButton("Import", (d, which) -> {
+                    if (selectedIndex[0] < 0 || selectedIndex[0] >= csv.length) {
+                        appendLog("No CSV selected for import.");
+                        return;
+                    }
+                    importChannelsFromFile(csv[selectedIndex[0]]);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void importChannelsFromFile(File csvFile) {
+        if (radioControlManager == null || !btManager.isConnected()) {
+            appendLog("Connect to radio before import.");
+            return;
+        }
+        final int targetGroup = currentChannelGroup;
+        appendLog(String.format(Locale.US,
+                "Importing %s to Group %d...", csvFile.getName(), targetGroup + 1));
+        new Thread(() -> {
+            UVProRadioControlManager.ProgramResult select =
+                    radioControlManager.setChannelGroup(targetGroup);
+            if (!select.success) {
+                getMapView().post(() -> appendLog("Import aborted: " + select.message));
+                return;
+            }
+            UVProRadioControlManager.ManualChannelSpec[] rows = parseCsvChannelsBySlot(csvFile);
+            int validRows = 0;
+            for (UVProRadioControlManager.ManualChannelSpec row : rows) {
+                if (row != null) {
+                    validRows++;
+                }
+            }
+            if (validRows == 0) {
+                getMapView().post(() -> appendLog("No valid channels parsed from CSV."));
+                return;
+            }
+            int applied = 0;
+            int cleared = 0;
+            String firstError = null;
+            for (int i = 0; i < Math.min(UVProRadioControlManager.CHANNELS_PER_GROUP, rows.length); i++) {
+                UVProRadioControlManager.ProgramResult r;
+                if (rows[i] == null) {
+                    // CSV empty row means explicitly clear this channel slot.
+                    r = radioControlManager.clearManualChannel(i);
+                    if (r.success) {
+                        cleared++;
+                    }
+                } else {
+                    r = radioControlManager.programManualChannel(i, rows[i]);
+                }
+                if (r.success) {
+                    applied++;
+                } else if (firstError == null) {
+                    firstError = r.message;
+                }
+            }
+            int imported = applied;
+            String finalError = firstError;
+            int finalCleared = cleared;
+            getMapView().post(() -> {
+                appendLog(String.format(Locale.US,
+                        "Imported %d slot(s) to Group %d (%d cleared).",
+                        imported, targetGroup + 1, finalCleared));
+                if (finalError != null) {
+                    appendLog("Import note: " + finalError);
+                }
+                refreshChannelGroupFromRadioAsync(true);
+            });
+        }, "uvpro-import-group").start();
+    }
+
+    private void exportCurrentGroupChannels() {
+        if (radioControlManager == null || !btManager.isConnected()) {
+            appendLog("Connect to radio before export.");
+            return;
+        }
+        new Thread(() -> {
+            UVProRadioControlManager.RadioControlSnapshot snapshot =
+                    radioControlManager.readSnapshotForGroup(currentChannelGroup, 30);
+            if (snapshot == null || snapshot.channels == null) {
+                getMapView().post(() -> appendLog("Export failed: could not read channels."));
+                return;
+            }
+            File outDir = new File("/sdcard/atak/tools/datapackage/transfer");
+            if (!outDir.exists() && !outDir.mkdirs()) {
+                getMapView().post(() -> appendLog("Export failed: could not create output folder."));
+                return;
+            }
+            String dtg = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+            String fileName = String.format(Locale.US, "group%d_export_%s.csv",
+                    currentChannelGroup + 1, dtg);
+            File out = new File(outDir, fileName);
+            try (PrintWriter pw = new PrintWriter(new FileWriter(out))) {
+                pw.println("Channel,Name,RX_MHz,TX_MHz,TX_Tone,RX_Tone,Scan,Muted");
+                for (UVProRadioControlManager.ChannelSummary c : snapshot.channels) {
+                    if (c == null) continue;
+                    pw.println(String.format(Locale.US, "%d,%s,%.5f,%.5f,%s,%s,%s,%s",
+                            displayChannelNumber(c.channelId),
+                            safeCsv(c.name),
+                            c.rxFreqMHz,
+                            c.txFreqMHz,
+                            safeCsv(String.valueOf(c.txTone == null ? "" : c.txTone)),
+                            safeCsv(String.valueOf(c.rxTone == null ? "" : c.rxTone)),
+                            c.scanEnabled,
+                            c.muted));
+                }
+            } catch (Exception e) {
+                getMapView().post(() -> appendLog("Export failed: " + e.getMessage()));
+                return;
+            }
+            getMapView().post(() -> {
+                appendLog(fileName + " exported to /atak/tools/datapackage/transfer");
+                Toast.makeText(getMapView().getContext(),
+                        fileName + " exported to /atak/tools/datapackage/transfer",
+                        Toast.LENGTH_LONG).show();
+            });
+        }, "uvpro-export-group").start();
+    }
+
+    private UVProRadioControlManager.ManualChannelSpec[] parseCsvChannelsBySlot(File file) {
+        UVProRadioControlManager.ManualChannelSpec[] out =
+                new UVProRadioControlManager.ManualChannelSpec[UVProRadioControlManager.CHANNELS_PER_GROUP];
+        try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+            String line;
+            Map<String, Integer> hdr = new HashMap<>();
+            boolean first = true;
+            int rowIndex = 0;
+            while ((line = br.readLine()) != null) {
+                line = line.replace("\u0000", "");
+                if (line.startsWith("#")) continue;
+                // After header is parsed, blank lines represent empty channel slots.
+                if (line.trim().isEmpty()) {
+                    if (!first && rowIndex < UVProRadioControlManager.CHANNELS_PER_GROUP) {
+                        rowIndex++;
+                    }
+                    continue;
+                }
+                String[] p = line.split(",", -1);
+                if (first) {
+                    first = false;
+                    for (int i = 0; i < p.length; i++) {
+                        hdr.put(p[i].trim().toLowerCase(Locale.US), i);
+                    }
+                    if (hdr.containsKey("rx_mhz") || hdr.containsKey("rx")
+                            || hdr.containsKey("frequency")
+                            || hdr.containsKey("rx_freq")
+                            || hdr.containsKey("tx_freq")) {
+                        continue;
+                    }
+                }
+                if (rowIndex >= UVProRadioControlManager.CHANNELS_PER_GROUP) {
+                    break;
+                }
+                double rx = parseCsvFrequency(p, hdr,
+                        "rx_mhz", "rx", "frequency", "rxfreq", "rx_freq", "receive_frequency");
+                if (rx <= 0) {
+                    rowIndex++;
+                    continue;
+                }
+                double tx = parseCsvFrequency(p, hdr,
+                        "tx_mhz", "tx", "txfreq", "tx_freq", "transmit_frequency");
+                if (tx <= 0) tx = rx;
+                String name = parseCsvText(p, hdr, "name", "channel_name", "title", "channel");
+                if (name == null || name.trim().isEmpty()) {
+                    name = "CH";
+                }
+                name = name.replace("\u0000", "").trim();
+                UVProRadioControlManager.ManualChannelSpec spec =
+                        new UVProRadioControlManager.ManualChannelSpec(
+                                name,
+                                rx,
+                                tx,
+                                null,
+                                null,
+                                true,
+                                false,
+                                true,
+                                true,
+                                -1);
+                out[rowIndex] = spec;
+                rowIndex++;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "parseCsvChannels failed", e);
+        }
+        return out;
+    }
+
+    private static double parseCsvFrequency(String[] parts, Map<String, Integer> hdr, String... keys) {
+        double raw = parseCsvDouble(parts, hdr, keys);
+        if (raw <= 0) {
+            return -1.0;
+        }
+        // Accept Hz-formatted CSVs (e.g. 146520000) and MHz-formatted CSVs.
+        return raw > 1_000_000.0 ? (raw / 1_000_000.0) : raw;
+    }
+
+    private static double parseCsvDouble(String[] parts, Map<String, Integer> hdr, String... keys) {
+        for (String k : keys) {
+            Integer idx = hdr.get(k.toLowerCase(Locale.US));
+            if (idx != null && idx >= 0 && idx < parts.length) {
+                try {
+                    return Double.parseDouble(parts[idx].trim());
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return -1.0;
+    }
+
+    private static String parseCsvText(String[] parts, Map<String, Integer> hdr, String... keys) {
+        for (String k : keys) {
+            Integer idx = hdr.get(k.toLowerCase(Locale.US));
+            if (idx != null && idx >= 0 && idx < parts.length) {
+                String v = parts[idx].trim();
+                if (!v.isEmpty()) return v;
+            }
+        }
+        return "";
+    }
+
+    private int displayChannelNumber(int channelId) {
+        if (channelId >= 0 && channelId < UVProRadioControlManager.CHANNELS_PER_GROUP) {
+            return channelId + 1;
+        }
+        return Math.max(1, channelId + 1);
+    }
+
+    private static String safeCsv(String value) {
+        if (value == null) return "";
+        String v = value.replace("\"", "\"\"");
+        if (v.contains(",") || v.contains("\"")) {
+            return "\"" + v + "\"";
+        }
+        return v;
     }
 
     private void pulseUpdateGpsButtonFeedback() {
@@ -1192,6 +1678,63 @@ public class UVProDropDownReceiver extends DropDownReceiver
             }
         });
         updateGpsButtonPulseAnimator.start();
+    }
+
+    private void pulseInitialGroupSetupButtonFeedback() {
+        if (btnInitialChannelGroupSetup == null) {
+            return;
+        }
+        try {
+            btnInitialChannelGroupSetup.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+        } catch (Exception ignored) {
+        }
+        stopInitialGroupSetupPulse(false);
+        btnInitialChannelGroupSetup.setBackgroundTintList(null);
+        initialGroupSetupPulseDrawable = buildVfoButtonBackground(
+                0xFF455A64, 0x00FFEB3B, EDIT_SELECTION_STROKE_DP);
+        btnInitialChannelGroupSetup.setBackground(initialGroupSetupPulseDrawable);
+        initialGroupSetupPulseAnimator = ValueAnimator.ofObject(
+                new ArgbEvaluator(),
+                0x11FFEB3B,
+                0xFFFFEB3B);
+        initialGroupSetupPulseAnimator.setDuration(220L);
+        initialGroupSetupPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        initialGroupSetupPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
+        initialGroupSetupPulseAnimator.addUpdateListener(animation -> {
+            if (initialGroupSetupPulseDrawable == null || btnInitialChannelGroupSetup == null) {
+                return;
+            }
+            int color = (Integer) animation.getAnimatedValue();
+            initialGroupSetupPulseDrawable.setStroke(
+                    dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
+            btnInitialChannelGroupSetup.invalidate();
+        });
+        initialGroupSetupPulseAnimator.start();
+    }
+
+    private void stopInitialGroupSetupPulse(boolean restoreBackground) {
+        ValueAnimator animator = initialGroupSetupPulseAnimator;
+        initialGroupSetupPulseAnimator = null;
+        if (animator != null) {
+            animator.cancel();
+        }
+        initialGroupSetupPulseDrawable = null;
+        if (restoreBackground && btnInitialChannelGroupSetup != null) {
+            applyPillButtonBackground(btnInitialChannelGroupSetup, 0xFF455A64);
+        }
+    }
+
+    private void showInfoDialog(String message) {
+        if (getMapView() == null || getMapView().getContext() == null) {
+            return;
+        }
+        try {
+            new AlertDialog.Builder(getMapView().getContext())
+                    .setMessage(message)
+                    .setPositiveButton("OK", null)
+                    .show();
+        } catch (Exception ignored) {
+        }
     }
 
     private void stopUpdateGpsButtonPulse(boolean restoreBackground) {
@@ -1375,12 +1918,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
             return;
         }
         new Thread(() -> {
+            int targetGroup = currentChannelGroup;
+            final int finalTargetGroup = targetGroup;
             UVProRadioControlManager.RadioControlSnapshot snapshot =
-                    fullSnapshot
-                            ? radioControlManager.readSnapshot(30)
-                            : radioControlManager.readSnapshotFast(30, forceRefreshChannelId);
+                    radioControlManager.readSnapshotForGroup(finalTargetGroup, 30);
             getMapView().post(() -> {
                 try {
+                    // Snapshot reads are not authoritative for selected group UI state.
+                    // Keep button state driven by explicit user/group-sync actions only.
                     renderChannelGrid(snapshot);
                 } finally {
                     snapshotReadInFlight.set(false);
@@ -1501,7 +2046,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             chip.setText(String.format(
                     Locale.US,
                     "%02d %s\n%.5f",
-                    channel.channelId + 1,
+                    displayChannelNumber(channel.channelId),
                     name,
                     channel.rxFreqMHz));
 
@@ -1608,7 +2153,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         if (channelTargetDigital) {
             appendLog(String.format(Locale.US,
-                    "Setting Digital to CH%02d...", channelId + 1));
+                    "Setting Digital to CH%02d...", displayChannelNumber(channelId)));
             new Thread(() -> {
                 UVProRadioControlManager.ProgramResult result =
                         radioControlManager.setDigitalChannel(channelId);
@@ -1633,7 +2178,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         appendLog(String.format(Locale.US,
                 "Setting %s to CH%02d...",
                 targetB ? "VFO-B" : "VFO-A",
-                channelId + 1));
+                displayChannelNumber(channelId)));
         new Thread(() -> {
             UVProRadioControlManager.ProgramResult result =
                     radioControlManager.setWatchChannel(channelId, targetB);
@@ -1704,7 +2249,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
 
         String aText = channelA >= 0
-                ? String.format(Locale.US, "A: CH %02d", channelA + 1)
+                ? String.format(Locale.US, "A: CH %02d", displayChannelNumber(channelA))
                 : "A: CH --";
         btnVfoA.setText(buildVfoLabelWithTxHighlight(aText, !dualWatchEnabled || !txOnB));
         btnVfoA.setSingleLine(true);
@@ -1724,7 +2269,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             if (dualWatchEnabled) {
                 btnVfoB.setVisibility(View.VISIBLE);
                 String bText = channelB >= 0
-                        ? String.format(Locale.US, "B: CH %02d", channelB + 1)
+                        ? String.format(Locale.US, "B: CH %02d", displayChannelNumber(channelB))
                         : "B: CH --";
                 btnVfoB.setText(buildVfoLabelWithTxHighlight(bText, txOnB));
                 btnVfoB.setSingleLine(true);
@@ -2022,7 +2567,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         layout.addView(cbWide);
 
         new AlertDialog.Builder(ctx)
-                .setTitle(String.format(Locale.US, "Program CH%02d", channel.channelId + 1))
+                .setTitle(String.format(Locale.US, "Program CH%02d",
+                        displayChannelNumber(channel.channelId)))
                 .setView(layout)
                 .setPositiveButton("Save", (dialog, which) -> {
                     String name = editName.getText().toString().trim();
@@ -2081,7 +2627,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                                     sq
                             );
 
-                    appendLog(String.format(Locale.US, "Programming CH%02d...", channel.channelId + 1));
+                    appendLog(String.format(Locale.US, "Programming CH%02d...",
+                            displayChannelNumber(channel.channelId)));
                     new Thread(() -> {
                         UVProRadioControlManager.ProgramResult result =
                                 radioControlManager.programManualChannel(channel.channelId, spec);
@@ -2227,7 +2774,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         setDigitalOnlyArmed(false);
         appendLog(String.format(Locale.US,
                 "Digital only: programming CH%02d and KISS lock...",
-                selectedChannelId + 1));
+                displayChannelNumber(selectedChannelId)));
         new Thread(() -> {
             UVProRadioControlManager.ProgramResult result =
                     radioControlManager.setDigitalChannel(selectedChannelId);
@@ -2244,7 +2791,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     setDigitalOnlyActive(true, selectedChannelId);
                     appendLog(String.format(Locale.US,
                             "Digital only active on CH%02d at %.5f MHz (KISS locked).",
-                            selectedChannelId + 1, finalFreq));
+                            displayChannelNumber(selectedChannelId), finalFreq));
                     Toast.makeText(getMapView().getContext(),
                             "Digital only mode active. Long press button to disable.",
                             Toast.LENGTH_LONG).show();
@@ -2409,7 +2956,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
             final int selectedChannelId = channelId;
             getMapView().post(() -> appendLog(String.format(
-                    Locale.US, "Loading selected repeater to CH%02d...", selectedChannelId + 1)));
+                    Locale.US, "Loading selected repeater to CH%02d...",
+                    displayChannelNumber(selectedChannelId))));
             UVProRadioControlManager.ProgramResult result =
                     radioControlManager.programRepeaterAndTune(armedSpec, selectedChannelId);
             getMapView().post(() -> {
@@ -2992,6 +3540,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     public void onDropDownClose() {
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
+        stopInitialGroupSetupPulse(true);
         if (repeaterLoadFocusAnimator != null) {
             repeaterLoadFocusAnimator.cancel();
             repeaterLoadFocusAnimator = null;
@@ -3009,7 +3558,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (!visible) {
             stopActiveVfoPulse();
         } else {
-            refreshChannelGridFullAsync();
+            refreshChannelGroupFromRadioAsync(true);
             if (btManager.isConnected()) {
                 refreshTxPowerFromRadioAsync();
             }
@@ -3028,6 +3577,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         radioGpsAugmentController.shutdown();
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
+        stopInitialGroupSetupPulse(true);
         if (repeaterLoadFocusAnimator != null) {
             repeaterLoadFocusAnimator.cancel();
             repeaterLoadFocusAnimator = null;

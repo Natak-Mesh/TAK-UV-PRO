@@ -4,6 +4,8 @@ import android.util.Log;
 
 import com.atakmap.android.maps.MapItem;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
+import com.uvpro.plugin.location.RadioGpsBridge;
+import com.uvpro.plugin.location.RadioPositionFix;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
@@ -26,6 +28,7 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
     private static final int CMD_READ_RF_CH = 13;
     private static final int CMD_WRITE_RF_CH = 14;
     private static final int CMD_GET_HT_STATUS = 20;
+    private static final int CMD_GET_POSITION = 76;
     private static final int CMD_REGISTER_NOTIFICATION = 6;
     private static final int CMD_EVENT_NOTIFICATION = 9;
     private static final int EVENT_HT_STATUS_CHANGED = 1;
@@ -856,6 +859,31 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
             ensureChannelCached(channelId, cachedChannelCount > 0 ? cachedChannelCount : 30, true);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Read the radio's internal GPS fix ({@code GET_POSITION}, HT Commander layout).
+     */
+    public RadioPositionFix readRadioPosition() {
+        if (!btManager.isConnected()) {
+            return null;
+        }
+        try {
+            CommandReply reply = sendCommandSync(
+                    BASIC_GROUP, CMD_GET_POSITION, new byte[0], 3500);
+            if (reply == null || reply.status != STATUS_SUCCESS
+                    || reply.payload == null || reply.payload.length < 18) {
+                Log.w(TAG, "GET_POSITION failed status="
+                        + (reply != null ? reply.status : "null")
+                        + " len=" + (reply != null && reply.payload != null
+                        ? reply.payload.length : 0));
+                return null;
+            }
+            return RadioGpsBridge.parsePositionPayload(reply.payload);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
         }
     }
 

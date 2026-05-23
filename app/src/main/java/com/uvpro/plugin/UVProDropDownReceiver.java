@@ -22,6 +22,7 @@ import android.util.Log;
 import android.text.InputType;
 import android.text.method.ScrollingMovementMethod;
 import android.view.LayoutInflater;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -44,9 +45,11 @@ import com.atakmap.android.ipc.AtakBroadcast;
 import com.atakmap.android.maps.MapView;
 
 import com.uvpro.plugin.beacon.SmartBeacon;
+import com.uvpro.plugin.bluetooth.BtConnectionManager;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry.BtDeviceRecord;
-import com.uvpro.plugin.bluetooth.BtConnectionManager;
+import com.uvpro.plugin.location.RadioGpsAugmentController;
+import com.uvpro.plugin.location.RadioGpsBridge;
 import com.uvpro.plugin.kiss.KissRadioFrequencyControl;
 import com.uvpro.plugin.contacts.ContactTracker;
 import com.uvpro.plugin.contacts.RadioContact;
@@ -158,6 +161,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private TextView teamColorText;
     private Button btnScan;
     private Button btnDisconnect;
+    private Button btnUpdateGpsFromRadio;
     private Button btnLoadSelectedRepeater;
     private Button btnTxPower;
     private Button btnDigitalOnlyMode;
@@ -170,6 +174,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private GridLayout channelsGrid;
     private Switch switchDualWatch;
     private Switch switchDigitalEdit;
+    private Switch switchAugmentGpsFromRadio;
 
     private TextView favoritesLabel;
     private HorizontalScrollView favoritesScroll;
@@ -201,6 +206,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private int txCount = 0;
     private int rxCount = 0;
     private UVProRadioControlManager radioControlManager;
+    private final RadioGpsAugmentController radioGpsAugmentController =
+            new RadioGpsAugmentController();
     private boolean activeVfoB = false;
     private boolean channelTargetDigital = false;
     private int selectedTarget = TARGET_A;
@@ -216,6 +223,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Button pulsingVfoButton;
     private GradientDrawable pulsingVfoDrawable;
     private ObjectAnimator repeaterLoadFocusAnimator;
+    private ValueAnimator updateGpsButtonPulseAnimator;
+    private GradientDrawable updateGpsButtonPulseDrawable;
     private final AtomicBoolean snapshotReadInFlight = new AtomicBoolean(false);
     private final AtomicBoolean snapshotRefreshPending = new AtomicBoolean(false);
     private final AtomicBoolean snapshotFullRefreshPending = new AtomicBoolean(false);
@@ -254,6 +263,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     public void setRadioControlManager(UVProRadioControlManager radioControlManager) {
         this.radioControlManager = radioControlManager;
+        radioGpsAugmentController.install(btManager, radioControlManager, getMapView());
+        radioGpsAugmentController.setAugmentEnabled(
+                isAugmentGpsPreferenceEnabled(getMapView().getContext()));
         if (this.radioControlManager != null) {
             this.radioControlManager.setSelectionListener(spec ->
                     getMapView().post(this::updateSelectedRepeaterUi));
@@ -375,6 +387,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         teamColorText = rootView.findViewById(getId("text_team_color"));
         btnScan = rootView.findViewById(getId("btn_scan"));
         btnDisconnect = rootView.findViewById(getId("btn_disconnect"));
+        btnUpdateGpsFromRadio = rootView.findViewById(getId("btn_update_gps_from_radio"));
+        switchAugmentGpsFromRadio = rootView.findViewById(getId("switch_augment_gps_from_radio"));
         btnLoadSelectedRepeater = rootView.findViewById(getId("btn_load_selected_repeater"));
         btnTxPower = rootView.findViewById(getId("btn_tx_power"));
         btnDigitalOnlyMode = rootView.findViewById(getId("btn_digital_only_mode"));
@@ -406,6 +420,21 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnDisconnect.setOnClickListener(v -> {
             btManager.disconnect();
         });
+        if (btnUpdateGpsFromRadio != null) {
+            btnUpdateGpsFromRadio.setOnClickListener(v -> requestManualRadioGpsUpdate());
+        }
+        if (switchAugmentGpsFromRadio != null) {
+            switchAugmentGpsFromRadio.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (!buttonView.isPressed()) {
+                    return;
+                }
+                setAugmentGpsPreference(isChecked);
+                radioGpsAugmentController.setAugmentEnabled(isChecked);
+                appendLog(isChecked
+                        ? "Radio GPS augment enabled (fallback mode)."
+                        : "Radio GPS augment disabled.");
+            });
+        }
 
         // --- Encryption switch ---
         if (switchEncryption != null) {
@@ -724,6 +753,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     @Override
     public void onConnected(BluetoothDevice device) {
+        radioGpsAugmentController.onRadioConnected();
         if (device != null) {
             BluetoothDeviceRegistry.recordConnection(getMapView().getContext(),
                     device);
@@ -757,6 +787,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     @Override
     public void onDisconnected(String reason) {
+        radioGpsAugmentController.onRadioDisconnected();
         getMapView().post(() -> {
             clearDigitalOnlyStateUiOnly();
             updateConnectionUI(false, null);
@@ -843,6 +874,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         if (btnScan != null) btnScan.setEnabled(!connected);
         if (btnDisconnect != null) btnDisconnect.setEnabled(connected);
+        if (btnUpdateGpsFromRadio != null) btnUpdateGpsFromRadio.setEnabled(connected);
+        if (switchAugmentGpsFromRadio != null) switchAugmentGpsFromRadio.setEnabled(connected);
         refreshFavoriteStrip();
         updateScanButtonText();
         if (!connected) {
@@ -1069,6 +1102,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
             switchSmartBeacon.setChecked(smartOn);
         }
         applySmartBeaconIntervalGreyState(smartOn);
+        if (switchAugmentGpsFromRadio != null) {
+            switchAugmentGpsFromRadio.setChecked(isAugmentGpsPreferenceEnabled(ctx));
+        }
 
         // Team color (ATAK preference)
         try {
@@ -1080,6 +1116,94 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         updateRadioSilenceButtonUi();
         updateAprsSectionUi();
+    }
+
+    private void requestManualRadioGpsUpdate() {
+        if (!btManager.isConnected()) {
+            Toast.makeText(getMapView().getContext(),
+                    "Connect to the radio first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        pulseUpdateGpsButtonFeedback();
+        appendLog("Reading GPS from radio...");
+        new Thread(() -> {
+            RadioGpsBridge.UpdateResult result = radioGpsAugmentController.manualUpdate();
+            getMapView().post(() -> {
+                appendLog(result.message);
+            });
+        }, "uvpro-radio-gps-manual").start();
+    }
+
+    private boolean isAugmentGpsPreferenceEnabled(Context ctx) {
+        if (ctx == null) {
+            return false;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        return prefs.getBoolean(RadioGpsBridge.PREF_AUGMENT_GPS_FROM_RADIO, false);
+    }
+
+    private void setAugmentGpsPreference(boolean enabled) {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        prefs.edit().putBoolean(RadioGpsBridge.PREF_AUGMENT_GPS_FROM_RADIO, enabled).apply();
+    }
+
+    private void pulseUpdateGpsButtonFeedback() {
+        if (btnUpdateGpsFromRadio == null) {
+            return;
+        }
+        try {
+            btnUpdateGpsFromRadio.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+        } catch (Exception ignored) {
+        }
+        stopUpdateGpsButtonPulse(false);
+        btnUpdateGpsFromRadio.setBackgroundTintList(null);
+        updateGpsButtonPulseDrawable = buildVfoButtonBackground(
+                0xFF455A64, 0x00FFEB3B, EDIT_SELECTION_STROKE_DP);
+        btnUpdateGpsFromRadio.setBackground(updateGpsButtonPulseDrawable);
+        updateGpsButtonPulseAnimator = ValueAnimator.ofObject(
+                new ArgbEvaluator(),
+                0x11FFEB3B,
+                0xFFFFEB3B);
+        updateGpsButtonPulseAnimator.setDuration(220L);
+        updateGpsButtonPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        updateGpsButtonPulseAnimator.setRepeatCount(4);
+        updateGpsButtonPulseAnimator.addUpdateListener(animation -> {
+            if (updateGpsButtonPulseDrawable == null || btnUpdateGpsFromRadio == null) {
+                return;
+            }
+            int color = (Integer) animation.getAnimatedValue();
+            updateGpsButtonPulseDrawable.setStroke(
+                    dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
+            btnUpdateGpsFromRadio.invalidate();
+        });
+        updateGpsButtonPulseAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                stopUpdateGpsButtonPulse(true);
+            }
+
+            @Override
+            public void onAnimationCancel(android.animation.Animator animation) {
+                stopUpdateGpsButtonPulse(true);
+            }
+        });
+        updateGpsButtonPulseAnimator.start();
+    }
+
+    private void stopUpdateGpsButtonPulse(boolean restoreBackground) {
+        ValueAnimator animator = updateGpsButtonPulseAnimator;
+        updateGpsButtonPulseAnimator = null;
+        if (animator != null) {
+            animator.cancel();
+        }
+        updateGpsButtonPulseDrawable = null;
+        if (restoreBackground && btnUpdateGpsFromRadio != null) {
+            applyPillButtonBackground(btnUpdateGpsFromRadio, 0xFF455A64);
+        }
     }
 
     private void updateRadioSilenceButtonUi() {
@@ -2867,6 +2991,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     @Override
     public void onDropDownClose() {
         stopActiveVfoPulse();
+        stopUpdateGpsButtonPulse(true);
         if (repeaterLoadFocusAnimator != null) {
             repeaterLoadFocusAnimator.cancel();
             repeaterLoadFocusAnimator = null;
@@ -2900,7 +3025,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         // Unregister listeners
         btManager.removeListener(this);
         contactTracker.setListener(null);
+        radioGpsAugmentController.shutdown();
         stopActiveVfoPulse();
+        stopUpdateGpsButtonPulse(true);
         if (repeaterLoadFocusAnimator != null) {
             repeaterLoadFocusAnimator.cancel();
             repeaterLoadFocusAnimator = null;

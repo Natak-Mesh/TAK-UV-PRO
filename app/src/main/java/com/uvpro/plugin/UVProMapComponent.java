@@ -37,6 +37,7 @@ import com.uvpro.plugin.ui.SettingsFragment;
 import com.uvpro.plugin.aprs.AprsDetailsDropDownReceiver;
 import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.ax25.AprsIconsetInstaller;
+import com.uvpro.plugin.location.RadioGpsBridge;
 
 /**
  * UVPro Map Component — the central nervous system of the plugin.
@@ -124,6 +125,9 @@ public class UVProMapComponent extends DropDownMapComponent {
     private Runnable iconsetReminderRunnable;
     private android.content.BroadcastReceiver beaconIntervalReceiver;
     private final SmartBeacon smartBeacon = new SmartBeacon();
+    /** One startup pull from radio GPS after first successful BT connect. */
+    private final AtomicBoolean startupRadioGpsUpdateDone = new AtomicBoolean(false);
+    private final AtomicBoolean startupRadioGpsUpdateInFlight = new AtomicBoolean(false);
 
     /** Smart Beacon prefs are stored in ATAK (map) default prefs, not plugin prefs. */
     private Context getBeaconPrefsContext() {
@@ -164,6 +168,10 @@ public class UVProMapComponent extends DropDownMapComponent {
             // Operator requirement: periodic APRS beacon mode must always start OFF per launch.
             com.uvpro.plugin.ui.SettingsFragment.setAprsTxArmed(aprsPrefsCtx, false);
             com.uvpro.plugin.ui.SettingsFragment.setAprsDisableAtakTraffic(aprsPrefsCtx, false);
+            // Battery-safe default each launch: radio GPS augment starts OFF.
+            PreferenceManager.getDefaultSharedPreferences(aprsPrefsCtx).edit()
+                    .putBoolean(RadioGpsBridge.PREF_AUGMENT_GPS_FROM_RADIO, false)
+                    .apply();
         } catch (Exception e) {
             Log.w(TAG, "Could not reset APRS traffic default", e);
         }
@@ -247,6 +255,7 @@ try {
             public void onConnected(android.bluetooth.BluetoothDevice device) {
                 Log.d(TAG, "StatusOverlay: radio connected");
                 RadioStatusOverlay.setConnected(true);
+                triggerOneTimeStartupRadioGpsUpdate();
             }
             @Override
             public void onDisconnected(String reason) {
@@ -458,6 +467,38 @@ try {
         }
 
         Log.i(TAG, "UV-PRO plugin shutdown complete");
+    }
+
+    private void triggerOneTimeStartupRadioGpsUpdate() {
+        if (startupRadioGpsUpdateDone.get()) {
+            return;
+        }
+        if (!startupRadioGpsUpdateInFlight.compareAndSet(false, true)) {
+            return;
+        }
+        if (mapView == null) {
+            startupRadioGpsUpdateInFlight.set(false);
+            return;
+        }
+        mapView.postDelayed(() -> new Thread(() -> {
+            try {
+                if (btConnectionManager == null || !btConnectionManager.isConnected()) {
+                    Log.d(TAG, "Startup radio GPS update skipped (BT not connected)");
+                    return;
+                }
+                RadioGpsBridge.UpdateResult result = RadioGpsBridge.updateGpsFromRadio(
+                        btConnectionManager, radioControlManager, mapView);
+                Log.i(TAG, "Startup radio GPS update: " + result.message
+                        + " (success=" + result.success + ")");
+                if (result.success) {
+                    startupRadioGpsUpdateDone.set(true);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "Startup radio GPS update failed", e);
+            } finally {
+                startupRadioGpsUpdateInFlight.set(false);
+            }
+        }, "uvpro-startup-radio-gps").start(), 2200L);
     }
 
     /**

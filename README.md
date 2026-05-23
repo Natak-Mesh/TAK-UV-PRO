@@ -25,6 +25,8 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **TX Power (LOW / MED / HIGH)** | ✅ Working | **TX Power** button in the Radio panel (left of Dual Watch) cycles transmit power and writes both device settings and per-channel RF memory (digital/APRS + active VFO channels). Syncs from the radio on connect. |
 | **APRS TX mode (plugin-generated over KISS)** | ✅ Working | Optional APRS beacon TX runs in parallel with UV-PRO traffic. Requires FCC call + icon in settings, supports manual **Send APRS Beacon**, and can temporarily disable ATAK position beacons when desired. APRS chat requests ACK on the first message to a contact and auto-ACKs inbound APRS messages that request acknowledgment. |
 | **Channel grid refresh** | ✅ Working | After long-press manual channel edit/save, the channel grid re-reads that slot from the radio so labels/frequencies match what was programmed. |
+| **Channel group controls + CSV import/export** | ✅ Working | **Group** cycles the radio group and refreshes the channel grid. **Import Channels** lets the user choose a CSV from `/atak/tools/import` and writes the selected group with source-of-truth slot mapping (including explicit clears). **Export Channels** writes the current group CSV to `/atak/tools/datapackage/transfer`. |
+| **Initial Channel Group Setup** | ✅ Working | Actions panel button seeds empty groups only by programming **CH30 = APRS 144.390** so empty groups become selectable. Provides haptic + yellow pulse while running and completion popup when done. |
 | **Bluetooth Auto-Reconnect** | ✅ Working | Three-strategy SPP connection with exponential backoff reconnect (up to 5 attempts). |
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
@@ -35,6 +37,11 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 - RF group/message behavior was validated across a 3-device Wi-Fi↔RF bridge test (group create/send path stable, slot timing confirmed).
 - SA Relay now suppresses unchanged periodic SA/status payloads (`a-*`) per UID, so stationary Wi-Fi contacts are not rebroadcast over RF every 30 seconds when content has not changed.
 - Non-SA traffic (chat, routes, markers, targeted CoT) continues to relay normally.
+
+### 2026-05-23 Progress Update
+
+- Fixed channel-group state ownership so hardware group changes on the radio are no longer overwritten by background plugin polling.
+- Group/event handling now refreshes selected group state first, then refreshes the channel grid, so UI group label and grid stay aligned with the radio.
 
 ## How It Works
 
@@ -222,6 +229,10 @@ Use the **official ProGuard apply-mapping** from the ATAK/takrepo pipeline when 
 | **Long Press for Radio Silence** | Toggle TX block on/off (RX remains active). Active state is highlighted with an orange border. |
 | **Load Selected Repeater** | Arms repeater load mode (yellow border + `Select Channel` label), then writes/tunes selected repeater to the tapped channel |
 | **TX Power** | Tap to cycle **LOW → MED → HIGH**; updates global VFO settings and channel power flags on the digital/APRS channel plus active VFO slots |
+| **Group** | Cycles the radio's current channel group and refreshes the grid for that group. If group change does not stick (typically empty-group condition), plugin prompts to run **Initial Channel Group Setup**. |
+| **Import Channels** | Opens a chooser for CSV files in `/atak/tools/import`; after user confirmation, imports selected CSV into the active group using full-slot overwrite semantics (empty rows clear channels). |
+| **Export Channels** | Exports the active group to `/atak/tools/datapackage/transfer/groupx_export_DTG.csv`. |
+| **Initial Channel Group Setup** | Runs one-time group bootstrap from Actions panel: programs empty groups only with **CH30 APRS 144.390** and shows `Channel Group Setup Complete` on completion. |
 | **Plugin Settings** | APRS (FCC call, SSID, icon grid picker, message), Beacon, ping reply, SA Relay, encryption, retries, and **Administration** (slot count/time, distribute to net). Full list also under ATAK **Settings → Tool Preferences → UV-PRO Settings**. |
 
 ### Repeater workflow (KML)

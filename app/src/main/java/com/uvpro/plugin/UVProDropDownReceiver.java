@@ -243,6 +243,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private final AtomicBoolean snapshotReadInFlight = new AtomicBoolean(false);
     private final AtomicBoolean snapshotRefreshPending = new AtomicBoolean(false);
     private final AtomicBoolean snapshotFullRefreshPending = new AtomicBoolean(false);
+    private final AtomicBoolean groupReadInFlight = new AtomicBoolean(false);
+    private final AtomicBoolean groupRefreshGridPending = new AtomicBoolean(false);
     private UVProRadioControlManager.RadioControlSnapshot lastSnapshot;
     private boolean repeaterLoadArmed = false;
     private String repeaterLoadArmedUid;
@@ -284,8 +286,15 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (this.radioControlManager != null) {
             this.radioControlManager.setSelectionListener(spec ->
                     getMapView().post(this::updateSelectedRepeaterUi));
-            this.radioControlManager.setRadioEventListener(eventType ->
-                    getMapView().post(this::refreshChannelGridAsync));
+            this.radioControlManager.setRadioEventListener(eventType -> getMapView().post(() -> {
+                // Firmware emits channel/settings events when a user changes channel group
+                // directly on the radio. Re-read current group first, then refresh grid.
+                if (eventType == 5 || eventType == 6) {
+                    refreshChannelGroupFromRadioAsync(true);
+                } else {
+                    refreshChannelGridAsync();
+                }
+            }));
         }
     }
 
@@ -1205,30 +1214,47 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (radioControlManager == null || !btManager.isConnected()) {
             return;
         }
+        if (!groupReadInFlight.compareAndSet(false, true)) {
+            if (refreshGrid) {
+                groupRefreshGridPending.set(true);
+            }
+            return;
+        }
+        final boolean requestGridRefresh = refreshGrid;
         new Thread(() -> {
-            UVProRadioControlManager.ChannelGroupInfo info =
-                    radioControlManager.readCurrentGroupInfo();
-            if (info == null) {
-                // Startup read can be transiently empty while radio settles.
-                try {
-                    Thread.sleep(250L);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+            try {
+                UVProRadioControlManager.ChannelGroupInfo info =
+                        radioControlManager.readCurrentGroupInfo();
+                if (info == null) {
+                    // Startup read can be transiently empty while radio settles.
+                    try {
+                        Thread.sleep(250L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    info = radioControlManager.readCurrentGroupInfo();
                 }
-                info = radioControlManager.readCurrentGroupInfo();
-            }
-            if (info == null) {
-                return;
-            }
-            final UVProRadioControlManager.ChannelGroupInfo finalInfo = info;
-            getMapView().post(() -> {
-                currentChannelGroup = finalInfo.currentGroupIndex;
-                availableChannelGroups = Math.max(1, finalInfo.groupCount);
-                updateChannelGroupButtonUi();
-                if (refreshGrid) {
-                    refreshChannelGridFullAsync();
+                if (info == null) {
+                    if (requestGridRefresh) {
+                        getMapView().post(this::refreshChannelGridAsync);
+                    }
+                    return;
                 }
-            });
+                final UVProRadioControlManager.ChannelGroupInfo finalInfo = info;
+                getMapView().post(() -> {
+                    currentChannelGroup = finalInfo.currentGroupIndex;
+                    availableChannelGroups = Math.max(1, finalInfo.groupCount);
+                    updateChannelGroupButtonUi();
+                    if (requestGridRefresh) {
+                        refreshChannelGridFullAsync();
+                    }
+                });
+            } finally {
+                groupReadInFlight.set(false);
+                if (groupRefreshGridPending.getAndSet(false)) {
+                    refreshChannelGroupFromRadioAsync(true);
+                }
+            }
         }, "uvpro-read-group").start();
     }
 

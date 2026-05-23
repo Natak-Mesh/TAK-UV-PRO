@@ -464,22 +464,9 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
             notificationRegistrationOk = false;
             return null;
         }
-        int groups;
-        try {
-            groups = readRegionCount();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return null;
-        }
-        int selectedGroup = Math.max(0, Math.min(groups - 1, groupIndex));
-        ChannelGroupInfo info = readCurrentGroupInfo();
-        if (info != null && info.currentGroupIndex != selectedGroup) {
-            ProgramResult switched = setChannelGroup(selectedGroup);
-            if (!switched.success) {
-                Log.w(TAG, "readSnapshotForGroup: failed to sync region to group "
-                        + (selectedGroup + 1) + ": " + switched.message);
-            }
-        }
+        // Read-only snapshot: never force a group write here.
+        // Group changes must be explicit user actions (button/import/export/setup) so
+        // radio-side knob changes are not overwritten by background polling.
         return readSnapshot(Math.max(1, Math.min(CHANNELS_PER_GROUP, maxChannels)));
     }
 

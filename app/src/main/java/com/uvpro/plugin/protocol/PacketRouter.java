@@ -556,17 +556,24 @@ public class PacketRouter {
 
             Contacts contacts = Contacts.getInstance();
             Contact existing = contacts.getContactByUuid(uid);
-            if (!(existing instanceof IndividualContact) && normalized != null
-                    && !normalized.isEmpty()) {
-                Contact byCallsign = contacts.getFirstContactWithCallsign(normalized);
-                if (byCallsign instanceof IndividualContact) {
-                    existing = byCallsign;
-                }
-            }
 
             if (existing instanceof IndividualContact) {
                 IndividualContact ic = (IndividualContact) existing;
+                if (ic.getConnector(com.atakmap.android.contact.PluginConnector.CONNECTOR_TYPE)
+                        == null) {
+                    ic.addConnector(new com.atakmap.android.contact.PluginConnector(
+                            ChatBridge.ACTION_PLUGIN_CONTACT_GEOCHAT_SEND));
+                }
+                if (ic.getConnector(IpConnector.CONNECTOR_TYPE) == null) {
+                    ic.addConnector(new IpConnector((String) null));
+                }
+                com.atakmap.android.preference.AtakPreferences prefs =
+                        new com.atakmap.android.preference.AtakPreferences(mv.getContext());
+                prefs.set("contact.connector.default." + ic.getUID(),
+                        com.atakmap.android.contact.PluginConnector.CONNECTOR_TYPE);
                 if (item != null) {
+                    item.setMetaBoolean("sendable", true);
+                    item.setMetaString("endpoint", ChatBridge.ACTION_PLUGIN_CONTACT_GEOCHAT_SEND);
                     ic.setMapItem(item);
                     ic.dispatchChangeEvent();
                     return;
@@ -605,6 +612,10 @@ public class PacketRouter {
                     com.atakmap.android.contact.PluginConnector.CONNECTOR_TYPE);
 
             contacts.addContact(c);
+            if (item != null) {
+                item.setMetaBoolean("sendable", true);
+                item.setMetaString("endpoint", ChatBridge.ACTION_PLUGIN_CONTACT_GEOCHAT_SEND);
+            }
         } catch (Exception e) {
             Log.e(TAG, "linkRadioIndividualContactToMapMarker failed uid=" + uid, e);
         }

@@ -32,12 +32,19 @@ import com.uvpro.plugin.protocol.NetSlotConfig;
 import com.uvpro.plugin.protocol.PacketRouter;
 import com.uvpro.plugin.protocol.UVProRadioServices;
 import com.uvpro.plugin.radio.UVProRadioControlManager;
+import com.uvpro.plugin.ui.MeshStatusOverlay;
 import com.uvpro.plugin.ui.RadioStatusOverlay;
 import com.uvpro.plugin.ui.SettingsFragment;
 import com.uvpro.plugin.aprs.AprsDetailsDropDownReceiver;
 import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.ax25.AprsIconsetInstaller;
 import com.uvpro.plugin.location.RadioGpsBridge;
+import com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
+import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry;
+import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry.BtDeviceRecord;
+
+import java.util.List;
+import java.util.Locale;
 
 /**
  * UVPro Map Component — the central nervous system of the plugin.
@@ -109,6 +116,7 @@ public class UVProMapComponent extends DropDownMapComponent {
 
     // Sub-systems
     private BtConnectionManager btConnectionManager;
+    private MeshBtConnectionManager meshBtConnectionManager;
     private PacketRouter packetRouter;
     private CotBridge cotBridge;
     private ChatBridge chatBridge;
@@ -245,11 +253,13 @@ try {
 
         // 5. BtConnectionManager (needs context + PacketRouter)
         btConnectionManager = new BtConnectionManager(context, packetRouter);
+        meshBtConnectionManager = new MeshBtConnectionManager(context, packetRouter);
         radioControlManager = new UVProRadioControlManager(btConnectionManager);
         radioControlManager.start();
 
         // Status overlay: defer install until after GLWidgetsMapComponent is ready
         view.postDelayed(() -> RadioStatusOverlay.install(context), 2000);
+        view.postDelayed(() -> MeshStatusOverlay.install(context), 2000);
         btConnectionManager.addListener(new BtConnectionManager.ConnectionListener() {
             @Override
             public void onConnected(android.bluetooth.BluetoothDevice device) {
@@ -267,9 +277,29 @@ try {
             @Override
             public void onDeviceFound(android.bluetooth.BluetoothDevice device) {}
         });
+        meshBtConnectionManager.addListener(new BtConnectionManager.ConnectionListener() {
+            @Override
+            public void onConnected(android.bluetooth.BluetoothDevice device) {
+                Log.d(TAG, "StatusOverlay: mesh connected");
+                MeshStatusOverlay.setConnected(true);
+            }
+
+            @Override
+            public void onDisconnected(String reason) {
+                Log.d(TAG, "StatusOverlay: mesh disconnected");
+                MeshStatusOverlay.setConnected(false);
+            }
+
+            @Override
+            public void onError(String error) {}
+
+            @Override
+            public void onDeviceFound(android.bluetooth.BluetoothDevice device) {}
+        });
 
         // Auto-connect to last used radio after a short delay (let BT stack settle)
         view.postDelayed(() -> autoConnectLastRadio(context), 4000);
+        view.postDelayed(() -> autoConnectLastMesh(context), 4500);
 
         // Defer trust + prefs to the next frame and again on long delays so cert DB import wins races
         // with startup. Repo sync behavior remains one silent attempt per process (see
@@ -288,8 +318,9 @@ try {
 
         // 6. Create the drop-down UI receiver
         dropDownReceiver = new UVProDropDownReceiver(
-                view, pluginContext, btConnectionManager, contactTracker);
+                view, pluginContext, btConnectionManager, meshBtConnectionManager, contactTracker);
         dropDownReceiver.setCotBridge(cotBridge);
+        dropDownReceiver.setChatBridge(chatBridge);
         dropDownReceiver.setEncryptionManager(encryptionManager);
         dropDownReceiver.setRadioControlManager(radioControlManager);
 
@@ -423,6 +454,7 @@ try {
 
         // Remove status overlay from the map
         RadioStatusOverlay.uninstall();
+        MeshStatusOverlay.uninstall();
 
         // Shutdown in reverse order
         if (encryptionManager != null) {
@@ -433,6 +465,10 @@ try {
         if (btConnectionManager != null) {
             btConnectionManager.disconnect();
             btConnectionManager = null;
+        }
+        if (meshBtConnectionManager != null) {
+            meshBtConnectionManager.disconnect();
+            meshBtConnectionManager = null;
         }
         if (radioControlManager != null) {
             radioControlManager.stop();
@@ -1560,8 +1596,22 @@ try {
     /** Auto-connect to the last used radio on startup if one is saved. */
     private void autoConnectLastRadio(Context context) {
         try {
-            String tgt = com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry
-                    .getConnectTargetAddress(context);
+            String tgt = BluetoothDeviceRegistry.getConnectTargetAddress(context);
+            String meshTgt = BluetoothDeviceRegistry.getMeshConnectTargetAddress(context);
+            if (tgt != null && meshTgt != null && tgt.equalsIgnoreCase(meshTgt)) {
+                // Recovery path: if Mesh connect was previously persisted as UV-PRO target,
+                // fall back to the most recent non-Mesh record.
+                String fallback = findMostRecentUvProAddress(context);
+                if (fallback != null) {
+                    tgt = fallback;
+                    BluetoothDeviceRegistry.setConnectTargetAddress(context, fallback);
+                    Log.i(TAG, "Auto-connect: repaired UV-PRO target from Mesh collision: " + fallback);
+                } else {
+                    BluetoothDeviceRegistry.setConnectTargetAddress(context, "");
+                    tgt = null;
+                    Log.w(TAG, "Auto-connect: UV-PRO target matched Mesh target; no non-Mesh fallback.");
+                }
+            }
             if (tgt == null || tgt.isEmpty()) {
                 Log.d(TAG, "Auto-connect: no saved radio address");
                 return;
@@ -1577,6 +1627,78 @@ try {
             btConnectionManager.connect(device);
         } catch (Exception e) {
             Log.w(TAG, "Auto-connect failed: " + e.getMessage());
+        }
+    }
+
+    private String findMostRecentUvProAddress(Context context) {
+        try {
+            List<BtDeviceRecord> devices = BluetoothDeviceRegistry.getAllSortedForDisplay(context);
+            for (BtDeviceRecord r : devices) {
+                if (r == null || r.address == null || r.address.isEmpty()) {
+                    continue;
+                }
+                if (!isLikelyMeshRecord(r)) {
+                    return r.address;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not compute UV-PRO fallback address: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private boolean isLikelyMeshRecord(BtDeviceRecord r) {
+        if (r == null) {
+            return false;
+        }
+        String[] hints = {
+                "meshcore", "meshtastic", "wismesh", "rak", "heltec", "lilygo",
+                "seeed", "seed", "sensecap", "t-echo", "tdeck", "t-deck", "mesh"
+        };
+        String[] candidates = new String[]{
+                r.customName,
+                r.lastSystemName,
+                BluetoothDeviceRegistry.getDisplayTitle(r)
+        };
+        for (String candidate : candidates) {
+            if (candidate == null) {
+                continue;
+            }
+            String n = candidate.toLowerCase(Locale.US);
+            for (String hint : hints) {
+                if (n.contains(hint)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Auto-connect to the last used MeshCore device on startup if one is saved. */
+    private void autoConnectLastMesh(Context context) {
+        try {
+            if (meshBtConnectionManager == null
+                    || meshBtConnectionManager.isConnected()
+                    || meshBtConnectionManager.isConnecting()) {
+                return;
+            }
+            String tgt = com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry
+                    .getMeshConnectTargetAddress(context);
+            if (tgt == null || tgt.isEmpty()) {
+                Log.d(TAG, "Auto-connect mesh: no saved address");
+                return;
+            }
+            android.bluetooth.BluetoothAdapter adapter =
+                    android.bluetooth.BluetoothAdapter.getDefaultAdapter();
+            if (adapter == null || !adapter.isEnabled()) {
+                Log.d(TAG, "Auto-connect mesh: Bluetooth not available");
+                return;
+            }
+            android.bluetooth.BluetoothDevice device = adapter.getRemoteDevice(tgt);
+            Log.i(TAG, "Auto-connecting to last mesh device: " + tgt);
+            meshBtConnectionManager.connect(device);
+        } catch (Exception e) {
+            Log.w(TAG, "Auto-connect mesh failed: " + e.getMessage());
         }
     }
 

@@ -48,8 +48,11 @@ import com.uvpro.plugin.beacon.SmartBeacon;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry.BtDeviceRecord;
+import com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
+import com.uvpro.plugin.chat.ChatBridge;
 import com.uvpro.plugin.location.RadioGpsAugmentController;
 import com.uvpro.plugin.location.RadioGpsBridge;
+import com.uvpro.plugin.location.RadioPositionFix;
 import com.uvpro.plugin.kiss.KissRadioFrequencyControl;
 import com.uvpro.plugin.contacts.ContactTracker;
 import com.uvpro.plugin.contacts.RadioContact;
@@ -57,6 +60,7 @@ import com.uvpro.plugin.cot.CotBridge;
 import com.uvpro.plugin.crypto.EncryptionManager;
 import com.uvpro.plugin.protocol.PacketRouter;
 import com.uvpro.plugin.radio.UVProRadioControlManager;
+import com.uvpro.plugin.ui.MeshStatusOverlay;
 import com.uvpro.plugin.ui.SettingsFragment;
 
 import java.text.SimpleDateFormat;
@@ -122,17 +126,28 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private static final int TARGET_A = 0;
     private static final int TARGET_B = 1;
     private static final int TARGET_DIGITAL = 2;
+    private static final String[] MESH_DEVICE_NAME_HINTS = {
+            "meshcore", "meshtastic", "wismesh", "rak", "heltec", "lilygo",
+            "seeed", "sensecap", "t-echo", "tdeck", "t-deck", "mesh"
+    };
+    private static final String PREF_AUGMENT_GPS_FROM_MESHCORE =
+            "uvpro_augment_gps_from_meshcore";
 
     private final Context pluginContext;
     private final BtConnectionManager btManager;
+    private final MeshBtConnectionManager meshBtManager;
     private final ContactTracker contactTracker;
     private CotBridge cotBridge;
+    private ChatBridge chatBridge;
     private EncryptionManager encryptionManager;
 
     private View rootView;
     private View statusDot;
     private TextView statusText;
     private TextView deviceName;
+    private View meshStatusDot;
+    private TextView meshStatusText;
+    private TextView meshDeviceName;
     private TextView callsignText;
     private TextView contactsText;
     private TextView packetsText;
@@ -168,6 +183,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private TextView teamColorText;
     private Button btnScan;
     private Button btnDisconnect;
+    private Button btnMeshScan;
+    private Button btnMeshDisconnect;
+    private Button btnUpdateGpsFromMeshcore;
     private Button btnUpdateGpsFromRadio;
     private Button btnLoadSelectedRepeater;
     private Button btnTxPower;
@@ -186,10 +204,18 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Switch switchDualWatch;
     private Switch switchDigitalEdit;
     private Switch switchAugmentGpsFromRadio;
+    private Switch switchAugmentGpsFromMeshcore;
+    private View rowAugmentGpsFromMeshcore;
+    private Switch switchMeshTransmit;
+    private Switch switchUvProTransmit;
+    private Switch switchMeshEnableGps;
 
     private TextView favoritesLabel;
     private HorizontalScrollView favoritesScroll;
     private LinearLayout favoritesStrip;
+    private TextView meshFavoritesLabel;
+    private HorizontalScrollView meshFavoritesScroll;
+    private LinearLayout meshFavoritesStrip;
     private TextView connectModeHint;
 
     private Switch switchEncryption;
@@ -214,6 +240,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 }
             };
     private final List<BluetoothDevice> foundDevices = new ArrayList<>();
+    private final List<BluetoothDevice> meshFoundDevices = new ArrayList<>();
     private int txCount = 0;
     private int rxCount = 0;
     private UVProRadioControlManager radioControlManager;
@@ -238,6 +265,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private ObjectAnimator repeaterLoadFocusAnimator;
     private ValueAnimator updateGpsButtonPulseAnimator;
     private GradientDrawable updateGpsButtonPulseDrawable;
+    private Button updateGpsPulseTargetButton;
+    private ValueAnimator meshConnectPulseAnimator;
+    private GradientDrawable meshConnectPulseDrawable;
     private ValueAnimator initialGroupSetupPulseAnimator;
     private GradientDrawable initialGroupSetupPulseDrawable;
     private final AtomicBoolean snapshotReadInFlight = new AtomicBoolean(false);
@@ -254,24 +284,165 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private int digitalOnlyChannelId = -1;
     private final Runnable digitalOnlyDisconnectHook = this::releaseDigitalOnlyKissLockSilent;
     private boolean pendingOpenToChannelControl = false;
+    private boolean meshConnected = false;
+    private boolean meshTransmitEnabled = false;
+    private boolean suppressTransportSwitchCallbacks = false;
+    private Boolean meshGpsEnabledState = null;
+    private boolean meshGpsEnableRequested = false;
+    private boolean suppressMeshGpsSwitchCallbacks = false;
+    private final AtomicBoolean meshGpsAugmentUpdateInFlight = new AtomicBoolean(false);
+    private final Runnable meshGpsAugmentRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                Context ctx = getMapView() != null ? getMapView().getContext() : null;
+                if (ctx == null || !isAugmentMeshPreferenceEnabled(ctx)) {
+                    return;
+                }
+                if (meshBtManager == null || !meshBtManager.isConnected()) {
+                    return;
+                }
+                if (RadioGpsBridge.isPhoneGpsAvailable(getMapView())) {
+                    return;
+                }
+                if (!Boolean.TRUE.equals(meshGpsEnabledState)) {
+                    meshBtManager.queryMeshGpsEnabled();
+                    return;
+                }
+                if (!meshGpsAugmentUpdateInFlight.compareAndSet(false, true)) {
+                    return;
+                }
+                new Thread(() -> {
+                    try {
+                        updateGpsFromMeshcoreNow(false);
+                    } finally {
+                        meshGpsAugmentUpdateInFlight.set(false);
+                    }
+                }, "uvpro-mesh-gps-augment").start();
+            } finally {
+                scheduleMeshGpsAugmentTick();
+            }
+        }
+    };
 
     public UVProDropDownReceiver(MapView mapView,
                                      Context pluginContext,
                                      BtConnectionManager btManager,
+                                     MeshBtConnectionManager meshBtManager,
                                      ContactTracker contactTracker) {
         super(mapView);
         this.pluginContext = pluginContext;
         this.btManager = btManager;
+        this.meshBtManager = meshBtManager;
         this.contactTracker = contactTracker;
 
         // Register as listener for connection and contact updates
         btManager.addListener(this);
         btManager.addBeforeDisconnectHook(digitalOnlyDisconnectHook);
         contactTracker.setListener(this);
+        if (meshBtManager != null) {
+            meshBtManager.addListener(new BtConnectionManager.ConnectionListener() {
+                @Override
+                public void onConnected(BluetoothDevice device) {
+                    String name = device != null
+                            ? resolveDeviceDisplayName(getMapView().getContext(), device)
+                            : "MeshCore";
+                    meshConnected = true;
+                    meshGpsEnabledState = null;
+                    meshGpsEnableRequested = false;
+                    if (device != null) {
+                        Context ctx = getMapView().getContext();
+                        BluetoothDeviceRegistry.recordConnection(ctx, device, false);
+                        BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx, device.getAddress());
+                    }
+                    getMapView().post(() -> {
+                        stopMeshConnectButtonPulse(true);
+                        updateMeshConnectionUI(true, name);
+                        appendLog("MeshCore connected to " + name);
+                        refreshFavoriteStrip();
+                        updateMeshScanButtonText();
+                        scheduleMeshGpsAugmentTick();
+                    });
+                    meshBtManager.queryMeshGpsEnabled();
+                    meshBtManager.requestSelfInfo();
+                }
+
+                @Override
+                public void onDisconnected(String reason) {
+                    meshConnected = false;
+                    meshGpsEnabledState = null;
+                    meshGpsEnableRequested = false;
+                    getMapView().post(() -> {
+                        stopMeshConnectButtonPulse(true);
+                        updateMeshConnectionUI(false, null);
+                        appendLog("MeshCore disconnected: " + reason);
+                        updateMeshScanButtonText();
+                        scheduleMeshGpsAugmentTick();
+                    });
+                }
+
+                @Override
+                public void onError(String error) {
+                    getMapView().post(() -> {
+                        stopMeshConnectButtonPulse(true);
+                        appendLog("MeshCore error: " + error);
+                        updateMeshScanButtonText();
+                    });
+                }
+
+                @Override
+                public void onDeviceFound(BluetoothDevice device) {
+                    if (device != null) {
+                        String addr = device.getAddress();
+                        for (BluetoothDevice existing : meshFoundDevices) {
+                            if (existing != null && addr != null
+                                    && addr.equalsIgnoreCase(existing.getAddress())) {
+                                return;
+                            }
+                        }
+                        meshFoundDevices.add(device);
+                    }
+                }
+
+                @Override
+                public void onScanComplete() {
+                    getMapView().post(UVProDropDownReceiver.this::showMeshDevicePicker);
+                }
+            });
+            meshBtManager.addMeshStateListener(new MeshBtConnectionManager.MeshStateListener() {
+                @Override
+                public void onMeshGpsStateChanged(boolean enabled) {
+                    meshGpsEnabledState = enabled;
+                    meshGpsEnableRequested = enabled;
+                    getMapView().post(() -> {
+                        updateMeshGpsControlsUi();
+                        appendLog("MeshCore GPS " + (enabled ? "enabled" : "disabled"));
+                        scheduleMeshGpsAugmentTick();
+                    });
+                }
+
+                @Override
+                public void onMeshSelfLocationUpdated(MeshBtConnectionManager.MeshLocationFix fix) {
+                    if (fix == null || !fix.isValid()) {
+                        return;
+                    }
+                    getMapView().post(() -> appendLog(String.format(
+                            Locale.US,
+                            "MeshCore fix %.5f, %.5f",
+                            fix.latitude, fix.longitude)));
+                }
+            });
+        }
     }
 
     public void setCotBridge(CotBridge cotBridge) {
         this.cotBridge = cotBridge;
+        applyActiveTransmitTransport();
+    }
+
+    public void setChatBridge(ChatBridge chatBridge) {
+        this.chatBridge = chatBridge;
+        applyActiveTransmitTransport();
     }
 
     public void setEncryptionManager(EncryptionManager encryptionManager) {
@@ -327,6 +498,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         // Bind views
         bindViews();
+        // Fallback path: ensure MeshCore map icon installs when panel is opened.
+        MeshStatusOverlay.install(pluginContext);
 
         // Restore actual connection state (survives dropdown close/reopen)
         if (btManager.isConnected()) {
@@ -334,6 +507,26 @@ public class UVProDropDownReceiver extends DropDownReceiver
         } else {
             updateConnectionUI(false, null);
         }
+        if (meshBtManager != null && meshBtManager.isConnected()) {
+            meshConnected = true;
+            updateMeshConnectionUI(true, meshBtManager.getConnectedDeviceName());
+            meshGpsEnabledState = meshBtManager.getMeshGpsEnabled();
+            meshGpsEnableRequested = Boolean.TRUE.equals(meshGpsEnabledState);
+            meshBtManager.queryMeshGpsEnabled();
+            meshBtManager.requestSelfInfo();
+            stopMeshConnectButtonPulse(true);
+        } else {
+            meshConnected = false;
+            meshGpsEnabledState = null;
+            meshGpsEnableRequested = false;
+            updateMeshConnectionUI(false, null);
+            if (meshBtManager != null && meshBtManager.isConnecting()) {
+                startMeshConnectButtonPulse();
+            } else {
+                stopMeshConnectButtonPulse(true);
+            }
+        }
+        syncTransmitSwitchesUi();
 
         // Set callsign from ATAK self marker
         String callsign = MapView.getMapView().getSelfMarker().getMetaString("callsign","UNKNOWN");
@@ -360,11 +553,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
         updateContactCount();
         // Now attach change listeners so user interactions are wired
         setupListeners();
+        scheduleMeshGpsAugmentTick();
         updateDigitalEditGuardUi();
         updateDigitalOnlyButtonUi();
         updateTxPowerButtonUi();
         refreshFavoriteStrip();
         updateScanButtonText();
+        updateMeshScanButtonText();
         updateSelectedRepeaterUi();
         refreshChannelGridFullAsync();
         refreshLogView();
@@ -381,6 +576,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         statusDot = rootView.findViewById(getId("status_dot"));
         statusText = rootView.findViewById(getId("status_text"));
         deviceName = rootView.findViewById(getId("device_name"));
+        meshStatusDot = rootView.findViewById(getId("mesh_status_dot"));
+        meshStatusText = rootView.findViewById(getId("mesh_status_text"));
+        meshDeviceName = rootView.findViewById(getId("mesh_device_name"));
         callsignText = rootView.findViewById(getId("text_callsign"));
         contactsText = rootView.findViewById(getId("text_contacts"));
         packetsText = rootView.findViewById(getId("text_packets"));
@@ -411,6 +609,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         teamColorText = rootView.findViewById(getId("text_team_color"));
         btnScan = rootView.findViewById(getId("btn_scan"));
         btnDisconnect = rootView.findViewById(getId("btn_disconnect"));
+        btnMeshScan = rootView.findViewById(getId("btn_mesh_scan"));
+        btnMeshDisconnect = rootView.findViewById(getId("btn_mesh_disconnect"));
+        btnUpdateGpsFromMeshcore = rootView.findViewById(getId("btn_update_gps_from_meshcore"));
         btnUpdateGpsFromRadio = rootView.findViewById(getId("btn_update_gps_from_radio"));
         switchAugmentGpsFromRadio = rootView.findViewById(getId("switch_augment_gps_from_radio"));
         btnLoadSelectedRepeater = rootView.findViewById(getId("btn_load_selected_repeater"));
@@ -429,10 +630,18 @@ public class UVProDropDownReceiver extends DropDownReceiver
         channelsGrid = rootView.findViewById(getId("grid_channels"));
         switchDualWatch = rootView.findViewById(getId("switch_dual_watch"));
         switchDigitalEdit = rootView.findViewById(getId("switch_digital_edit"));
+        switchMeshTransmit = rootView.findViewById(getId("switch_mesh_transmit"));
+        switchUvProTransmit = rootView.findViewById(getId("switch_uvpro_transmit"));
+        switchMeshEnableGps = rootView.findViewById(getId("switch_mesh_enable_gps"));
+        switchAugmentGpsFromMeshcore = rootView.findViewById(getId("switch_augment_gps_from_meshcore"));
+        rowAugmentGpsFromMeshcore = rootView.findViewById(getId("row_augment_gps_from_meshcore"));
 
         favoritesLabel = rootView.findViewById(getId("favorites_label"));
         favoritesScroll = rootView.findViewById(getId("favorites_scroll"));
         favoritesStrip = rootView.findViewById(getId("favorites_strip"));
+        meshFavoritesLabel = rootView.findViewById(getId("mesh_favorites_label"));
+        meshFavoritesScroll = rootView.findViewById(getId("mesh_favorites_scroll"));
+        meshFavoritesStrip = rootView.findViewById(getId("mesh_favorites_strip"));
         connectModeHint = rootView.findViewById(getId("connect_mode_hint"));
 
         // Interactive switches
@@ -448,8 +657,71 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnDisconnect.setOnClickListener(v -> {
             btManager.disconnect();
         });
+        if (btnMeshScan != null) {
+            btnMeshScan.setOnClickListener(v -> onMeshScanOrConnectClicked());
+        }
+        if (btnMeshDisconnect != null) {
+            btnMeshDisconnect.setOnClickListener(v -> onMeshDisconnectClicked());
+        }
+        if (switchMeshTransmit != null) {
+            switchMeshTransmit.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (suppressTransportSwitchCallbacks || !buttonView.isPressed()) {
+                    return;
+                }
+                if (isChecked) {
+                    setTransmitMode(true);
+                } else if (switchUvProTransmit != null && !switchUvProTransmit.isChecked()) {
+                    setTransmitMode(false);
+                }
+            });
+        }
+        if (switchUvProTransmit != null) {
+            switchUvProTransmit.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (suppressTransportSwitchCallbacks || !buttonView.isPressed()) {
+                    return;
+                }
+                if (isChecked) {
+                    setTransmitMode(false);
+                } else if (switchMeshTransmit != null && !switchMeshTransmit.isChecked()) {
+                    setTransmitMode(true);
+                }
+            });
+        }
         if (btnUpdateGpsFromRadio != null) {
             btnUpdateGpsFromRadio.setOnClickListener(v -> requestManualRadioGpsUpdate());
+        }
+        if (btnUpdateGpsFromMeshcore != null) {
+            btnUpdateGpsFromMeshcore.setOnClickListener(v -> requestManualMeshGpsUpdate());
+        }
+        if (switchMeshEnableGps != null) {
+            switchMeshEnableGps.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (suppressMeshGpsSwitchCallbacks || !buttonView.isPressed()) {
+                    return;
+                }
+                if (meshBtManager == null || !meshBtManager.isConnected()) {
+                    return;
+                }
+                meshGpsEnableRequested = isChecked;
+                if (!isChecked) {
+                    meshGpsEnabledState = Boolean.FALSE;
+                }
+                updateMeshGpsControlsUi();
+                appendLog("Setting MeshCore GPS " + (isChecked ? "ON..." : "OFF..."));
+                meshBtManager.setMeshGpsEnabled(isChecked);
+                meshBtManager.queryMeshGpsEnabled();
+            });
+        }
+        if (switchAugmentGpsFromMeshcore != null) {
+            switchAugmentGpsFromMeshcore.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (!buttonView.isPressed()) {
+                    return;
+                }
+                setAugmentMeshPreference(isChecked);
+                scheduleMeshGpsAugmentTick();
+                appendLog(isChecked
+                        ? "MeshCore GPS augment enabled (2 min when phone has no fix)."
+                        : "MeshCore GPS augment disabled.");
+            });
         }
         if (switchAugmentGpsFromRadio != null) {
             switchAugmentGpsFromRadio.setOnCheckedChangeListener((buttonView, isChecked) -> {
@@ -587,7 +859,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
             btnRefreshChannels.setOnClickListener(v -> refreshChannelGridFullAsync());
         }
         if (btnInitialChannelGroupSetup != null) {
-            btnInitialChannelGroupSetup.setOnClickListener(v -> runInitialChannelGroupSetupAsync());
+            btnInitialChannelGroupSetup.setOnClickListener(v ->
+                    Toast.makeText(getMapView().getContext(),
+                            "Long press to run Initial Channel Setup.",
+                            Toast.LENGTH_SHORT).show());
+            btnInitialChannelGroupSetup.setOnLongClickListener(v -> {
+                runInitialChannelGroupSetupAsync();
+                return true;
+            });
         }
         if (btnChannelGroup != null) {
             btnChannelGroup.setOnClickListener(v -> cycleChannelGroup());
@@ -692,6 +971,15 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (connectMode) {
             try {
                 BluetoothDevice device = adapter.getRemoteDevice(target);
+                if (isLikelyMeshNamedDevice(device)) {
+                    appendLog("Saved target appears to be MeshCore; switching UV-PRO to scan mode");
+                    BluetoothDeviceRegistry.setConnectTargetAddress(ctx, "");
+                    refreshFavoriteStrip();
+                    updateScanButtonText();
+                    foundDevices.clear();
+                    btManager.startScan();
+                    return;
+                }
                 String display = targetRecord != null
                         ? BluetoothDeviceRegistry.getDisplayTitle(targetRecord)
                         : target;
@@ -715,6 +1003,66 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btManager.startScan();
     }
 
+    private void onMeshScanOrConnectClicked() {
+        if (meshBtManager == null) {
+            appendLog("MeshCore transport unavailable");
+            return;
+        }
+        if (meshBtManager.isConnected()) {
+            appendLog("MeshCore already connected");
+            updateMeshConnectionUI(true, meshBtManager.getConnectedDeviceName());
+            return;
+        }
+        if (meshBtManager.isConnecting()) {
+            appendLog("Cancelling current MeshCore connection attempt...");
+            meshBtManager.cancelConnectionAttempts();
+            stopMeshConnectButtonPulse(true);
+        }
+        Context ctx = getMapView().getContext();
+        BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+        if (adapter == null) {
+            appendLog("Bluetooth not available");
+            return;
+        }
+        String target = BluetoothDeviceRegistry.getMeshConnectTargetAddress(ctx);
+        BtDeviceRecord targetRecord =
+                (target != null && !target.isEmpty()) ? BluetoothDeviceRegistry.find(ctx, target) : null;
+        boolean connectMode = target != null && !target.isEmpty();
+        if (connectMode) {
+            try {
+                BluetoothDevice device = adapter.getRemoteDevice(target);
+                String display = targetRecord != null
+                        ? BluetoothDeviceRegistry.getDisplayTitle(targetRecord)
+                        : target;
+                appendLog("Connecting MeshCore to " + display + "...");
+                startMeshConnectButtonPulse();
+                meshBtManager.connect(device);
+            } catch (Exception e) {
+                appendLog("Saved MeshCore no longer available, switching to scan");
+                BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx, "");
+                refreshFavoriteStrip();
+                updateMeshScanButtonText();
+            }
+            return;
+        }
+        meshFoundDevices.clear();
+        BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx, "");
+        refreshFavoriteStrip();
+        updateMeshScanButtonText();
+        appendLog("Scanning for MeshCore devices...");
+        meshBtManager.startScan();
+    }
+
+    private void onMeshDisconnectClicked() {
+        if (meshBtManager != null) {
+            meshBtManager.disconnect();
+        }
+        stopMeshConnectButtonPulse(true);
+        meshConnected = false;
+        updateMeshConnectionUI(false, null);
+        appendLog("MeshCore disconnected");
+    }
+
     private int dip(Context c, int d) {
         return (int) (d * c.getResources().getDisplayMetrics().density + 0.5f);
     }
@@ -730,6 +1078,19 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
     }
 
+    private void updateMeshScanButtonText() {
+        if (btnMeshScan == null || meshBtManager == null) {
+            return;
+        }
+        Context ctx = getMapView().getContext();
+        String tgt = BluetoothDeviceRegistry.getMeshConnectTargetAddress(ctx);
+        if (!meshBtManager.isConnected() && tgt != null && !tgt.isEmpty()) {
+            btnMeshScan.setText("CONNECT");
+        } else {
+            btnMeshScan.setText("SCAN & CONNECT");
+        }
+    }
+
     private void refreshFavoriteStrip() {
         if (favoritesStrip == null || favoritesScroll == null
                 || favoritesLabel == null || connectModeHint == null) {
@@ -737,50 +1098,107 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         Context ctx = getMapView().getContext();
         favoritesStrip.removeAllViews();
+        if (meshFavoritesStrip != null) {
+            meshFavoritesStrip.removeAllViews();
+        }
         List<BtDeviceRecord> favs = BluetoothDeviceRegistry.getFavoritesSorted(ctx);
-        if (favs.isEmpty()) {
+        List<BtDeviceRecord> uvFavs = new ArrayList<>();
+        List<BtDeviceRecord> meshFavs = new ArrayList<>();
+        for (BtDeviceRecord r : favs) {
+            if (isLikelyMeshRecord(r)) {
+                meshFavs.add(r);
+            } else {
+                uvFavs.add(r);
+            }
+        }
+
+        if (uvFavs.isEmpty()) {
             favoritesLabel.setVisibility(View.GONE);
             favoritesScroll.setVisibility(View.GONE);
             connectModeHint.setVisibility(View.GONE);
-            return;
-        }
-        favoritesLabel.setVisibility(View.VISIBLE);
-        favoritesScroll.setVisibility(View.VISIBLE);
-        String selected = BluetoothDeviceRegistry.getConnectTargetAddress(ctx);
-        if (selected != null) {
-            connectModeHint.setVisibility(View.VISIBLE);
-            connectModeHint.setText(
-                    "Direct connect enabled — tap the same favorite again to use Scan instead");
         } else {
-            connectModeHint.setVisibility(View.GONE);
+            favoritesLabel.setVisibility(View.VISIBLE);
+            favoritesScroll.setVisibility(View.VISIBLE);
+            String selectedRadio = BluetoothDeviceRegistry.getConnectTargetAddress(ctx);
+            if (selectedRadio != null && !selectedRadio.isEmpty()) {
+                connectModeHint.setVisibility(View.VISIBLE);
+                connectModeHint.setText(
+                        "Direct connect enabled — tap the same favorite again to use Scan instead");
+            } else {
+                connectModeHint.setVisibility(View.GONE);
+            }
+            for (BtDeviceRecord r : uvFavs) {
+                Button chip = new Button(ctx);
+                chip.setAllCaps(false);
+                chip.setText(BluetoothDeviceRegistry.getDisplayTitle(r));
+                boolean isSel = selectedRadio != null && selectedRadio.equalsIgnoreCase(r.address);
+                applyPillButtonBackground(chip, isSel ? 0xFF00788B : 0xFF3D3D3D);
+                chip.setTextColor(0xFFFFFFFF);
+                int px = dip(ctx, 8);
+                chip.setPadding(px, px / 2, px, px / 2);
+                chip.setOnClickListener(v -> {
+                    String cur = BluetoothDeviceRegistry.getConnectTargetAddress(ctx);
+                    if (cur != null && cur.equalsIgnoreCase(r.address)) {
+                        BluetoothDeviceRegistry.setConnectTargetAddress(ctx, "");
+                        appendLog("Using Scan & Connect mode");
+                    } else {
+                        BluetoothDeviceRegistry.setConnectTargetAddress(ctx, r.address);
+                        appendLog("Selected: " + BluetoothDeviceRegistry.getDisplayTitle(r));
+                    }
+                    refreshFavoriteStrip();
+                    updateScanButtonText();
+                    updateMeshScanButtonText();
+                });
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+                lp.setMarginEnd(dip(ctx, 6));
+                favoritesStrip.addView(chip, lp);
+            }
         }
-        for (BtDeviceRecord r : favs) {
-            Button chip = new Button(ctx);
-            chip.setAllCaps(false);
-            chip.setText(BluetoothDeviceRegistry.getDisplayTitle(r));
-            boolean isSel = selected != null && selected.equalsIgnoreCase(r.address);
-            applyPillButtonBackground(chip, isSel ? 0xFF00788B : 0xFF3D3D3D);
-            chip.setTextColor(0xFFFFFFFF);
-            int px = dip(ctx, 8);
-            chip.setPadding(px, px / 2, px, px / 2);
-            chip.setOnClickListener(v -> {
-                String cur = BluetoothDeviceRegistry.getConnectTargetAddress(ctx);
-                if (cur != null && cur.equalsIgnoreCase(r.address)) {
-                    BluetoothDeviceRegistry.setConnectTargetAddress(ctx, "");
-                    appendLog("Using Scan & Connect mode");
-                } else {
-                    BluetoothDeviceRegistry.setConnectTargetAddress(ctx, r.address);
-                    appendLog("Selected: "
-                            + BluetoothDeviceRegistry.getDisplayTitle(r));
+
+        if (meshFavoritesLabel != null && meshFavoritesScroll != null && meshFavoritesStrip != null) {
+            if (meshFavs.isEmpty()) {
+                meshFavoritesLabel.setVisibility(View.GONE);
+                meshFavoritesScroll.setVisibility(View.GONE);
+            } else {
+                meshFavoritesLabel.setVisibility(View.VISIBLE);
+                meshFavoritesScroll.setVisibility(View.VISIBLE);
+                String selectedMesh = BluetoothDeviceRegistry.getMeshConnectTargetAddress(ctx);
+                for (BtDeviceRecord r : meshFavs) {
+                    Button chip = new Button(ctx);
+                    chip.setAllCaps(false);
+                    chip.setText(BluetoothDeviceRegistry.getDisplayTitle(r));
+                    boolean isSel = selectedMesh != null && selectedMesh.equalsIgnoreCase(r.address);
+                    applyPillButtonBackground(chip, isSel ? 0xFF00788B : 0xFF3D3D3D);
+                    chip.setTextColor(0xFFFFFFFF);
+                    int px = dip(ctx, 8);
+                    chip.setPadding(px, px / 2, px, px / 2);
+                    chip.setOnClickListener(v -> {
+                        String cur = BluetoothDeviceRegistry.getMeshConnectTargetAddress(ctx);
+                        if (cur != null && cur.equalsIgnoreCase(r.address)) {
+                            BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx, "");
+                            appendLog("MeshCore using Scan & Connect mode");
+                        } else {
+                            BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx, r.address);
+                            appendLog("MeshCore selected: " + BluetoothDeviceRegistry.getDisplayTitle(r));
+                        }
+                        refreshFavoriteStrip();
+                        updateScanButtonText();
+                        updateMeshScanButtonText();
+                    });
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT);
+                    lp.setMarginEnd(dip(ctx, 6));
+                    meshFavoritesStrip.addView(chip, lp);
                 }
-                refreshFavoriteStrip();
-                updateScanButtonText();
-            });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT);
-            lp.setMarginEnd(dip(ctx, 6));
-            favoritesStrip.addView(chip, lp);
+            }
+        } else {
+            // Backward compatibility if older layout does not include dedicated Mesh favorites row.
+            if (!meshFavs.isEmpty() && !uvFavs.isEmpty()) {
+                connectModeHint.setVisibility(View.VISIBLE);
+            }
         }
     }
 
@@ -843,6 +1261,17 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     @Override
     public void onDeviceFound(BluetoothDevice device) {
+        if (isLikelyMeshNamedDevice(device)) {
+            return;
+        }
+        String addr = device != null ? device.getAddress() : null;
+        if (addr != null) {
+            for (BluetoothDevice existing : foundDevices) {
+                if (existing != null && addr.equalsIgnoreCase(existing.getAddress())) {
+                    return;
+                }
+            }
+        }
         foundDevices.add(device);
         String name = device != null ? device.getName() : "Unknown";
         getMapView().post(() -> {
@@ -936,6 +1365,128 @@ public class UVProDropDownReceiver extends DropDownReceiver
             availableChannelGroups = UVProRadioControlManager.DEFAULT_GROUP_COUNT;
         }
         updateChannelGroupButtonUi();
+    }
+
+    private void updateMeshConnectionUI(boolean connected, String device) {
+        if (meshStatusDot != null) {
+            meshStatusDot.setBackgroundColor(connected ? 0xFF4CAF50 : 0xFFFF0000);
+        }
+        if (meshStatusText != null) {
+            meshStatusText.setText(connected ? "Connected" : "Disconnected");
+        }
+        if (meshDeviceName != null) {
+            if (connected && device != null) {
+                meshDeviceName.setText(device);
+                meshDeviceName.setVisibility(View.VISIBLE);
+            } else {
+                meshDeviceName.setVisibility(View.GONE);
+            }
+        }
+        if (btnMeshScan != null) {
+            btnMeshScan.setEnabled(!connected);
+        }
+        if (btnMeshDisconnect != null) {
+            btnMeshDisconnect.setEnabled(connected);
+        }
+        updateMeshScanButtonText();
+        updateMeshGpsControlsUi();
+        scheduleMeshGpsAugmentTick();
+        MeshStatusOverlay.setConnected(connected);
+    }
+
+    private void updateMeshGpsControlsUi() {
+        if (switchMeshEnableGps != null) {
+            suppressMeshGpsSwitchCallbacks = true;
+            try {
+                switchMeshEnableGps.setEnabled(meshConnected);
+                switchMeshEnableGps.setChecked(meshGpsEnableRequested
+                        || Boolean.TRUE.equals(meshGpsEnabledState));
+            } finally {
+                suppressMeshGpsSwitchCallbacks = false;
+            }
+        }
+        if (switchAugmentGpsFromMeshcore != null) {
+            switchAugmentGpsFromMeshcore.setEnabled(meshConnected);
+        }
+        if (rowAugmentGpsFromMeshcore != null) {
+            boolean showMeshAugment = meshConnected
+                    && (meshGpsEnableRequested || Boolean.TRUE.equals(meshGpsEnabledState));
+            rowAugmentGpsFromMeshcore.setVisibility(showMeshAugment ? View.VISIBLE : View.GONE);
+        }
+        if (btnUpdateGpsFromMeshcore != null) {
+            boolean show = meshConnected
+                    && (meshGpsEnableRequested || Boolean.TRUE.equals(meshGpsEnabledState));
+            btnUpdateGpsFromMeshcore.setVisibility(show ? View.VISIBLE : View.GONE);
+            btnUpdateGpsFromMeshcore.setEnabled(show);
+        }
+    }
+
+    private void syncTransmitSwitchesUi() {
+        suppressTransportSwitchCallbacks = true;
+        try {
+            if (switchMeshTransmit != null) {
+                switchMeshTransmit.setChecked(meshTransmitEnabled);
+            }
+            if (switchUvProTransmit != null) {
+                switchUvProTransmit.setChecked(!meshTransmitEnabled);
+            }
+        } finally {
+            suppressTransportSwitchCallbacks = false;
+        }
+        applyActiveTransmitTransport();
+    }
+
+    private void setTransmitMode(boolean useMesh) {
+        meshTransmitEnabled = useMesh;
+        syncTransmitSwitchesUi();
+        appendLog(useMesh
+                ? "Transmit mode: ATAK MeshCore"
+                : "Transmit mode: ATAK UV-PRO");
+    }
+
+    private void applyActiveTransmitTransport() {
+        BtConnectionManager active = meshTransmitEnabled && meshBtManager != null
+                ? meshBtManager
+                : btManager;
+        if (cotBridge != null) {
+            cotBridge.setBtManager(active);
+        }
+        if (chatBridge != null) {
+            chatBridge.setBtManager(active);
+        }
+    }
+
+    private void showMeshDevicePicker() {
+        if (meshFoundDevices.isEmpty()) {
+            appendLog("No MeshCore devices found");
+            return;
+        }
+        Context ctx = getMapView().getContext();
+
+        final String[] names = new String[meshFoundDevices.size()];
+        for (int i = 0; i < meshFoundDevices.size(); i++) {
+            names[i] = resolveDeviceDisplayName(ctx, meshFoundDevices.get(i));
+        }
+        try {
+            new AlertDialog.Builder(ctx)
+                    .setTitle("Select MeshCore")
+                    .setItems(names, (dialog, which) -> {
+                        if (which < 0 || which >= meshFoundDevices.size()) {
+                            return;
+                        }
+                        BluetoothDevice selected = meshFoundDevices.get(which);
+                        BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx, selected.getAddress());
+                        appendLog("Connecting MeshCore to " + names[which] + "...");
+                        updateMeshScanButtonText();
+                        startMeshConnectButtonPulse();
+                        meshBtManager.connect(selected);
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        } catch (Exception e) {
+            Log.e(TAG, "Error showing MeshCore picker", e);
+            appendLog("Error showing MeshCore picker");
+        }
     }
 
     private void updateContactCount() {
@@ -1151,6 +1702,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (switchAugmentGpsFromRadio != null) {
             switchAugmentGpsFromRadio.setChecked(isAugmentGpsPreferenceEnabled(ctx));
         }
+        if (switchAugmentGpsFromMeshcore != null) {
+            switchAugmentGpsFromMeshcore.setChecked(isAugmentMeshPreferenceEnabled(ctx));
+        }
 
         // Team color (ATAK preference)
         try {
@@ -1171,7 +1725,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     "Connect to the radio first.", Toast.LENGTH_SHORT).show();
             return;
         }
-        pulseUpdateGpsButtonFeedback();
+        pulseUpdateGpsButtonFeedback(btnUpdateGpsFromRadio);
         appendLog("Reading GPS from radio...");
         new Thread(() -> {
             RadioGpsBridge.UpdateResult result = radioGpsAugmentController.manualUpdate();
@@ -1179,6 +1733,63 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 appendLog(result.message);
             });
         }, "uvpro-radio-gps-manual").start();
+    }
+
+    private void requestManualMeshGpsUpdate() {
+        if (meshBtManager == null || !meshBtManager.isConnected()) {
+            Toast.makeText(getMapView().getContext(),
+                    "Connect to MeshCore first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!Boolean.TRUE.equals(meshGpsEnabledState)) {
+            Toast.makeText(getMapView().getContext(),
+                    "Enable MeshCore GPS first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        pulseUpdateGpsButtonFeedback(btnUpdateGpsFromMeshcore);
+        appendLog("Reading GPS from MeshCore...");
+        new Thread(() -> {
+            RadioGpsBridge.UpdateResult result = updateGpsFromMeshcoreNow(true);
+            getMapView().post(() -> appendLog(result.message));
+        }, "uvpro-mesh-gps-manual").start();
+    }
+
+    private RadioGpsBridge.UpdateResult updateGpsFromMeshcoreNow(boolean requestFreshSelfInfo) {
+        if (meshBtManager == null || !meshBtManager.isConnected()) {
+            return new RadioGpsBridge.UpdateResult(false, "MeshCore not connected.");
+        }
+        if (requestFreshSelfInfo) {
+            meshBtManager.requestSelfInfo();
+            try {
+                Thread.sleep(700L);
+            } catch (InterruptedException ignored) {
+            }
+        }
+        MeshBtConnectionManager.MeshLocationFix fix = meshBtManager.getLatestSelfLocation();
+        if (fix == null || !fix.isValid()) {
+            return new RadioGpsBridge.UpdateResult(false,
+                    "MeshCore did not provide a valid GPS fix yet.");
+        }
+        RadioPositionFix radioFix = new RadioPositionFix(
+                fix.latitude,
+                fix.longitude,
+                0.0,
+                Double.NaN,
+                Double.NaN,
+                0,
+                System.currentTimeMillis() / 1000L);
+        boolean ok = RadioGpsBridge.injectIntoAtak(
+                getMapView(),
+                radioFix,
+                RadioGpsBridge.MESHCORE_MOCK_SOURCE_LABEL);
+        return ok
+                ? new RadioGpsBridge.UpdateResult(true, String.format(
+                Locale.US,
+                "Updated ATAK from MeshCore GPS: %.5f, %.5f",
+                fix.latitude,
+                fix.longitude))
+                : new RadioGpsBridge.UpdateResult(false,
+                "Could not apply MeshCore GPS to ATAK.");
     }
 
     private boolean isAugmentGpsPreferenceEnabled(Context ctx) {
@@ -1189,6 +1800,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
         return prefs.getBoolean(RadioGpsBridge.PREF_AUGMENT_GPS_FROM_RADIO, false);
     }
 
+    private boolean isAugmentMeshPreferenceEnabled(Context ctx) {
+        if (ctx == null) {
+            return false;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        return prefs.getBoolean(PREF_AUGMENT_GPS_FROM_MESHCORE, false);
+    }
+
     private void setAugmentGpsPreference(boolean enabled) {
         Context ctx = getMapView() != null ? getMapView().getContext() : null;
         if (ctx == null) {
@@ -1196,6 +1815,27 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
         prefs.edit().putBoolean(RadioGpsBridge.PREF_AUGMENT_GPS_FROM_RADIO, enabled).apply();
+    }
+
+    private void setAugmentMeshPreference(boolean enabled) {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        prefs.edit().putBoolean(PREF_AUGMENT_GPS_FROM_MESHCORE, enabled).apply();
+    }
+
+    private void scheduleMeshGpsAugmentTick() {
+        if (getMapView() == null) {
+            return;
+        }
+        getMapView().removeCallbacks(meshGpsAugmentRunnable);
+        Context ctx = getMapView().getContext();
+        if (!isAugmentMeshPreferenceEnabled(ctx)) {
+            return;
+        }
+        getMapView().postDelayed(meshGpsAugmentRunnable, RadioGpsBridge.AUGMENT_INTERVAL_MS);
     }
 
     private void updateChannelGroupButtonUi() {
@@ -1663,19 +2303,20 @@ public class UVProDropDownReceiver extends DropDownReceiver
         return v;
     }
 
-    private void pulseUpdateGpsButtonFeedback() {
-        if (btnUpdateGpsFromRadio == null) {
+    private void pulseUpdateGpsButtonFeedback(Button targetButton) {
+        if (targetButton == null) {
             return;
         }
         try {
-            btnUpdateGpsFromRadio.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            targetButton.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
         } catch (Exception ignored) {
         }
         stopUpdateGpsButtonPulse(false);
-        btnUpdateGpsFromRadio.setBackgroundTintList(null);
+        updateGpsPulseTargetButton = targetButton;
+        targetButton.setBackgroundTintList(null);
         updateGpsButtonPulseDrawable = buildVfoButtonBackground(
                 0xFF455A64, 0x00FFEB3B, EDIT_SELECTION_STROKE_DP);
-        btnUpdateGpsFromRadio.setBackground(updateGpsButtonPulseDrawable);
+        targetButton.setBackground(updateGpsButtonPulseDrawable);
         updateGpsButtonPulseAnimator = ValueAnimator.ofObject(
                 new ArgbEvaluator(),
                 0x11FFEB3B,
@@ -1684,13 +2325,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
         updateGpsButtonPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
         updateGpsButtonPulseAnimator.setRepeatCount(4);
         updateGpsButtonPulseAnimator.addUpdateListener(animation -> {
-            if (updateGpsButtonPulseDrawable == null || btnUpdateGpsFromRadio == null) {
+            if (updateGpsButtonPulseDrawable == null || updateGpsPulseTargetButton == null) {
                 return;
             }
             int color = (Integer) animation.getAnimatedValue();
             updateGpsButtonPulseDrawable.setStroke(
                     dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
-            btnUpdateGpsFromRadio.invalidate();
+            updateGpsPulseTargetButton.invalidate();
         });
         updateGpsButtonPulseAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
             @Override
@@ -1770,8 +2411,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
             animator.cancel();
         }
         updateGpsButtonPulseDrawable = null;
-        if (restoreBackground && btnUpdateGpsFromRadio != null) {
-            applyPillButtonBackground(btnUpdateGpsFromRadio, 0xFF455A64);
+        Button target = updateGpsPulseTargetButton;
+        updateGpsPulseTargetButton = null;
+        if (restoreBackground && target != null) {
+            applyPillButtonBackground(target, 0xFF455A64);
         }
     }
 
@@ -3162,6 +3805,90 @@ public class UVProDropDownReceiver extends DropDownReceiver
         return n != null ? n : device.getAddress();
     }
 
+    private boolean isLikelyMeshNamedDevice(BluetoothDevice device) {
+        if (device == null) {
+            return false;
+        }
+        String name = null;
+        try {
+            name = device.getName();
+        } catch (Exception ignored) {
+        }
+        if (name == null) {
+            return false;
+        }
+        String n = name.toLowerCase(Locale.US);
+        for (String hint : MESH_DEVICE_NAME_HINTS) {
+            if (n.contains(hint)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isLikelyMeshRecord(BtDeviceRecord record) {
+        if (record == null) {
+            return false;
+        }
+        String[] candidates = new String[]{
+                record.customName,
+                record.lastSystemName,
+                BluetoothDeviceRegistry.getDisplayTitle(record)
+        };
+        for (String candidate : candidates) {
+            if (candidate == null) {
+                continue;
+            }
+            String n = candidate.toLowerCase(Locale.US);
+            for (String hint : MESH_DEVICE_NAME_HINTS) {
+                if (n.contains(hint)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void startMeshConnectButtonPulse() {
+        if (btnMeshScan == null) {
+            return;
+        }
+        stopMeshConnectButtonPulse(false);
+        btnMeshScan.setBackgroundTintList(null);
+        meshConnectPulseDrawable = buildVfoButtonBackground(
+                0xFF455A64, 0x11FFEB3B, EDIT_SELECTION_STROKE_DP);
+        btnMeshScan.setBackground(meshConnectPulseDrawable);
+        meshConnectPulseAnimator = ValueAnimator.ofObject(
+                new ArgbEvaluator(),
+                0x11FFEB3B,
+                0xFFFFEB3B);
+        meshConnectPulseAnimator.setDuration(220L);
+        meshConnectPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        meshConnectPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
+        meshConnectPulseAnimator.addUpdateListener(animation -> {
+            if (meshConnectPulseDrawable == null || btnMeshScan == null) {
+                return;
+            }
+            int color = (Integer) animation.getAnimatedValue();
+            meshConnectPulseDrawable.setStroke(
+                    dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
+            btnMeshScan.invalidate();
+        });
+        meshConnectPulseAnimator.start();
+    }
+
+    private void stopMeshConnectButtonPulse(boolean restoreBackground) {
+        ValueAnimator animator = meshConnectPulseAnimator;
+        meshConnectPulseAnimator = null;
+        if (animator != null) {
+            animator.cancel();
+        }
+        meshConnectPulseDrawable = null;
+        if (restoreBackground && btnMeshScan != null) {
+            applyPillButtonBackground(btnMeshScan, 0xFF455A64);
+        }
+    }
+
     private void showSettingsDialog() {
         Context ctx = getMapView().getContext();
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
@@ -3185,7 +3912,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnBluetoothDevices.setTextSize(13f);
         applyPillButtonBackground(btnBluetoothDevices, 0xFF455A64);
         btnBluetoothDevices.setOnClickListener(v ->
-                com.uvpro.plugin.ui.BluetoothDevicesManagement.show(ctx, null));
+                com.uvpro.plugin.ui.BluetoothDevicesManagement.show(ctx, () ->
+                        getMapView().post(() -> {
+                            refreshFavoriteStrip();
+                            updateScanButtonText();
+                            updateMeshScanButtonText();
+                        })));
         layout.addView(btnBluetoothDevices);
 
         SettingsFragment.AprsSettingsUi aprsUi =
@@ -3566,6 +4298,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     public void onDropDownClose() {
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
+        stopMeshConnectButtonPulse(true);
         stopInitialGroupSetupPulse(true);
         if (repeaterLoadFocusAnimator != null) {
             repeaterLoadFocusAnimator.cancel();
@@ -3601,6 +4334,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btManager.removeListener(this);
         contactTracker.setListener(null);
         radioGpsAugmentController.shutdown();
+        if (getMapView() != null) {
+            getMapView().removeCallbacks(meshGpsAugmentRunnable);
+        }
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
         stopInitialGroupSetupPulse(true);

@@ -43,6 +43,14 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 - Fixed channel-group state ownership so hardware group changes on the radio are no longer overwritten by background plugin polling.
 - Group/event handling now refreshes selected group state first, then refreshes the channel grid, so UI group label and grid stay aligned with the radio.
 
+### 2026-05-25 Progress Update
+
+- Added MeshCore BLE transport integration in the UV-PRO plugin with dedicated map overlay icon, scan/connect/disconnect controls, and optional startup auto-connect to last Mesh favorite target.
+- Added dual transport selectors (`ATAK MeshCore Transmit` / `ATAK UV-PRO Transmit`) with mutual exclusivity and persisted direct-connect target behavior for both transports.
+- Added Mesh GPS controls (`Enable MeshCore GPS`, `Update GPS from MeshCore`, and `Augment GPS from MeshCore`) with source labeling as `MeshCore GPS` and corrected UI visibility logic.
+- Added dedicated `FAVORITE MESH` chips above Mesh connect controls, independent from `FAVORITE RADIOS`, while preserving UV-PRO direct-connect behavior.
+- Updated Actions panel workflow: `Initial Channel Setup (Long Press)` with one-time setup helper text.
+
 ## How It Works
 
 ```
@@ -232,7 +240,7 @@ Use the **official ProGuard apply-mapping** from the ATAK/takrepo pipeline when 
 | **Group** | Cycles the radio's current channel group and refreshes the grid for that group. If group change does not stick (typically empty-group condition), plugin prompts to run **Initial Channel Group Setup**. |
 | **Import Channels** | Opens a chooser for CSV files in `/atak/tools/import`; after user confirmation, imports selected CSV into the active group using full-slot overwrite semantics (empty rows clear channels). |
 | **Export Channels** | Exports the active group to `/atak/tools/datapackage/transfer/groupx_export_DTG.csv`. |
-| **Initial Channel Group Setup** | Runs one-time group bootstrap from Actions panel: programs empty groups only with **CH30 APRS 144.390** and shows `Channel Group Setup Complete` on completion. |
+| **Initial Channel Setup (Long Press)** | Long-press only one-time group bootstrap from Actions panel: programs empty groups only with **CH30 APRS 144.390** and shows `Channel Group Setup Complete` on completion. |
 | **Plugin Settings** | APRS (FCC call, SSID, icon grid picker, message), Beacon, ping reply, SA Relay, encryption, retries, and **Administration** (slot count/time, distribute to net). Full list also under ATAK **Settings → Tool Preferences → UV-PRO Settings**. |
 
 ### Repeater workflow (KML)

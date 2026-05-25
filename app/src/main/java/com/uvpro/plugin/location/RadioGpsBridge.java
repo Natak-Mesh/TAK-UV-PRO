@@ -26,6 +26,7 @@ public final class RadioGpsBridge {
     public static final String PREF_AUGMENT_GPS_FROM_RADIO = "uvpro_augment_gps_from_radio";
     public static final long AUGMENT_INTERVAL_MS = 120_000L;
     public static final String MOCK_SOURCE_LABEL = "UV-PRO GPS";
+    public static final String MESHCORE_MOCK_SOURCE_LABEL = "MeshCore GPS";
     private static final String INTERNAL_GPS_PROVIDER_UID = "internal-gps-chip";
 
     private RadioGpsBridge() {
@@ -121,6 +122,10 @@ public final class RadioGpsBridge {
     }
 
     public static boolean injectIntoAtak(MapView mapView, RadioPositionFix fix) {
+        return injectIntoAtak(mapView, fix, MOCK_SOURCE_LABEL);
+    }
+
+    public static boolean injectIntoAtak(MapView mapView, RadioPositionFix fix, String sourceLabel) {
         if (mapView == null || fix == null || !fix.isValid()) {
             return false;
         }
@@ -128,10 +133,13 @@ public final class RadioGpsBridge {
         if (data == null) {
             return false;
         }
+        String source = (sourceLabel == null || sourceLabel.trim().isEmpty())
+                ? MOCK_SOURCE_LABEL
+                : sourceLabel.trim();
         GeoPoint gp = new GeoPoint(fix.latitude, fix.longitude, fix.altitudeMeters);
         data.setMetaString("locationSourcePrefix", "mock");
         data.setMetaBoolean("mockLocationAvailable", true);
-        data.setMetaString("mockLocationSource", MOCK_SOURCE_LABEL);
+        data.setMetaString("mockLocationSource", source);
         data.setMetaString("mockLocationSourceColor", "#FF00BCD4");
         data.setMetaBoolean("mockLocationCallsignValid", true);
         data.setMetaString("mockLocation", gp.toString());
@@ -149,7 +157,7 @@ public final class RadioGpsBridge {
         }
         Intent gpsReceived = new Intent("com.atakmap.android.map.WR_GPS_RECEIVED");
         AtakBroadcast.getInstance().sendBroadcast(gpsReceived);
-        Log.i(TAG, "Injected radio GPS into ATAK: " + gp);
+        Log.i(TAG, "Injected GPS into ATAK (" + source + "): " + gp);
         return true;
     }
 

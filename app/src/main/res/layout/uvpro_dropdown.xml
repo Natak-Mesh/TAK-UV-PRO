@@ -15,7 +15,7 @@
             android:id="@+id/header_title"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="UV-PRO"
+            android:text="UV-PRO-MESH"
             android:textColor="#FFFFFFFF"
             android:textSize="18sp"
             android:textStyle="bold"
@@ -69,6 +69,16 @@
                     android:text="Disconnected"
                     android:textColor="#FFFFFFFF"
                     android:textSize="14sp" />
+
+                <TextView
+                    android:id="@+id/uvpro_connection_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="end"
+                    android:text="UV-PRO Connection"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
             </LinearLayout>
 
             <TextView
@@ -144,14 +154,199 @@
                     android:backgroundTint="#FFF44336" />
             </LinearLayout>
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="10dp">
+
+                <View
+                    android:id="@+id/mesh_status_dot"
+                    android:layout_width="12dp"
+                    android:layout_height="12dp"
+                    android:background="#FFFF0000"
+                    android:layout_marginEnd="8dp" />
+
+                <TextView
+                    android:id="@+id/mesh_status_text"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Disconnected"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="14sp" />
+
+                <TextView
+                    android:id="@+id/mesh_connection_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="end"
+                    android:text="MeshCore Connection"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/mesh_device_name"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="#FFAAAAAA"
+                android:textSize="12sp"
+                android:paddingTop="2dp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/mesh_favorites_label"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="FAVORITE MESH"
+                android:textColor="#FF00BCD4"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:paddingTop="6dp"
+                android:visibility="gone" />
+
+            <HorizontalScrollView
+                android:id="@+id/mesh_favorites_scroll"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="4dp"
+                android:scrollbars="none"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/mesh_favorites_strip"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingTop="8dp">
+
+                <Button
+                    android:id="@+id/btn_mesh_scan"
+                    style="@style/UvproPillButton.Beacon"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="SCAN &amp; CONNECT"
+                    android:layout_marginEnd="4dp"
+                    android:backgroundTint="#FF00BCD4" />
+
+                <Button
+                    android:id="@+id/btn_mesh_disconnect"
+                    style="@style/UvproPillButton.Beacon"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="DISCONNECT"
+                    android:enabled="false"
+                    android:backgroundTint="#FFF44336" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="10dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="ATAK MeshCore Transmit"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_mesh_transmit"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="4dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="ATAK UV-PRO Transmit"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_uvpro_transmit"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="10dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Enable MeshCore GPS"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_mesh_enable_gps"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:enabled="false" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/row_augment_gps_from_meshcore"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="4dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Augment GPS from MeshCore"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_augment_gps_from_meshcore"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:enabled="false" />
+            </LinearLayout>
+
             <Button
-                android:id="@+id/btn_update_gps_from_radio"
+                android:id="@+id/btn_update_gps_from_meshcore"
                 style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="Update GPS from Radio"
+                android:text="Update GPS from MeshCore"
                 android:enabled="false"
+                android:visibility="gone"
                 android:backgroundTint="#FF455A64" />
 
             <LinearLayout
@@ -159,7 +354,7 @@
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:paddingTop="8dp">
+                android:paddingTop="10dp">
 
                 <TextView
                     android:layout_width="0dp"
@@ -184,6 +379,16 @@
                 android:textSize="10sp"
                 android:paddingTop="2dp"
                 android:paddingBottom="4dp" />
+
+            <Button
+                android:id="@+id/btn_update_gps_from_radio"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Update GPS from Radio"
+                android:enabled="false"
+                android:backgroundTint="#FF455A64" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -969,8 +1174,16 @@
                 style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Initial Channel Group Setup"
+                android:text="Initial Channel Setup (Long Press)"
                 android:backgroundTint="#FF455A64" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="One time setup only to prep radio for frequency load"
+                android:textColor="#FF888888"
+                android:textSize="11sp"
+                android:paddingTop="4dp" />
         </LinearLayout>
 
         <!-- ==================== LOG ==================== -->

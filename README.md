@@ -24,6 +24,7 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Map Repeater Load/Tune (KML)** | ✅ Working | Tap a repeater placemark from imported KML, arm **Load Selected Repeater**, then tap a destination channel to program/tune it (TX/RX + CTCSS/DCS). |
 | **TX Power (LOW / MED / HIGH)** | ✅ Working | **TX Power** button in the Radio panel (left of Dual Watch) cycles transmit power and writes both device settings and per-channel RF memory (digital/APRS + active VFO channels). Syncs from the radio on connect. |
 | **APRS TX mode (plugin-generated over KISS)** | ✅ Working | Optional APRS beacon TX runs in parallel with UV-PRO traffic. Requires FCC call + icon in settings, supports manual **Send APRS Beacon**, and can temporarily disable ATAK position beacons when desired. APRS chat requests ACK on the first message to a contact and auto-ACKs inbound APRS messages that request acknowledgment. |
+| **Packet Terminal (BBS/Winlink test mode)** | ✅ Working | New **Packet Terminal** action opens an AX.25 connected-mode terminal for radio-to-radio BBS style sessions. Supports SABM/UA/DISC handshake, queued TX, retransmit/ACK handling, RR processing, and basic ANSI cleanup for readable prompts. |
 | **Channel grid refresh** | ✅ Working | After long-press manual channel edit/save, the channel grid re-reads that slot from the radio so labels/frequencies match what was programmed. |
 | **Channel group controls + CSV import/export** | ✅ Working | **Group** cycles the radio group and refreshes the channel grid. **Import Channels** lets the user choose a CSV from `/atak/tools/import` and writes the selected group with source-of-truth slot mapping (including explicit clears). **Export Channels** writes the current group CSV to `/atak/tools/datapackage/transfer`. |
 | **Initial Channel Group Setup** | ✅ Working | Actions panel button seeds empty groups only by programming **CH30 = APRS 144.390** so empty groups become selectable. Provides haptic + yellow pulse while running and completion popup when done. |
@@ -50,6 +51,13 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 - Added Mesh GPS controls (`Enable MeshCore GPS`, `Update GPS from MeshCore`, and `Augment GPS from MeshCore`) with source labeling as `MeshCore GPS` and corrected UI visibility logic.
 - Added dedicated `FAVORITE MESH` chips above Mesh connect controls, independent from `FAVORITE RADIOS`, while preserving UV-PRO direct-connect behavior.
 - Updated Actions panel workflow: `Initial Channel Setup (Long Press)` with one-time setup helper text.
+
+### 2026-05-26 Progress Update
+
+- Added a Packet Terminal entrypoint in the Actions panel and integrated terminal frame interception in `PacketRouter` so connected-mode AX.25 traffic reaches the terminal session.
+- Implemented connected-mode reliability for terminal sessions: TX queue, small send window, RR/Nr ACK advancement, timeout-based retransmit, and link-timeout teardown.
+- Hardened AX.25 decode for valid 15-byte control frames (SABM/UA/DISC), which fixed control-frame drops during terminal handshake on live radios.
+- Improved terminal transcript rendering by stripping common ANSI escape sequences and applying backspace handling to keep BBS prompts readable.
 
 ## How It Works
 

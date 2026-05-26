@@ -25,6 +25,11 @@ public class Ax25Frame {
 
     /** UI frame control byte */
     public static final byte CONTROL_UI = 0x03;
+    /** AX.25 connected-mode controls used by terminal sessions. */
+    public static final byte CONTROL_SABM = 0x3F;
+    public static final byte CONTROL_UA = 0x73;
+    public static final byte CONTROL_DISC = 0x53;
+    public static final byte CONTROL_RR_BASE = 0x01;
 
     /** No Layer 3 protocol PID */
     public static final byte PID_NO_L3 = (byte) 0xF0;
@@ -34,16 +39,30 @@ public class Ax25Frame {
     private String srcCallsign;
     private int srcSsid;
     private byte[] infoField;
+    private byte controlField = CONTROL_UI;
+    private int pid = PID_NO_L3 & 0xFF;
+    private boolean includePid = true;
 
     public Ax25Frame() {}
 
     public Ax25Frame(String srcCallsign, int srcSsid,
                      String destCallsign, int destSsid,
                      byte[] infoField) {
+        this(srcCallsign, srcSsid, destCallsign, destSsid,
+                CONTROL_UI, PID_NO_L3 & 0xFF, true, infoField);
+    }
+
+    public Ax25Frame(String srcCallsign, int srcSsid,
+                     String destCallsign, int destSsid,
+                     byte controlField, int pid,
+                     boolean includePid, byte[] infoField) {
         this.srcCallsign = srcCallsign;
         this.srcSsid = srcSsid;
         this.destCallsign = destCallsign;
         this.destSsid = destSsid;
+        this.controlField = controlField;
+        this.pid = pid;
+        this.includePid = includePid;
         this.infoField = infoField;
     }
 
@@ -59,11 +78,13 @@ public class Ax25Frame {
         // Source address (7 bytes) — last address, so set the "last" bit
         encodeAddress(out, srcCallsign, srcSsid, true);
 
-        // Control field (UI frame)
-        out.write(CONTROL_UI & 0xFF);
+        // Control field
+        out.write(controlField & 0xFF);
 
-        // Protocol ID (no layer 3)
-        out.write(PID_NO_L3 & 0xFF);
+        // Protocol ID (for UI and I-frames)
+        if (includePid) {
+            out.write(pid & 0xFF);
+        }
 
         // Information field
         if (infoField != null) {
@@ -77,8 +98,11 @@ public class Ax25Frame {
      * Decode raw AX.25 bytes into an Ax25Frame object.
      */
     public static Ax25Frame decode(byte[] data) {
-        if (data == null || data.length < 16) {
-            return null; // Minimum: 7 + 7 + 1 + 1 = 16 bytes
+        // Minimum AX.25 header with no digipeaters and no PID/info is 15 bytes:
+        // dest(7) + src(7) + control(1). Connected-mode control frames (SABM/UA/DISC)
+        // are valid at this length.
+        if (data == null || data.length < 15) {
+            return null;
         }
 
         Ax25Frame frame = new Ax25Frame();
@@ -106,14 +130,22 @@ public class Ax25Frame {
 
         // Control byte
         if (pos < data.length) {
-            // byte control = data[pos];
+            frame.controlField = data[pos];
             pos++;
+        } else {
+            frame.controlField = CONTROL_UI;
         }
 
-        // PID byte
-        if (pos < data.length) {
-            // byte pid = data[pos];
+        frame.includePid = shouldIncludePid(frame.controlField);
+        frame.pid = -1;
+
+        // PID byte (UI and I-frames only)
+        if (frame.includePid && pos < data.length) {
+            frame.pid = data[pos] & 0xFF;
             pos++;
+        } else if (frame.includePid) {
+            // UI/I frames without PID are malformed.
+            return null;
         }
 
         // Info field — remainder of the frame
@@ -184,6 +216,47 @@ public class Ax25Frame {
                 aprsPayload.getBytes(StandardCharsets.US_ASCII));
     }
 
+    /**
+     * Create a generic AX.25 UI frame for terminal-mode text exchanges.
+     */
+    public static Ax25Frame createUiFrame(String srcCallsign, int srcSsid,
+                                          String destCallsign, int destSsid,
+                                          byte[] payload) {
+        return new Ax25Frame(srcCallsign, srcSsid, destCallsign, destSsid, payload);
+    }
+
+    public static Ax25Frame createControlFrame(String srcCallsign, int srcSsid,
+                                               String destCallsign, int destSsid,
+                                               byte controlField) {
+        return new Ax25Frame(srcCallsign, srcSsid, destCallsign, destSsid,
+                controlField, -1, false, null);
+    }
+
+    public static Ax25Frame createIFrame(String srcCallsign, int srcSsid,
+                                         String destCallsign, int destSsid,
+                                         int sendSeq, int recvSeq,
+                                         byte[] payload) {
+        int ns = Math.max(0, Math.min(7, sendSeq));
+        int nr = Math.max(0, Math.min(7, recvSeq));
+        byte control = (byte) (((nr & 0x07) << 5) | ((ns & 0x07) << 1));
+        return new Ax25Frame(srcCallsign, srcSsid, destCallsign, destSsid,
+                control, PID_NO_L3 & 0xFF, true, payload);
+    }
+
+    public static Ax25Frame createRrFrame(String srcCallsign, int srcSsid,
+                                          String destCallsign, int destSsid,
+                                          int recvSeq) {
+        int nr = Math.max(0, Math.min(7, recvSeq));
+        byte control = (byte) (CONTROL_RR_BASE | ((nr & 0x07) << 5));
+        return new Ax25Frame(srcCallsign, srcSsid, destCallsign, destSsid,
+                control, -1, false, null);
+    }
+
+    private static boolean shouldIncludePid(byte control) {
+        // UI frame has PID; I-frames (LSB=0) have PID.
+        return control == CONTROL_UI || ((control & 0x01) == 0);
+    }
+
     // --- Getters ---
 
     public String getDestCallsign() { return destCallsign; }
@@ -191,6 +264,9 @@ public class Ax25Frame {
     public String getSrcCallsign() { return srcCallsign; }
     public int getSrcSsid() { return srcSsid; }
     public byte[] getInfoField() { return infoField; }
+    public byte getControlField() { return controlField; }
+    public int getPid() { return pid; }
+    public boolean hasPid() { return includePid; }
 
     /**
      * Get the info field as a UTF-8 string.

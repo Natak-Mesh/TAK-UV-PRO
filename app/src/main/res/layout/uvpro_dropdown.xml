@@ -1170,6 +1170,15 @@
                 android:backgroundTint="#FF455A64" />
 
             <Button
+                android:id="@+id/btn_packet_terminal"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="6dp"
+                android:text="Packet Terminal"
+                android:backgroundTint="#FF455A64" />
+
+            <Button
                 android:id="@+id/btn_initial_channel_group_setup"
                 style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"

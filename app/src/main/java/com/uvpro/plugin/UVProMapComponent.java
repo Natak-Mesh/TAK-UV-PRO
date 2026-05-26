@@ -32,6 +32,7 @@ import com.uvpro.plugin.protocol.NetSlotConfig;
 import com.uvpro.plugin.protocol.PacketRouter;
 import com.uvpro.plugin.protocol.UVProRadioServices;
 import com.uvpro.plugin.radio.UVProRadioControlManager;
+import com.uvpro.plugin.terminal.PacketTerminalDropDownReceiver;
 import com.uvpro.plugin.ui.MeshStatusOverlay;
 import com.uvpro.plugin.ui.RadioStatusOverlay;
 import com.uvpro.plugin.ui.SettingsFragment;
@@ -123,6 +124,7 @@ public class UVProMapComponent extends DropDownMapComponent {
     private ContactTracker contactTracker;
     private UVProDropDownReceiver dropDownReceiver;
     private AprsDetailsDropDownReceiver aprsDetailsDropDownReceiver;
+    private PacketTerminalDropDownReceiver packetTerminalDropDownReceiver;
     private AprsTrackManager aprsTrackManager;
     private EncryptionManager encryptionManager;
     private UVProRadioControlManager radioControlManager;
@@ -346,6 +348,14 @@ try {
         aprsDetailsFilter.addAction(AprsDetailsDropDownReceiver.REFRESH_APRS_DETAILS);
         registerDropDownReceiver(aprsDetailsDropDownReceiver, aprsDetailsFilter);
 
+        packetTerminalDropDownReceiver = new PacketTerminalDropDownReceiver(
+                view, context, btConnectionManager);
+        packetTerminalDropDownReceiver.setPacketRouter(packetRouter);
+        AtakBroadcast.DocumentedIntentFilter terminalFilter =
+                new AtakBroadcast.DocumentedIntentFilter();
+        terminalFilter.addAction(PacketTerminalDropDownReceiver.SHOW_PACKET_TERMINAL);
+        registerDropDownReceiver(packetTerminalDropDownReceiver, terminalFilter);
+
         // Repeater selection + APRS marker tap → APRS metadata panel.
         mapItemClickListener = event -> {
             if (event == null || !MapEvent.ITEM_CLICK.equals(event.getType())) {
@@ -489,6 +499,10 @@ try {
         if (chatBridge != null) {
             chatBridge.dispose();
             chatBridge = null;
+        }
+        if (packetTerminalDropDownReceiver != null) {
+            packetTerminalDropDownReceiver.dispose();
+            packetTerminalDropDownReceiver = null;
         }
         if (beaconIntervalReceiver != null) {
             try {

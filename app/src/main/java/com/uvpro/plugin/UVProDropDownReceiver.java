@@ -60,6 +60,7 @@ import com.uvpro.plugin.cot.CotBridge;
 import com.uvpro.plugin.crypto.EncryptionManager;
 import com.uvpro.plugin.protocol.PacketRouter;
 import com.uvpro.plugin.radio.UVProRadioControlManager;
+import com.uvpro.plugin.terminal.PacketTerminalDropDownReceiver;
 import com.uvpro.plugin.ui.MeshStatusOverlay;
 import com.uvpro.plugin.ui.SettingsFragment;
 
@@ -193,6 +194,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Button btnRadioSilence;
     private Button btnRefreshChannels;
     private Button btnInitialChannelGroupSetup;
+    private Button btnPacketTerminal;
     private Button btnChannelGroup;
     private Button btnImportChannels;
     private Button btnExportChannels;
@@ -620,6 +622,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnRadioSilence = rootView.findViewById(getId("btn_radio_silence"));
         btnRefreshChannels = rootView.findViewById(getId("btn_refresh_channels"));
         btnInitialChannelGroupSetup = rootView.findViewById(getId("btn_initial_channel_group_setup"));
+        btnPacketTerminal = rootView.findViewById(getId("btn_packet_terminal"));
         btnChannelGroup = rootView.findViewById(getId("btn_channel_group"));
         btnImportChannels = rootView.findViewById(getId("btn_import_channels"));
         btnExportChannels = rootView.findViewById(getId("btn_export_channels"));
@@ -801,6 +804,16 @@ public class UVProDropDownReceiver extends DropDownReceiver
         View btnSettings = rootView.findViewById(getId("btn_settings"));
         if (btnSettings != null) {
             btnSettings.setOnClickListener(v -> showSettingsDialog());
+        }
+        if (btnPacketTerminal != null) {
+            btnPacketTerminal.setOnClickListener(v -> {
+                try {
+                    AtakBroadcast.getInstance().sendBroadcast(
+                            new Intent(PacketTerminalDropDownReceiver.SHOW_PACKET_TERMINAL));
+                } catch (Exception e) {
+                    appendLog("Packet terminal open failed: " + e.getMessage());
+                }
+            });
         }
         if (switchSmartBeacon != null) {
             switchSmartBeacon.setOnCheckedChangeListener(smartBeaconCheckedListener);

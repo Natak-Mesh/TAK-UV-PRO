@@ -79,12 +79,18 @@ public class PacketRouter {
 
     /** Listener for packet count updates */
     private PacketCountListener packetCountListener;
+    /** Optional listener for terminal-mode AX.25 monitoring. */
+    private Ax25FrameListener ax25FrameListener;
 
     public interface PacketCountListener {
         void onPacketReceived();
 
         /** One AX.25 frame successfully sent over KISS (beacon, chat, CoT, ping, etc.). */
         void onPacketTransmitted();
+    }
+
+    public interface Ax25FrameListener {
+        void onAx25Frame(Ax25Frame frame);
     }
 
     public PacketRouter(CotBridge cotBridge, ChatBridge chatBridge,
@@ -102,6 +108,10 @@ public class PacketRouter {
 
     public void setPacketCountListener(PacketCountListener listener) {
         this.packetCountListener = listener;
+    }
+
+    public void setAx25FrameListener(Ax25FrameListener listener) {
+        this.ax25FrameListener = listener;
     }
 
     /** Called by {@link com.uvpro.plugin.bluetooth.BtConnectionManager} after a successful KISS TX. */
@@ -138,6 +148,13 @@ public class PacketRouter {
         // Notify listener of received packet
         if (packetCountListener != null) {
             packetCountListener.onPacketReceived();
+        }
+        if (ax25FrameListener != null) {
+            try {
+                ax25FrameListener.onAx25Frame(frame);
+            } catch (Exception e) {
+                Log.w(TAG, "AX.25 terminal listener error: " + e.getMessage());
+            }
         }
 
         // Check if this is an UV-PRO custom packet

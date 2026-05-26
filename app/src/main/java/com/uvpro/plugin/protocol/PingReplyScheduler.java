@@ -11,6 +11,8 @@ import com.uvpro.plugin.cot.CotBridge;
 import com.uvpro.plugin.protocol.RfTxArbitrator;
 import com.uvpro.plugin.ui.SettingsFragment;
 
+import java.util.concurrent.ThreadLocalRandom;
+
 /**
  * Schedules ping replies using deterministic callsign slots ({@link NetSlotConfig}).
  */
@@ -41,14 +43,24 @@ public final class PingReplyScheduler {
             return;
         }
         String callsign = SettingsFragment.getCallsign(context);
-        long delayMs = NetSlotConfig.computeReplyDelayMs(context, callsign);
-        int slot = NetSlotConfig.computeSlotIndex(callsign, NetSlotConfig.getSlotCount(context));
+        int slotCount = NetSlotConfig.getSlotCount(context);
+        int rawSlot = NetSlotConfig.computeSlotIndex(callsign, slotCount);
+        // Remove "slot 0" as a transmit option: effective slots are 1..N.
+        int effectiveSlot = rawSlot + 1;
+        long slotTimeMs = Math.max(1L, Math.round(NetSlotConfig.getSlotTimeSec(context) * 1000.0f));
+        long baseDelayMs = effectiveSlot * slotTimeMs;
+        long jitterWindowMs = Math.max(1L, Math.round(slotTimeMs * 0.10));
+        long jitterMs = ThreadLocalRandom.current().nextLong(-jitterWindowMs, jitterWindowMs + 1L);
+        long delayMs = Math.max(0L, baseDelayMs + jitterMs);
         cancelPending();
         RfTxArbitrator.get().setPingReplyPending(true);
         final Context appCtx = context.getApplicationContext();
         pendingReply = () -> transmitReply(appCtx);
         handler.postDelayed(pendingReply, delayMs);
-        Log.d(TAG, "Ping reply scheduled in " + delayMs + "ms (slot " + slot + ")");
+        Log.d(TAG, "Ping reply scheduled in " + delayMs + "ms (slot " + effectiveSlot
+                + "/" + slotCount
+                + ", rawSlot=" + rawSlot
+                + ", base=" + baseDelayMs + "ms, jitter=" + jitterMs + "ms)");
     }
 
     public void cancelPending() {

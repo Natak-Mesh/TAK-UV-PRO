@@ -265,12 +265,15 @@ try {
             public void onConnected(android.bluetooth.BluetoothDevice device) {
                 Log.d(TAG, "StatusOverlay: radio connected");
                 RadioStatusOverlay.setConnected(true);
+                // Anchor first periodic beacon to connection time.
+                startBeaconTimer();
                 triggerOneTimeStartupRadioGpsUpdate();
             }
             @Override
             public void onDisconnected(String reason) {
                 Log.d(TAG, "StatusOverlay: radio disconnected");
                 RadioStatusOverlay.setConnected(false);
+                stopBeaconTimer();
             }
             @Override
             public void onError(String error) {}
@@ -409,9 +412,6 @@ try {
         cotBridge.setRelayOutgoingSa(false);
         cotBridge.startOutgoingRelay();
 
-        // 9. Start periodic beacon timer
-        startBeaconTimer();
-
         // Listen for runtime preference changes that require rescheduling timers.
         try {
             beaconIntervalReceiver = new android.content.BroadcastReceiver() {
@@ -419,8 +419,12 @@ try {
                 public void onReceive(Context ctx, Intent i) {
                     if (i == null) return;
                     if (ACTION_BEACON_INTERVAL_CHANGED.equals(i.getAction())) {
-                        Log.d(TAG, "Beacon interval changed — rescheduling timer");
-                        startBeaconTimer();
+                        if (btConnectionManager != null && btConnectionManager.isConnected()) {
+                            Log.d(TAG, "Beacon interval changed — rescheduling timer");
+                            startBeaconTimer();
+                        } else {
+                            Log.d(TAG, "Beacon interval changed while disconnected — timer deferred");
+                        }
                     }
                 }
             };
@@ -1704,9 +1708,7 @@ try {
 
     /** Start periodic GPS beacon broadcasts. */
     private void startBeaconTimer() {
-        if (beaconHandler != null && beaconRunnable != null) {
-            beaconHandler.removeCallbacks(beaconRunnable);
-        }
+        stopBeaconTimer();
         smartBeacon.reset();
 
         beaconHandler = new Handler(Looper.getMainLooper());
@@ -1714,19 +1716,30 @@ try {
             @Override
             public void run() {
                 sendBeaconIfConnected();
-                long nextCheckMs;
-                if (SmartBeacon.isEnabled(getBeaconPrefsContext())) {
-                    int checkSec = SmartBeacon.getRecommendedCheckIntervalSec(getBeaconPrefsContext());
-                    nextCheckMs = checkSec * 1000L;
-                } else {
-                    int intervalSec = SettingsFragment.getBeaconIntervalSec(pluginContext);
-                    if (intervalSec < 1) intervalSec = 1;
-                    nextCheckMs = intervalSec * 1000L;
-                }
+                long nextCheckMs = getBeaconTimerDelayMs();
                 beaconHandler.postDelayed(this, nextCheckMs);
             }
         };
+        // First periodic beacon is always 30s after radio connection.
         beaconHandler.postDelayed(beaconRunnable, 30_000L);
+    }
+
+    private void stopBeaconTimer() {
+        if (beaconHandler != null && beaconRunnable != null) {
+            beaconHandler.removeCallbacks(beaconRunnable);
+        }
+    }
+
+    private long getBeaconTimerDelayMs() {
+        if (SmartBeacon.isEnabled(getBeaconPrefsContext())) {
+            int checkSec = SmartBeacon.getRecommendedCheckIntervalSec(getBeaconPrefsContext());
+            return Math.max(1, checkSec) * 1000L;
+        }
+        int intervalSec = SettingsFragment.getBeaconIntervalSec(pluginContext);
+        if (intervalSec < 1) {
+            intervalSec = 1;
+        }
+        return intervalSec * 1000L;
     }
 
     /**

@@ -319,9 +319,30 @@ When a **new chat/agent** starts with no memory:
 
 **Update this document when:** you change the update-server trust strategy, PKCS#12 generation, TPC packaging rules, or VPS paths — so the **next** agent does not rely on chat history.
 
-**Current plugin-repo HEAD (handoff time):** **`74ca716`** on **`main`** — **v1.9.7**. Update this line after new commits that change trust, TPC, or packaging.
+**Current plugin-repo HEAD (handoff time):** **`ef1f831`** on **`main`** — **v1.9.47**. Update this line after new commits that change trust, TPC, packaging, or transport behavior.
 
 **SQLite handoff:** append rows to **`Plugins/Handoff Docs/handoff.db`** (`uvpro_handoff`) when you learn something new — keeps agents off stale chat-only context.
+
+---
+
+## 13.3 2026-05-27 transport + beacon addendum (v1.9.47)
+
+- Mesh transport now uses a dedicated ATAK wire path on companion channel-data frames:
+  - TX: `CMD_SEND_CHANNEL_DATA (0x3E)`
+  - RX: `RESP_CHANNEL_DATA_RECV (0x1B)`
+  - Channel provisioning on connect: slot `7`, name `ATAK_DATA`, app-managed 16-byte secret.
+- Runtime verification signal in logs:
+  - `ATAK channel slot 7 name='ATAK_DATA'`
+  - inbound TAK payload observed as `RX companion pkt type=0x1b ...` before CoT injection.
+- Startup beacon reliability update:
+  - first periodic beacon is now gated on valid ATAK self-position (GPS or manual position),
+    then scheduled 30 seconds later.
+  - first send bypasses Smart Beacon gating to ensure deterministic initial contact discovery.
+- Dual-transport startup/selection hardening:
+  - beacon timer start/stop now respects either connected transport (UV-PRO or MeshCore),
+    avoiding mesh-only disconnect edge cases.
+  - transmit default policy applies on open/connect/disconnect:
+    UV-PRO preferred when connected, otherwise MeshCore when only mesh is connected.
 
 ---
 

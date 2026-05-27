@@ -360,6 +360,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     getMapView().post(() -> {
                         stopMeshConnectButtonPulse(true);
                         updateMeshConnectionUI(true, name);
+                        applyPreferredTransmitModeForConnectionState(false);
                         appendLog("MeshCore connected to " + name);
                         refreshFavoriteStrip();
                         updateMeshScanButtonText();
@@ -377,6 +378,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     getMapView().post(() -> {
                         stopMeshConnectButtonPulse(true);
                         updateMeshConnectionUI(false, null);
+                        applyPreferredTransmitModeForConnectionState(false);
                         appendLog("MeshCore disconnected: " + reason);
                         updateMeshScanButtonText();
                         scheduleMeshGpsAugmentTick();
@@ -528,6 +530,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 stopMeshConnectButtonPulse(true);
             }
         }
+        // Apply connection-priority transmit defaults on open:
+        // UV-PRO if connected, otherwise MeshCore when mesh is connected.
+        applyPreferredTransmitModeForConnectionState(false);
         syncTransmitSwitchesUi();
 
         // Set callsign from ATAK self marker
@@ -1243,6 +1248,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         final String finalDisplay = displayName;
         getMapView().post(() -> {
             updateConnectionUI(true, finalDisplay);
+            applyPreferredTransmitModeForConnectionState(false);
             appendLog("Connected to " + finalDisplay);
             refreshChannelGroupFromRadioAsync(true);
             refreshFavoriteStrip();
@@ -1261,6 +1267,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         getMapView().post(() -> {
             clearDigitalOnlyStateUiOnly();
             updateConnectionUI(false, null);
+            applyPreferredTransmitModeForConnectionState(false);
             appendLog("Disconnected: " + reason);
         });
     }
@@ -1457,16 +1464,56 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 : "Transmit mode: ATAK UV-PRO");
     }
 
+    /**
+     * Connection-priority transmit policy:
+     *  - UV-PRO connected => UV-PRO transmit
+     *  - UV-PRO disconnected + Mesh connected => Mesh transmit
+     *  - neither connected => retain current user choice
+     */
+    private void applyPreferredTransmitModeForConnectionState(boolean logWhenChanged) {
+        boolean uvConnected = btManager != null && btManager.isConnected();
+        boolean meshConnectedNow = meshBtManager != null && meshBtManager.isConnected();
+        boolean targetMode = meshTransmitEnabled;
+        if (uvConnected) {
+            targetMode = false;
+        } else if (meshConnectedNow) {
+            targetMode = true;
+        }
+        if (meshTransmitEnabled != targetMode) {
+            meshTransmitEnabled = targetMode;
+            syncTransmitSwitchesUi();
+            if (logWhenChanged) {
+                appendLog(targetMode
+                        ? "Transmit mode: ATAK MeshCore"
+                        : "Transmit mode: ATAK UV-PRO");
+            }
+        } else {
+            applyActiveTransmitTransport();
+        }
+    }
+
     private void applyActiveTransmitTransport() {
-        BtConnectionManager active = meshTransmitEnabled && meshBtManager != null
-                ? meshBtManager
-                : btManager;
+        BtConnectionManager active = resolveActiveTransmitManager();
         if (cotBridge != null) {
             cotBridge.setBtManager(active);
         }
         if (chatBridge != null) {
             chatBridge.setBtManager(active);
         }
+    }
+
+    private BtConnectionManager resolveActiveTransmitManager() {
+        BtConnectionManager preferred = meshTransmitEnabled && meshBtManager != null
+                ? meshBtManager
+                : btManager;
+        BtConnectionManager alternate = preferred == meshBtManager ? btManager : meshBtManager;
+        if (preferred != null && preferred.isConnected()) {
+            return preferred;
+        }
+        if (alternate != null && alternate.isConnected()) {
+            return alternate;
+        }
+        return preferred != null ? preferred : alternate;
     }
 
     private void showMeshDevicePicker() {
@@ -4111,7 +4158,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void sendManualBeacon() {
-        if (cotBridge != null && btManager.isConnected()) {
+        BtConnectionManager activeTx = resolveActiveTransmitManager();
+        appendLog("Beacon TX route: mode=" + (meshTransmitEnabled ? "mesh" : "uvpro")
+                + " meshConnected=" + (meshBtManager != null && meshBtManager.isConnected())
+                + " uvproConnected=" + (btManager != null && btManager.isConnected()));
+        if (cotBridge != null && activeTx != null && activeTx.isConnected()) {
             Context ctx = getMapView().getContext();
             if (SettingsFragment.isAprsDisableAtakTraffic(ctx)) {
                 appendLog("OPENRL beacon skipped (Disable ATAK traffic)");
@@ -4126,7 +4177,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 cotBridge.sendPositionOverRadio(
                         gp.getLatitude(), gp.getLongitude(),
                         gp.getAltitude(), 0, 0, -1);
-                appendLog("Beacon sent");
+                appendLog("Beacon sent over " + (activeTx == meshBtManager ? "MeshCore" : "UV-PRO"));
             } else {
                 appendLog("No self-location available");
             }
@@ -4276,7 +4327,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void sendPing() {
-        if (cotBridge != null && btManager.isConnected()) {
+        BtConnectionManager activeTx = resolveActiveTransmitManager();
+        if (cotBridge != null && activeTx != null && activeTx.isConnected()) {
             String callsign = MapView.getMapView().getSelfMarker().getMetaString("callsign","UNKNOWN");
             try {
                 com.uvpro.plugin.protocol.UVProPacket packet =
@@ -4294,8 +4346,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                         com.uvpro.plugin.ax25.Ax25Frame
                                 .createUVProFrame(callsign, 0, packetBytes);
                 byte[] ax25 = frame.encode();
-                btManager.sendKissFrame(ax25);
-                appendLog("Ping sent");
+                activeTx.sendKissFrame(ax25);
+                appendLog("Ping sent over " + (activeTx == meshBtManager ? "MeshCore" : "UV-PRO"));
             } catch (Exception e) {
                 appendLog("Ping failed: " + e.getMessage());
             }

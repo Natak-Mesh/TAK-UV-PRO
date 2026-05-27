@@ -40,6 +40,7 @@ import com.uvpro.plugin.aprs.AprsDetailsDropDownReceiver;
 import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.ax25.AprsIconsetInstaller;
 import com.uvpro.plugin.location.RadioGpsBridge;
+import com.uvpro.plugin.location.RadioPositionFix;
 import com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry.BtDeviceRecord;
@@ -131,6 +132,8 @@ public class UVProMapComponent extends DropDownMapComponent {
     private MapEventDispatcher.MapEventDispatchListener mapItemClickListener;
     private Handler beaconHandler;
     private Runnable beaconRunnable;
+    private Runnable beaconWaitForPositionRunnable;
+    private boolean forceFirstPostConnectBeacon = false;
     private Handler iconsetReminderHandler;
     private Runnable iconsetReminderRunnable;
     private android.content.BroadcastReceiver beaconIntervalReceiver;
@@ -275,7 +278,9 @@ try {
             public void onDisconnected(String reason) {
                 Log.d(TAG, "StatusOverlay: radio disconnected");
                 RadioStatusOverlay.setConnected(false);
-                stopBeaconTimer();
+                if (!isAnyTransportConnected()) {
+                    stopBeaconTimer();
+                }
             }
             @Override
             public void onError(String error) {}
@@ -287,12 +292,18 @@ try {
             public void onConnected(android.bluetooth.BluetoothDevice device) {
                 Log.d(TAG, "StatusOverlay: mesh connected");
                 MeshStatusOverlay.setConnected(true);
+                // Keep periodic beacon behavior consistent with UV-PRO transport:
+                // first beacon 30s after a successful mesh connection.
+                startBeaconTimer();
             }
 
             @Override
             public void onDisconnected(String reason) {
                 Log.d(TAG, "StatusOverlay: mesh disconnected");
                 MeshStatusOverlay.setConnected(false);
+                if (!isAnyTransportConnected()) {
+                    stopBeaconTimer();
+                }
             }
 
             @Override
@@ -429,7 +440,7 @@ try {
                 public void onReceive(Context ctx, Intent i) {
                     if (i == null) return;
                     if (ACTION_BEACON_INTERVAL_CHANGED.equals(i.getAction())) {
-                        if (btConnectionManager != null && btConnectionManager.isConnected()) {
+                        if (isAnyTransportConnected()) {
                             Log.d(TAG, "Beacon interval changed — rescheduling timer");
                             startBeaconTimer();
                         } else {
@@ -1724,24 +1735,55 @@ try {
     private void startBeaconTimer() {
         stopBeaconTimer();
         smartBeacon.reset();
+        forceFirstPostConnectBeacon = true;
 
         beaconHandler = new Handler(Looper.getMainLooper());
         beaconRunnable = new Runnable() {
             @Override
             public void run() {
-                sendBeaconIfConnected();
+                sendBeaconIfConnected(forceFirstPostConnectBeacon);
+                forceFirstPostConnectBeacon = false;
                 long nextCheckMs = getBeaconTimerDelayMs();
                 beaconHandler.postDelayed(this, nextCheckMs);
             }
         };
-        // First periodic beacon is always 30s after radio connection.
-        beaconHandler.postDelayed(beaconRunnable, 30_000L);
+        if (hasValidSelfPosition()) {
+            Log.d(TAG, "Beacon timer armed: valid self position already present");
+            // First periodic beacon is 30s after valid position is available.
+            beaconHandler.postDelayed(beaconRunnable, 30_000L);
+            return;
+        }
+        // Wait for ATAK self position (GPS or manually set), then start 30s countdown.
+        beaconWaitForPositionRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (!isAnyTransportConnected() || beaconHandler == null) {
+                    return;
+                }
+                if (hasValidSelfPosition()) {
+                    Log.d(TAG, "Valid self position acquired; startup beacon in 30s");
+                    beaconHandler.postDelayed(beaconRunnable, 30_000L);
+                    beaconWaitForPositionRunnable = null;
+                    return;
+                }
+                beaconHandler.postDelayed(this, 2_000L);
+            }
+        };
+        Log.d(TAG, "Beacon timer waiting for valid self position before startup countdown");
+        beaconHandler.postDelayed(beaconWaitForPositionRunnable, 2_000L);
     }
 
     private void stopBeaconTimer() {
-        if (beaconHandler != null && beaconRunnable != null) {
-            beaconHandler.removeCallbacks(beaconRunnable);
+        if (beaconHandler != null) {
+            if (beaconRunnable != null) {
+                beaconHandler.removeCallbacks(beaconRunnable);
+            }
+            if (beaconWaitForPositionRunnable != null) {
+                beaconHandler.removeCallbacks(beaconWaitForPositionRunnable);
+            }
         }
+        beaconWaitForPositionRunnable = null;
+        forceFirstPostConnectBeacon = false;
     }
 
     private long getBeaconTimerDelayMs() {
@@ -1779,11 +1821,17 @@ try {
         }
     }
 
-    private void sendBeaconIfConnected() {
-        if (btConnectionManager == null || !btConnectionManager.isConnected()) return;
+    private void sendBeaconIfConnected(boolean forceImmediate) {
+        BtConnectionManager beaconTransport = resolveBeaconTransportManager();
+        if (beaconTransport == null || !beaconTransport.isConnected()) return;
         if (cotBridge == null || mapView == null) return;
 
         try {
+            // Ensure periodic beacons follow the connected transport (mesh-only boots included).
+            cotBridge.setBtManager(beaconTransport);
+            if (chatBridge != null) {
+                chatBridge.setBtManager(beaconTransport);
+            }
             com.atakmap.android.maps.PointMapItem self = mapView.getSelfMarker();
             if (self == null) return;
 
@@ -1796,11 +1844,13 @@ try {
             double speedMph = speedMs * 2.23694;
 
             Context beaconCtx = getBeaconPrefsContext();
-            if (SmartBeacon.isEnabled(beaconCtx)) {
+            if (!forceImmediate && SmartBeacon.isEnabled(beaconCtx)) {
                 if (!smartBeacon.shouldBeacon(beaconCtx, speedMph, course)) return;
                 smartBeacon.recordBeacon(course);
                 Log.d(TAG, "Smart beacon fired (speed=" + String.format("%.1f", speedMph)
                         + "mph, course=" + String.format("%.0f", course) + "°)");
+            } else if (forceImmediate) {
+                Log.d(TAG, "Post-connect startup beacon fired (30s)");
             }
 
             boolean disableAtak = com.uvpro.plugin.ui.SettingsFragment
@@ -1839,6 +1889,36 @@ try {
         } catch (Exception e) {
             Log.e(TAG, "Error sending periodic beacon", e);
         }
+    }
+
+    private boolean isAnyTransportConnected() {
+        return (btConnectionManager != null && btConnectionManager.isConnected())
+                || (meshBtConnectionManager != null && meshBtConnectionManager.isConnected());
+    }
+
+    private BtConnectionManager resolveBeaconTransportManager() {
+        if (btConnectionManager != null && btConnectionManager.isConnected()) {
+            return btConnectionManager;
+        }
+        if (meshBtConnectionManager != null && meshBtConnectionManager.isConnected()) {
+            return meshBtConnectionManager;
+        }
+        return null;
+    }
+
+    private boolean hasValidSelfPosition() {
+        if (mapView == null) {
+            return false;
+        }
+        PointMapItem self = mapView.getSelfMarker();
+        if (self == null) {
+            return false;
+        }
+        GeoPoint gp = self.getPoint();
+        if (gp == null || !gp.isValid()) {
+            return false;
+        }
+        return RadioPositionFix.isValidCoordinate(gp.getLatitude(), gp.getLongitude());
     }
 
     private void startAprsIconsetReminder(Context pluginCtx, Context uiCtx) {

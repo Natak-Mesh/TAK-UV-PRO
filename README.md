@@ -59,6 +59,15 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 - Hardened AX.25 decode for valid 15-byte control frames (SABM/UA/DISC), which fixed control-frame drops during terminal handshake on live radios.
 - Improved terminal transcript rendering by stripping common ANSI escape sequences and applying backspace handling to keep BBS prompts readable.
 
+### 2026-05-27 Progress Update (v1.9.47)
+
+- MeshCore transport now provisions and uses a dedicated ATAK data channel (`ATAK_DATA`, slot 7) with app-managed secret, keeping TAK payloads off user-visible channel text paths.
+- MeshCore payload TX/RX now uses companion data packets (`CMD_SEND_CHANNEL_DATA` / `RESP_CHANNEL_DATA_RECV`) for ATAK envelopes and contact updates.
+- Startup beacon timing was hardened: the first forced beacon now waits for a valid ATAK self position (GPS or manually set), then sends 30 seconds later.
+- Beacon routing now selects the active connected transport (UV-PRO or MeshCore), including mesh-only boot/connect scenarios.
+- Transmit mode defaults are connection-aware: prefer UV-PRO when UV-PRO is connected, otherwise prefer MeshCore when only MeshCore is connected.
+- Compact RF sender aliases and auto-point sanitization were added to reduce random pseudo-contact creation from compressed IDs and auto-generated point names.
+
 ## How It Works
 
 ```

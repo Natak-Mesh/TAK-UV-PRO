@@ -256,6 +256,8 @@ public class CotBridge {
 
     private static final String ANDROID_UID_PREFIX = "ANDROID-";
     private static final long GROUP_CONTACT_COT_REDUNDANT_TX_DELAY_MS = 1200L;
+    private static final Pattern AUTO_POINT_CALLSIGN =
+            Pattern.compile("^[A-Z]\\.\\d{2}\\.\\d{6}$");
 
     /**
      * ATAK GeoChat/direct destinations sometimes use the literal contact UID label
@@ -272,6 +274,31 @@ public class CotBridge {
     }
 
     /**
+     * Mesh chat sender IDs are often 6-char compressed forms (e.g. SMKY15, JSTR15).
+     * Build a compact consonant+digit key so they can map back to full callsigns
+     * already registered from GPS/contacts (e.g. SMOKEY_15, JESTER_15).
+     */
+    private static String compactRoutingKey(String id) {
+        String normalized = normalizeBtechRoutingId(id);
+        if (normalized.isEmpty()) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder(normalized.length());
+        for (int i = 0; i < normalized.length(); i++) {
+            char ch = normalized.charAt(i);
+            if (ch >= 'A' && ch <= 'Z') {
+                if (ch == 'A' || ch == 'E' || ch == 'I' || ch == 'O' || ch == 'U') {
+                    continue;
+                }
+                out.append(ch);
+            } else if (ch >= '0' && ch <= '9') {
+                out.append(ch);
+            }
+        }
+        return out.toString();
+    }
+
+    /**
      * Resolve a chat destination label/callsign to a BTECH contact UID, if known.
      */
     public String resolveBtechUidForId(String id) {
@@ -284,6 +311,19 @@ public class CotBridge {
         if (!stripped.isEmpty() && !stripped.equals(key)) {
             mapped = btechIdToUid.get(stripped);
             if (mapped != null) return mapped;
+        }
+        // Fallback for compact sender IDs from RF chat payloads (SMKY15/JSTR15).
+        String compact = compactRoutingKey(id);
+        if (!compact.isEmpty() && compact.length() >= 4) {
+            for (Map.Entry<String, String> e : btechIdToUid.entrySet()) {
+                if (e == null || e.getKey() == null || e.getValue() == null) {
+                    continue;
+                }
+                String existingCompact = compactRoutingKey(e.getKey());
+                if (compact.equals(existingCompact)) {
+                    return e.getValue();
+                }
+            }
         }
         return null;
     }
@@ -582,6 +622,7 @@ public class CotBridge {
 
             CotEvent event = CotEvent.parse(xml);
             if (event != null && event.isValid()) {
+                sanitizeInboundAutoPointCot(event);
                 Log.d(TAG, "Injecting decompressed CoT: type=" + event.getType()
                         + " uid=" + event.getUID());
                 // Mark ALL injected CoT to skip outbound RF relay — prevents the
@@ -597,6 +638,40 @@ public class CotBridge {
         } catch (Exception e) {
             Log.e(TAG, "Error injecting compressed CoT", e);
         }
+    }
+
+    /**
+     * Convert auto-generated ATAK point names (U.27.xxxxxx / N.27.xxxxxx) into
+     * plain map-point presentation so they do not appear as pseudo-contacts.
+     */
+    private void sanitizeInboundAutoPointCot(CotEvent event) {
+        if (event == null) {
+            return;
+        }
+        String type = event.getType();
+        if (type == null || !(type.startsWith("a-u-G") || type.startsWith("a-n-G"))) {
+            return;
+        }
+        CotDetail detail = event.getDetail();
+        if (detail == null) {
+            return;
+        }
+        CotDetail contact = detail.getFirstChildByName(0, "contact");
+        if (contact == null) {
+            return;
+        }
+        String callsign = contact.getAttribute("callsign");
+        if (callsign == null) {
+            return;
+        }
+        String trimmed = callsign.trim();
+        if (!AUTO_POINT_CALLSIGN.matcher(trimmed).matches()) {
+            return;
+        }
+        contact.setAttribute("callsign", "Point");
+        event.setType("b-m-p-s-p-i");
+        Log.d(TAG, "Sanitized inbound auto-point CoT uid=" + event.getUID()
+                + " callsign=" + trimmed + " -> Point");
     }
 
     /**

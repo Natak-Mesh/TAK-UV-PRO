@@ -67,6 +67,7 @@ public class ChatBridge {
             "com.atakmap.android.chat.SEND_MESSAGE";
     /** RF payload wrapper for non-radio destination gatewaying (B -> A -> TAK). */
     private static final String GW_PREFIX = "__UVGW__|";
+    private static final String ALL_CHAT_ROOMS = "All Chat Rooms";
     private static final String ANDROID_UID_PREFIX = "ANDROID-";
 
     /**
@@ -252,11 +253,8 @@ public class ChatBridge {
         // Determine chat room — if destination is a specific callsign,
         // use direct chat. Otherwise use broadcast.
         String chatRoom;
-        if (toCallsign == null || toCallsign.isEmpty()
-                || "ALL".equalsIgnoreCase(toCallsign)
-                || "BLN".equalsIgnoreCase(toCallsign.substring(0,
-                Math.min(3, toCallsign.length())))) {
-            chatRoom = "All Chat Rooms";
+        if (isBroadcastRoom(toCallsign)) {
+            chatRoom = ALL_CHAT_ROOMS;
         } else {
             chatRoom = toCallsign.trim();
         }
@@ -272,15 +270,21 @@ public class ChatBridge {
         // ANDROID-JUNIOR — so resolveBtechUidForId("JUNIOR") is often NULL and we incorrectly
         // used sender ANDROID-VETTE as both ends (GeoChat.ANDROID-VETTE.ANDROID-VETTE).
         // Detect RF dest == configured local callsign (or its AX.25 form) FIRST, then use sender UID.
-        if (!"All Chat Rooms".equalsIgnoreCase(chatRoom)) {
+        if (!ALL_CHAT_ROOMS.equalsIgnoreCase(chatRoom)) {
             String destUid = cotBridge.resolveBtechUidForId(chatRoom);
             String senderUid = cotBridge.resolveBtechUidForId(fromCallsign);
+            String selfUid = null;
+            try {
+                selfUid = MapView.getDeviceUid();
+            } catch (Exception ignored) {
+            }
             // APRS senders are intentionally not registered as ATAK Contacts; synthesize an
             // ANDROID-* UID so GeoChat can thread and badge them like normal conversations.
             if ((senderUid == null || senderUid.isEmpty()) && fromCallsign != null) {
                 senderUid = syntheticAndroidUid(fromCallsign);
             }
-            if (senderUid != null && senderUid.startsWith(ANDROID_UID_PREFIX)) {
+            if (senderUid != null && senderUid.startsWith(ANDROID_UID_PREFIX)
+                    && (selfUid == null || !selfUid.equalsIgnoreCase(senderUid))) {
                 ensurePluginChatContact(fromCallsign, senderUid);
                 if (radioPacketMessageId == 0) {
                     markAprsContactUid(senderUid);
@@ -291,11 +295,6 @@ public class ChatBridge {
                 }
                 cotBridge.registerBtechContactId(
                         senderUid.substring(ANDROID_UID_PREFIX.length()), senderUid);
-            }
-            String selfUid = null;
-            try {
-                selfUid = MapView.getDeviceUid();
-            } catch (Exception ignored) {
             }
 
             boolean peerThreadResolved = false;
@@ -368,39 +367,54 @@ public class ChatBridge {
         if (room == null || room.isEmpty() || localCallsign == null) {
             return false;
         }
-        String r = room.trim();
-        String loc = localCallsign.trim();
-        if (loc.isEmpty()) {
+        String r = room.trim().toUpperCase(Locale.US);
+        if (r.isEmpty()) {
             return false;
         }
-        if (loc.equalsIgnoreCase(r)) {
-            return true;
-        }
-        try {
-            if (CallsignUtil.toRadioCallsign(loc).equalsIgnoreCase(r)) {
-                return true;
-            }
-        } catch (Exception ignored) {
-        }
+
+        Set<String> accepted = new HashSet<>();
+        addSelfCallsignVariants(accepted, localCallsign);
+
         try {
             com.atakmap.android.maps.PointMapItem selfMarker = mapView.getSelfMarker();
             if (selfMarker != null) {
-                String m = selfMarker.getMetaString("callsign", null);
-                if (m != null) {
-                    if (m.trim().equalsIgnoreCase(r)) {
-                        return true;
-                    }
-                    try {
-                        if (CallsignUtil.toRadioCallsign(m.trim()).equalsIgnoreCase(r)) {
-                            return true;
-                        }
-                    } catch (Exception ignored2) {
-                    }
+                addSelfCallsignVariants(accepted, selfMarker.getMetaString("callsign", null));
+            }
+        } catch (Exception ignored) {
+        }
+
+        return accepted.contains(r);
+    }
+
+    private static void addSelfCallsignVariants(Set<String> out, String raw) {
+        if (raw == null) {
+            return;
+        }
+        String base = raw.trim().toUpperCase(Locale.US);
+        if (base.isEmpty()) {
+            return;
+        }
+
+        out.add(base);
+
+        // Legacy RF room payloads can use only the callsign root (e.g. SMOKEY from SMOKEY_15).
+        String noSuffix = base.replaceFirst("[-_].*$", "");
+        if (!noSuffix.isEmpty()) {
+            out.add(noSuffix);
+        }
+
+        try {
+            String radio = CallsignUtil.toRadioCallsign(base);
+            if (radio != null && !radio.trim().isEmpty()) {
+                out.add(radio.trim().toUpperCase(Locale.US));
+                String radioNoSuffix = radio.trim().toUpperCase(Locale.US)
+                        .replaceFirst("[-_].*$", "");
+                if (!radioNoSuffix.isEmpty()) {
+                    out.add(radioNoSuffix);
                 }
             }
         } catch (Exception ignored) {
         }
-        return false;
     }
 
     private boolean isLikelyGroupConversationThread(String threadIdRaw) {
@@ -1275,6 +1289,7 @@ public class ChatBridge {
                 if (chatRoom == null || chatRoom.isEmpty()) {
                     chatRoom = "All Chat Rooms";
                 }
+                boolean allChatRooms = "All Chat Rooms".equalsIgnoreCase(chatRoom.trim());
 
                 // Only relay when the destination is a plugin-created contact.
                 // SEND_MESSAGE extras vary by build; ANDROID-VETTE1 must match callsign VETTE1.
@@ -1293,6 +1308,10 @@ public class ChatBridge {
                             break;
                         }
                     }
+                }
+                if (!shouldRelay && allChatRooms) {
+                    // User selected broadcast chat from ATAK UI.
+                    shouldRelay = true;
                 }
                 boolean gatewayRelay = false;
                 if (!shouldRelay) {
@@ -1362,10 +1381,6 @@ public class ChatBridge {
             }
 
             String lineUid = resolveOutboundGeoChatLineUid(event);
-            if (skipIfDuplicateOutboundGeoChatLine(lineUid)) {
-                return;
-            }
-
             Log.d(TAG, "Relaying outgoing chat (COT intent) to radio: " + message
                     + " lineUid=" + lineUid);
             relayOutboundGeoChatCot(event);
@@ -1426,10 +1441,6 @@ public class ChatBridge {
         }
 
         String lineUid = resolveOutboundGeoChatLineUid(event);
-        if (skipIfDuplicateOutboundGeoChatLine(lineUid)) {
-            return;
-        }
-
         CotDetail detail = event.getDetail();
         if (detail == null) {
             return;
@@ -1499,9 +1510,10 @@ public class ChatBridge {
                 trimOutboundAckMap();
             }
 
+            String wireRoom = isBroadcastRoom(room) ? "ALL" : room;
             UVProPacket packet = UVProPacket.createChatPacket(
                     com.uvpro.plugin.util.CallsignUtil.toRadioCallsign(sender),
-                    room, wireMid, message);
+                    wireRoom, wireMid, message);
 
             byte[] packetBytes = packet.encode();
             // Encrypt if enabled
@@ -1521,13 +1533,31 @@ public class ChatBridge {
 
             // Register for retry watchdog — cancelled when DELIVERED ACK arrives.
             PendingOutboundChat pending =
-                    new PendingOutboundChat(wireMid, sender, room, message, geoChatLineUidOrNull);
+                    new PendingOutboundChat(wireMid, sender, wireRoom, message, geoChatLineUidOrNull);
             pendingOutboundChats.put(wireMid, pending);
-            Log.d(TAG, "Outbound pending registered mid=" + wireMid + " room=" + room);
+            Log.d(TAG, "Outbound pending registered mid=" + wireMid + " room=" + wireRoom);
             scheduleRetryCheck(wireMid);
         } catch (Exception e) {
             Log.e(TAG, "Error sending chat over radio", e);
         }
+    }
+
+    private static boolean isBroadcastRoom(String roomRaw) {
+        if (roomRaw == null) {
+            return true;
+        }
+        String room = roomRaw.trim();
+        if (room.isEmpty()) {
+            return true;
+        }
+        String upper = room.toUpperCase(Locale.US);
+        if ("ALL".equals(upper) || ALL_CHAT_ROOMS.toUpperCase(Locale.US).equals(upper)) {
+            return true;
+        }
+        if (upper.startsWith("ALL ")) {
+            return true;
+        }
+        return upper.startsWith("BLN");
     }
 
     private static String wrapGatewayMessage(String toUid, String chatRoom, String message) {

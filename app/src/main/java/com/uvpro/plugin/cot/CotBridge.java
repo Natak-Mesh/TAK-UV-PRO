@@ -16,7 +16,6 @@ import com.atakmap.android.contact.IndividualContact;
 import com.atakmap.android.contact.PluginConnector;
 import com.atakmap.android.cot.CotMapComponent;
 import com.atakmap.android.util.IconUtilities;
-import com.atakmap.android.util.NotificationUtil;
 import com.atakmap.android.ipc.AtakBroadcast;
 import com.atakmap.android.icons.UserIcon;
 import com.atakmap.android.maps.MapView;
@@ -410,6 +409,15 @@ public class CotBridge {
             if (chat == null) {
                 chat = detail.getFirstChildByName(0, "chat");
             }
+            // "All Chat Rooms" is a deliberate broadcast chat intent. Relay it from this device
+            // regardless of specific contact UIDs.
+            if (chat != null) {
+                String room = chat.getAttribute("chatroom");
+                if (room != null && ALL_CHAT_ROOMS.equalsIgnoreCase(room.trim())
+                        && isLikelyLocalGeoChatSender(event)) {
+                    return true;
+                }
+            }
             if (chat != null && geoChatDetailTargetsBtechContact(chat, detail)) {
                 return true;
             }
@@ -424,6 +432,28 @@ public class CotBridge {
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    private boolean isLikelyLocalGeoChatSender(CotEvent event) {
+        if (event == null) {
+            return false;
+        }
+        String senderUid = GeoChatContactListHelper.extractChatSenderUid(event);
+        String localUid = null;
+        try {
+            localUid = MapView.getDeviceUid();
+        } catch (Exception ignored) {
+        }
+        if (localUid != null && !localUid.isEmpty()
+                && senderUid != null && senderUid.equalsIgnoreCase(localUid)) {
+            return true;
+        }
+        String senderCallsign = GeoChatContactListHelper.extractChatSenderCallsign(event);
+        if (senderCallsign != null && localCallsign != null
+                && senderCallsign.trim().equalsIgnoreCase(localCallsign.trim())) {
+            return true;
+        }
+        return false;
     }
 
     private boolean geoChatDetailTargetsBtechContact(
@@ -725,6 +755,18 @@ public class CotBridge {
                 Log.w(TAG, "injectChatCot: no UID for sender " + trimmed);
                 return;
             }
+            String localUid = cachedLocalDeviceUidForGeoChat;
+            if (localUid == null || localUid.isEmpty()) {
+                try {
+                    localUid = MapView.getDeviceUid();
+                } catch (Exception ignored) {
+                }
+            }
+            if (localUid != null && !localUid.isEmpty()
+                    && canonicalUid.equalsIgnoreCase(localUid)) {
+                Log.d(TAG, "injectChatCot: ignored self-origin chat sender uid=" + canonicalUid);
+                return;
+            }
             String displayCallsign = canonicalUid.startsWith(ANDROID_UID_PREFIX)
                     ? canonicalUid.substring(ANDROID_UID_PREFIX.length())
                     : trimmed.toUpperCase();
@@ -837,62 +879,16 @@ public class CotBridge {
         }
         inboundChatNotifyUntil.put(uid, now + INBOUND_CHAT_NOTIFY_DEDUPE_MS);
 
-        String sender = GeoChatContactListHelper.extractChatSenderCallsign(event);
-        if (sender == null || sender.trim().isEmpty()) {
-            sender = GeoChatContactListHelper.extractChatSenderUid(event);
-        }
-        if (sender == null || sender.trim().isEmpty()) {
-            sender = "RF";
-        }
         String message = extractGeoChatRemarks(event);
         if (message == null || message.trim().isEmpty()) {
             message = "New RF chat message";
-        } else if (message.length() > 72) {
-            message = message.substring(0, 72) + "...";
         }
-        String alert = sender + ": " + message;
         String conversationId = GeoChatContactListHelper.extractConversationId(event);
-        String conversationName = GeoChatContactListHelper.extractConversationName(event);
-        String notifyTitle = "RF Chat";
-        if (conversationId != null && !conversationId.trim().isEmpty()
-                && !conversationId.toUpperCase(Locale.US).startsWith(ANDROID_UID_PREFIX)) {
-            notifyTitle = "RF Group";
-            if (conversationName != null && !conversationName.trim().isEmpty()) {
-                alert = conversationName.trim() + ": " + message;
-            }
-        }
         if (conversationId != null && !conversationId.trim().isEmpty()) {
             int msgId = uid.hashCode() & 0x7FFFFFFF;
             UVProContactHandler.incrementUnreadOnce(conversationId.trim(), msgId, message);
         }
-        final String finalAlert = alert;
-        try {
-            android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
-            main.post(() -> {
-                MapView mv = MapView.getMapView();
-                if (mv != null && mv.getContext() != null) {
-                    android.widget.Toast.makeText(
-                            mv.getContext(),
-                            finalAlert,
-                            android.widget.Toast.LENGTH_LONG).show();
-                }
-            });
-        } catch (Exception e) {
-            Log.w(TAG, "Inbound RF chat toast failed uid=" + uid, e);
-        }
-        try {
-            int notifyId = ("rf_chat_" + uid).hashCode() & 0x7FFFFFFF;
-            NotificationUtil.getInstance().postNotification(
-                    notifyId,
-                    NotificationUtil.GeneralIcon.CHAT.getID(),
-                    NotificationUtil.BLUE,
-                    notifyTitle,
-                    "UV-PRO",
-                    finalAlert);
-            Log.i(TAG, "Inbound RF chat notification posted uid=" + uid);
-        } catch (Exception e) {
-            Log.w(TAG, "Inbound RF chat notification failed uid=" + uid, e);
-        }
+        Log.d(TAG, "Inbound RF chat popup suppressed uid=" + uid);
     }
 
     /**
@@ -925,11 +921,25 @@ public class CotBridge {
         if (canonical == null || canonical.isEmpty()) {
             return;
         }
+        String localUid = cachedLocalDeviceUidForGeoChat;
+        if (localUid == null || localUid.isEmpty()) {
+            try {
+                localUid = MapView.getDeviceUid();
+            } catch (Exception ignored) {
+            }
+        }
+        if (localUid != null && !localUid.isEmpty()
+                && canonical.equalsIgnoreCase(localUid)) {
+            Log.d(TAG, "seedInboundGeoChatSender: skip local self uid=" + canonical);
+            return;
+        }
 
         if (groupSync) {
             ensureAtakGeoChatSenderContact(canonical, callsign);
         } else if (canonical.toUpperCase(Locale.US).startsWith(ANDROID_UID_PREFIX)) {
-            ChatBridge.ensurePluginChatContact(callsign, canonical);
+            // GeoChatService may emit delivered/read status to this exact UID immediately.
+            // Seed as exact plugin contact so Comms does not treat it as unknown.
+            ChatBridge.ensurePluginChatContactExactUid(callsign, canonical);
         } else {
             ensureAtakGeoChatSenderContact(canonical, callsign);
         }
@@ -1537,6 +1547,20 @@ public class CotBridge {
                         return;
                     }
                 }
+                new Thread(() -> sendCotOverRadio(event)).start();
+                return;
+            }
+
+            // Explicit map-item broadcasts (point/route/user-defined) should relay even without
+            // per-contact toUIDs. This is transport-agnostic (UV-PRO or MeshCore active manager).
+            boolean broadcastMapCot = (toUIDs == null || toUIDs.length == 0)
+                    && (type.startsWith("a-n-")
+                    || type.startsWith("b-m-p")
+                    || type.startsWith("b-m-r")
+                    || type.startsWith("u-"));
+            if (broadcastMapCot) {
+                Log.d(TAG, "Relaying broadcast map CoT to radio: type=" + type
+                        + " uid=" + event.getUID());
                 new Thread(() -> sendCotOverRadio(event)).start();
                 return;
             }

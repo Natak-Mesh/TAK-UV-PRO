@@ -82,6 +82,7 @@ Use when a **signed** `ATAK-Plugin-UVPro-*-tpc-5.5.1-civ-release.apk` exists.
 - **Never upload the APK to TPC** as the submission artifact — **source zip only**.
 - **Do not** trust outdated advice flagged in **§12** (stale rules).
 - **Use host ATAK `Context`** / `getApplicationContext()` for **SharedPreferences** that ATAK reads — not the raw plugin context — for update-server prefs (see code in `UVProMapComponent`).
+- **Transport parity is mandatory for routing fixes:** follow `.cursor/rules/transport-agnostic-routing.mdc` and validate UV-PRO + MeshCore behavior for DM, All Chat Rooms, contact-targeted CoT, and broadcast CoT.
 
 ---
 
@@ -194,6 +195,7 @@ Operational expectation after patch:
 - Users can pair a new UV-PRO directly from plugin `Scan & Connect` flow (Android pairing confirmation still required).
 - Discovery and picker response should feel faster when new unpaired radios are in pairing mode.
 - MeshCore auto-connect attempts no longer flash the connect button.
+- Routing changes (chat/CoT/broadcast filters) are now governed by a persistent project rule at `.cursor/rules/transport-agnostic-routing.mdc` so future fixes are implemented and tested on both transports.
 
 ---
 

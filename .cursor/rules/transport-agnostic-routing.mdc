@@ -1,0 +1,25 @@
+---
+description: Enforce transport-agnostic routing across UV-PRO and MeshCore
+alwaysApply: true
+---
+
+# Transport-Agnostic Routing Rule
+
+For any change touching message routing, chat, CoT relay, broadcast behavior, or delivery filtering:
+
+1. Keep logic transport-agnostic by implementing in shared bridge paths (`ChatBridge`/`CotBridge`) and using the active `BtConnectionManager`.
+2. Do not add UV-PRO-only branching for behavior that should also apply to MeshCore.
+3. Preserve destination filtering semantics across both transports:
+   - direct sends only to intended recipient,
+   - broadcast/all-room sends relay as broadcast,
+   - non-target packets must be ignored.
+4. Validate both transports before calling a fix complete:
+   - UV-PRO active transport test, and
+   - MeshCore active transport test.
+5. For every routing fix, verify at minimum:
+   - DM to specific contact,
+   - `All Chat Rooms`/broadcast chat,
+   - point/CoT contact-targeted send,
+   - point/CoT broadcast send.
+
+If only one transport was tested, state that explicitly and keep the task open for parity verification.

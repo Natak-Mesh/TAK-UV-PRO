@@ -75,6 +75,7 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 - Scan responsiveness was improved by ending discovery early when a new unpaired UV-PRO is found and by enforcing an 8-second scan timeout cap.
 - Connect mode now only appears for explicit favorite selection; if a remembered non-favorite radio is unavailable, the UI remains in `Scan & Connect` mode.
 - MeshCore connect-button pulse animation was disabled so auto-connect attempts no longer flash the button.
+- Added persistent agent rule `.cursor/rules/transport-agnostic-routing.mdc` requiring all routing/message/CoT fixes to be transport-agnostic and verified on both UV-PRO and MeshCore paths.
 
 ## How It Works
 

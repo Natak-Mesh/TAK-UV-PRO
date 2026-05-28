@@ -5,9 +5,14 @@ import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothSocket;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import com.uvpro.plugin.kiss.KissFrameDecoder;
@@ -21,6 +26,7 @@ import java.lang.reflect.Method;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -73,9 +79,19 @@ public class BtConnectionManager {
     private static final int MAX_RECONNECT_ATTEMPTS = 5;
 
     private BluetoothDevice lastDevice;
+    private BluetoothDevice pendingBondDevice;
     // Probe sockets that are already connected — reused by connect() to avoid double-connect
-    private final java.util.concurrent.ConcurrentHashMap<String, BluetoothSocket> openProbeSockets =
-            new java.util.concurrent.ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, BluetoothSocket> openProbeSockets =
+            new ConcurrentHashMap<>();
+    private final java.util.HashSet<String> seenScanAddresses = new java.util.HashSet<>();
+    private final AtomicBoolean scanCompleteNotified = new AtomicBoolean(false);
+    private BroadcastReceiver discoveryReceiver;
+    private BroadcastReceiver bondStateReceiver;
+    private boolean discoveryReceiverRegistered = false;
+    private boolean bondReceiverRegistered = false;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final AtomicBoolean scanTimeoutScheduled = new AtomicBoolean(false);
+    private static final long SCAN_TIMEOUT_MS = 8000L;
 
     private final CopyOnWriteArrayList<ConnectionListener> listeners =
             new CopyOnWriteArrayList<>();
@@ -113,11 +129,12 @@ public class BtConnectionManager {
         this.kissDecoder = new KissFrameDecoder();
         this.kissEncoder = new KissFrameEncoder();
         this.btAdapter = BluetoothAdapter.getDefaultAdapter();
+        registerBondReceiver();
     }
 
     /**
-     * Returns all bonded (paired) Bluetooth devices immediately.
-     * Background reachability probing is handled by showDevicePicker().
+     * Scan for UV-PRO radios from both bonded and discoverable devices.
+     * This allows first-time pairing directly from the plugin UI.
      */
     public void startScan() {
         if (btAdapter == null) {
@@ -133,19 +150,40 @@ public class BtConnectionManager {
             return;
         }
 
-        Set<BluetoothDevice> pairedDevices = btAdapter.getBondedDevices();
-        if (pairedDevices == null || pairedDevices.isEmpty()) {
-            notifyError("No paired Bluetooth devices. Pair your radio in Android Bluetooth settings first.");
-            return;
+        stopDiscoveryIfRunning();
+        cancelScanTimeout();
+        scanCompleteNotified.set(false);
+        synchronized (seenScanAddresses) {
+            seenScanAddresses.clear();
         }
 
-        for (BluetoothDevice device : pairedDevices) {
-            String name = device.getName();
-            if (name == null) name = device.getAddress();
-            Log.i(TAG, "Paired device: " + name + " [" + device.getAddress() + "]");
-            notifyDeviceFound(device);
+        Set<BluetoothDevice> pairedDevices = btAdapter.getBondedDevices();
+        if (pairedDevices != null) {
+            for (BluetoothDevice device : pairedDevices) {
+                if (!isLikelyUvProDevice(device)) {
+                    continue;
+                }
+                String name = device.getName();
+                if (name == null) name = device.getAddress();
+                Log.i(TAG, "Paired UV-PRO: " + name + " [" + device.getAddress() + "]");
+                recordSeenAddress(device.getAddress());
+                notifyDeviceFound(device);
+            }
         }
-        notifyScanComplete();
+
+        registerDiscoveryReceiverIfNeeded();
+        boolean started = false;
+        try {
+            started = btAdapter.startDiscovery();
+        } catch (Exception e) {
+            Log.w(TAG, "startDiscovery failed", e);
+        }
+        if (!started) {
+            notifyError("Bluetooth discovery unavailable. Showing paired radios only.");
+            notifyScanCompleteOnce();
+            return;
+        }
+        scheduleScanTimeout();
     }
 
     /** Stores a probe socket that connect() can reuse to avoid a double-connect. */
@@ -218,6 +256,10 @@ public class BtConnectionManager {
      * Tries multiple socket strategies to handle various Android BT quirks.
      */
     public void connect(BluetoothDevice device) {
+        if (device == null) {
+            notifyError("Invalid Bluetooth device");
+            return;
+        }
         if (connected.get()) {
             disconnect();
         }
@@ -229,6 +271,32 @@ public class BtConnectionManager {
         lastDevice = device;
         shouldReconnect.set(true);
         reconnectAttempts = 0;
+
+        // If the radio is not paired yet, request bond and connect automatically
+        // once pairing succeeds.
+        int bondState = BluetoothDevice.BOND_NONE;
+        try {
+            bondState = device.getBondState();
+        } catch (Exception ignored) {
+        }
+        if (bondState != BluetoothDevice.BOND_BONDED) {
+            pendingBondDevice = device;
+            boolean requested = false;
+            try {
+                requested = device.createBond();
+            } catch (Exception e) {
+                Log.w(TAG, "createBond failed for " + resolveName(device), e);
+            }
+            if (requested || bondState == BluetoothDevice.BOND_BONDING) {
+                notifyError("Pairing requested for " + resolveName(device)
+                        + ". Accept the Bluetooth pair prompt.");
+                return;
+            }
+            notifyError("Pairing could not be started for " + resolveName(device));
+            connecting.set(false);
+            pendingBondDevice = null;
+            return;
+        }
 
         new Thread(() -> {
             try {
@@ -370,6 +438,9 @@ public class BtConnectionManager {
         reconnectAttempts = 0;
         connecting.set(false);
         connected.set(false);
+        pendingBondDevice = null;
+        stopDiscoveryIfRunning();
+        cancelScanTimeout();
         cleanup();
         clearProbeSockets();
         notifyDisconnected("Connection attempt cancelled");
@@ -557,6 +628,188 @@ public class BtConnectionManager {
             if (upper.contains(pattern)) return true;
         }
         return false;
+    }
+
+    private boolean isLikelyUvProDevice(BluetoothDevice device) {
+        if (device == null) {
+            return false;
+        }
+        String name = null;
+        try {
+            name = device.getName();
+        } catch (Exception ignored) {
+        }
+        if (name == null || name.trim().isEmpty()) {
+            return false;
+        }
+        return isBtechDevice(name);
+    }
+
+    private String resolveName(BluetoothDevice device) {
+        if (device == null) {
+            return "Radio";
+        }
+        try {
+            String name = device.getName();
+            if (name != null && !name.isEmpty()) {
+                return name;
+            }
+        } catch (Exception ignored) {
+        }
+        String addr = device.getAddress();
+        return addr != null ? addr : "Radio";
+    }
+
+    private void recordSeenAddress(String address) {
+        if (address == null || address.isEmpty()) {
+            return;
+        }
+        synchronized (seenScanAddresses) {
+            seenScanAddresses.add(address);
+        }
+    }
+
+    private boolean markSeenIfNew(String address) {
+        if (address == null || address.isEmpty()) {
+            return true;
+        }
+        synchronized (seenScanAddresses) {
+            if (seenScanAddresses.contains(address)) {
+                return false;
+            }
+            seenScanAddresses.add(address);
+            return true;
+        }
+    }
+
+    private void registerDiscoveryReceiverIfNeeded() {
+        if (discoveryReceiverRegistered) {
+            return;
+        }
+        discoveryReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null) {
+                    return;
+                }
+                String action = intent.getAction();
+                if (BluetoothDevice.ACTION_FOUND.equals(action)) {
+                    BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (device == null || !isLikelyUvProDevice(device)) {
+                        return;
+                    }
+                    String address = device.getAddress();
+                    if (!markSeenIfNew(address)) {
+                        return;
+                    }
+                    notifyDeviceFound(device);
+                    if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
+                        Log.i(TAG, "Unpaired UV-PRO discovered, ending scan early for faster selection");
+                        stopDiscoveryIfRunning();
+                        notifyScanCompleteOnce();
+                    }
+                } else if (BluetoothAdapter.ACTION_DISCOVERY_FINISHED.equals(action)) {
+                    notifyScanCompleteOnce();
+                }
+            }
+        };
+        try {
+            IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
+            filter.addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
+            context.registerReceiver(discoveryReceiver, filter);
+            discoveryReceiverRegistered = true;
+        } catch (Exception e) {
+            Log.w(TAG, "Could not register discovery receiver", e);
+            notifyScanCompleteOnce();
+        }
+    }
+
+    private void registerBondReceiver() {
+        if (bondReceiverRegistered) {
+            return;
+        }
+        bondStateReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null
+                        || !BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(intent.getAction())) {
+                    return;
+                }
+                BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                if (device == null || pendingBondDevice == null) {
+                    return;
+                }
+                String addr = device.getAddress();
+                String pendingAddr = pendingBondDevice.getAddress();
+                if (addr == null || pendingAddr == null || !addr.equalsIgnoreCase(pendingAddr)) {
+                    return;
+                }
+                int bondState = intent.getIntExtra(
+                        BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR);
+                int prevBondState = intent.getIntExtra(
+                        BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.ERROR);
+                if (bondState == BluetoothDevice.BOND_BONDED) {
+                    pendingBondDevice = null;
+                    notifyError("Pairing complete for " + resolveName(device) + ". Connecting...");
+                    connecting.set(false);
+                    connect(device);
+                } else if (bondState == BluetoothDevice.BOND_NONE
+                        && prevBondState == BluetoothDevice.BOND_BONDING) {
+                    pendingBondDevice = null;
+                    connecting.set(false);
+                    notifyError("Pairing failed or cancelled for " + resolveName(device));
+                }
+            }
+        };
+        try {
+            IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+            context.registerReceiver(bondStateReceiver, filter);
+            bondReceiverRegistered = true;
+        } catch (Exception e) {
+            Log.w(TAG, "Could not register bond receiver", e);
+        }
+    }
+
+    private void stopDiscoveryIfRunning() {
+        if (btAdapter == null) {
+            return;
+        }
+        try {
+            if (btAdapter.isDiscovering()) {
+                btAdapter.cancelDiscovery();
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not cancel discovery", e);
+        }
+    }
+
+    private void scheduleScanTimeout() {
+        if (!scanTimeoutScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        mainHandler.postDelayed(() -> {
+            scanTimeoutScheduled.set(false);
+            if (scanCompleteNotified.get()) {
+                return;
+            }
+            Log.i(TAG, "Scan timeout reached; finishing discovery");
+            stopDiscoveryIfRunning();
+            notifyScanCompleteOnce();
+        }, SCAN_TIMEOUT_MS);
+    }
+
+    private void cancelScanTimeout() {
+        if (!scanTimeoutScheduled.getAndSet(false)) {
+            return;
+        }
+        mainHandler.removeCallbacksAndMessages(null);
+    }
+
+    private void notifyScanCompleteOnce() {
+        cancelScanTimeout();
+        if (scanCompleteNotified.compareAndSet(false, true)) {
+            notifyScanComplete();
+        }
     }
 
     public boolean isConnected() {

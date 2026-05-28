@@ -168,6 +168,35 @@ Operational expectation after patch:
 
 ---
 
+## 3.2 2026-05-27 Bluetooth scan/connect UX updates
+
+Observed on field devices (Jester/Smokey) during UV-PRO + MeshCore regression checks:
+
+- UV-PRO scan previously relied only on bonded radios, so pairing-mode radios were not selectable from plugin UI.
+- Connect button behavior needed to preserve last-radio auto-connect internally while still presenting `Scan & Connect` when the selected target was not an explicit favorite.
+- MeshCore connect pulse animation caused UX noise during auto-connect to a previously selected Mesh radio.
+
+Mitigations now implemented:
+
+- `BtConnectionManager.startScan()` now combines bonded UV-PRO enumeration with classic discovery (`BluetoothAdapter.startDiscovery`) and `ACTION_FOUND` filtering for UV-PRO/BTECH name patterns.
+- Unpaired UV-PRO selections now request bond (`BluetoothDevice.createBond`) and auto-continue connect on `ACTION_BOND_STATE_CHANGED` when state reaches `BOND_BONDED`.
+- Scan flow adds:
+  - early completion when an unpaired UV-PRO is discovered (faster picker readiness),
+  - an 8-second timeout cap to avoid waiting through long discovery cycles.
+- `UVProDropDownReceiver` now:
+  - uses favorite-only gating for UV-PRO `CONNECT` label,
+  - leaves non-favorite/missing remembered radios in `SCAN & CONNECT`,
+  - logs discovered devices with address (`Found: <name> [<mac>]`) for easier field timing/debug.
+- MeshCore connect-button pulse was disabled (`startMeshConnectButtonPulse` now no-ops to stable button background).
+
+Operational expectation after patch:
+
+- Users can pair a new UV-PRO directly from plugin `Scan & Connect` flow (Android pairing confirmation still required).
+- Discovery and picker response should feel faster when new unpaired radios are in pairing mode.
+- MeshCore auto-connect attempts no longer flash the connect button.
+
+---
+
 ## 4. Source layout (abbreviated)
 
 ```

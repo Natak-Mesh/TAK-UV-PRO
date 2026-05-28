@@ -257,7 +257,9 @@ public class CotBridge {
     private static final String ANDROID_UID_PREFIX = "ANDROID-";
     private static final long GROUP_CONTACT_COT_REDUNDANT_TX_DELAY_MS = 1200L;
     private static final Pattern AUTO_POINT_CALLSIGN =
-            Pattern.compile("^[A-Z]\\.\\d{2}\\.\\d{6}$");
+            Pattern.compile("^[A-Z]\\.\\d{2}\\.\\d{6,}$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern OPAQUE_DEVICE_ID_HEX16 =
+            Pattern.compile("^[0-9A-F]{16}$", Pattern.CASE_INSENSITIVE);
 
     /**
      * ATAK GeoChat/direct destinations sometimes use the literal contact UID label
@@ -271,6 +273,25 @@ public class CotBridge {
             key = key.substring(ANDROID_UID_PREFIX.length());
         }
         return key;
+    }
+
+    private static boolean isOpaqueDeviceId(String value) {
+        String normalized = normalizeBtechRoutingId(value);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        return OPAQUE_DEVICE_ID_HEX16.matcher(normalized).matches();
+    }
+
+    private static boolean isPseudoPointContactIdentifier(String value) {
+        if (value == null) {
+            return false;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return false;
+        }
+        return AUTO_POINT_CALLSIGN.matcher(trimmed).matches() || isOpaqueDeviceId(trimmed);
     }
 
     /**
@@ -305,6 +326,7 @@ public class CotBridge {
         if (id == null) return null;
         String key = id.trim().toUpperCase();
         if (key.isEmpty()) return null;
+        if (isOpaqueDeviceId(key)) return null;
         String mapped = btechIdToUid.get(key);
         if (mapped != null) return mapped;
         String stripped = normalizeBtechRoutingId(id);
@@ -661,17 +683,20 @@ public class CotBridge {
             return;
         }
         String callsign = contact.getAttribute("callsign");
-        if (callsign == null) {
-            return;
-        }
-        String trimmed = callsign.trim();
-        if (!AUTO_POINT_CALLSIGN.matcher(trimmed).matches()) {
+        String trimmed = callsign != null ? callsign.trim() : "";
+        String uid = event.getUID();
+        boolean callsignLooksAuto = isPseudoPointContactIdentifier(trimmed);
+        boolean uidLooksAuto = isPseudoPointContactIdentifier(uid);
+        if (!callsignLooksAuto && !uidLooksAuto) {
             return;
         }
         contact.setAttribute("callsign", "Point");
         event.setType("b-m-p-s-p-i");
         Log.d(TAG, "Sanitized inbound auto-point CoT uid=" + event.getUID()
-                + " callsign=" + trimmed + " -> Point");
+                + " callsign=" + trimmed
+                + " callsignAuto=" + callsignLooksAuto
+                + " uidAuto=" + uidLooksAuto
+                + " -> Point");
     }
 
     /**
@@ -687,6 +712,10 @@ public class CotBridge {
             // Align with GPS-registered contacts: AX.25 truncates sender (e.g. JUNIOR → JNR).
             String canonicalUid = resolveBtechUidForId(trimmed);
             if (canonicalUid == null && !trimmed.isEmpty()) {
+                if (isOpaqueDeviceId(trimmed)) {
+                    Log.w(TAG, "injectChatCot: dropping sender opaque device id: " + trimmed);
+                    return;
+                }
                 String key = normalizeBtechRoutingId(trimmed);
                 if (!key.isEmpty()) {
                     canonicalUid = ANDROID_UID_PREFIX + key;

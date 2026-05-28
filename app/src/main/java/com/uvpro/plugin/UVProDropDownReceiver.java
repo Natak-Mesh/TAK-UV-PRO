@@ -984,7 +984,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         String target = BluetoothDeviceRegistry.getConnectTargetAddress(ctx);
         BtDeviceRecord targetRecord =
                 (target != null && !target.isEmpty()) ? BluetoothDeviceRegistry.find(ctx, target) : null;
-        boolean connectMode = target != null && !target.isEmpty();
+        // Only explicit favorite selection should force CONNECT mode.
+        boolean connectMode = targetRecord != null && targetRecord.favorite;
 
         if (connectMode) {
             try {
@@ -1012,7 +1013,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             return;
         }
 
-        // Scan mode: never auto-select favorite target.
+        // Scan mode: clear stale auto-target and discover available radios.
         foundDevices.clear();
         BluetoothDeviceRegistry.setConnectTargetAddress(ctx, "");
         refreshFavoriteStrip();
@@ -1089,7 +1090,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnScan == null) return;
         Context ctx = getMapView().getContext();
         String tgt = BluetoothDeviceRegistry.getConnectTargetAddress(ctx);
-        if (!btManager.isConnected() && tgt != null && !tgt.isEmpty()) {
+        BtDeviceRecord rec = (tgt != null && !tgt.isEmpty())
+                ? BluetoothDeviceRegistry.find(ctx, tgt)
+                : null;
+        if (!btManager.isConnected() && rec != null && rec.favorite) {
             btnScan.setText("CONNECT");
         } else {
             btnScan.setText("SCAN & CONNECT");
@@ -1294,8 +1298,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         foundDevices.add(device);
         String name = device != null ? device.getName() : "Unknown";
+        final String display = addr != null ? (name + " [" + addr + "]") : name;
         getMapView().post(() -> {
-            appendLog("Found: " + name);
+            appendLog("Found: " + display);
         });
     }
 
@@ -3759,7 +3764,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private void showDevicePicker() {
         if (foundDevices.isEmpty()) {
-            appendLog("No paired devices found");
+            appendLog("No UV-PRO radios found");
             return;
         }
 
@@ -3910,31 +3915,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void startMeshConnectButtonPulse() {
-        if (btnMeshScan == null) {
-            return;
-        }
-        stopMeshConnectButtonPulse(false);
-        btnMeshScan.setBackgroundTintList(null);
-        meshConnectPulseDrawable = buildVfoButtonBackground(
-                0xFF455A64, 0x11FFEB3B, EDIT_SELECTION_STROKE_DP);
-        btnMeshScan.setBackground(meshConnectPulseDrawable);
-        meshConnectPulseAnimator = ValueAnimator.ofObject(
-                new ArgbEvaluator(),
-                0x11FFEB3B,
-                0xFFFFEB3B);
-        meshConnectPulseAnimator.setDuration(220L);
-        meshConnectPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
-        meshConnectPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
-        meshConnectPulseAnimator.addUpdateListener(animation -> {
-            if (meshConnectPulseDrawable == null || btnMeshScan == null) {
-                return;
-            }
-            int color = (Integer) animation.getAnimatedValue();
-            meshConnectPulseDrawable.setStroke(
-                    dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
-            btnMeshScan.invalidate();
-        });
-        meshConnectPulseAnimator.start();
+        // Keep MeshCore connect button stable (no flashing animation) during connect attempts.
+        stopMeshConnectButtonPulse(true);
     }
 
     private void stopMeshConnectButtonPulse(boolean restoreBackground) {

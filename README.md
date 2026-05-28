@@ -68,6 +68,14 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 - Transmit mode defaults are connection-aware: prefer UV-PRO when UV-PRO is connected, otherwise prefer MeshCore when only MeshCore is connected.
 - Compact RF sender aliases and auto-point sanitization were added to reduce random pseudo-contact creation from compressed IDs and auto-generated point names.
 
+### 2026-05-27 Progress Update (v1.9.48)
+
+- UV-PRO `Scan & Connect` now performs classic Bluetooth discovery for unpaired radios (not just bonded devices), while still listing previously paired UV-PRO targets.
+- Selecting an unpaired UV-PRO now triggers Android bonding (`createBond`) and auto-connects immediately after pairing succeeds.
+- Scan responsiveness was improved by ending discovery early when a new unpaired UV-PRO is found and by enforcing an 8-second scan timeout cap.
+- Connect mode now only appears for explicit favorite selection; if a remembered non-favorite radio is unavailable, the UI remains in `Scan & Connect` mode.
+- MeshCore connect-button pulse animation was disabled so auto-connect attempts no longer flash the button.
+
 ## How It Works
 
 ```

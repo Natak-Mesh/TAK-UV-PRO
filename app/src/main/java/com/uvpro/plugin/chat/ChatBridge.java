@@ -300,7 +300,18 @@ public class ChatBridge {
 
             boolean peerThreadResolved = false;
             boolean keepGroupThread = isLikelyGroupConversationThread(chatRoom);
-            if (rfDestinationLooksLikeSelf(chatRoom.trim())
+            boolean destinationLooksSelf = rfDestinationLooksLikeSelf(chatRoom.trim())
+                    || (selfUid != null && destUid != null && selfUid.equals(destUid));
+
+            // Direct RF chat is not routed/hopped: if this packet is explicitly addressed to
+            // another peer, do not inject it locally. This prevents "A->B also appears on C".
+            if (!keepGroupThread && !destinationLooksSelf) {
+                Log.d(TAG, "Inbound DM ignored (not for this device): from=" + fromCallsign
+                        + " room=" + chatRoom + " destUid=" + destUid + " selfUid=" + selfUid);
+                return;
+            }
+
+            if (destinationLooksSelf
                     && senderUid != null && !senderUid.isEmpty()
                     && (selfUid == null || !selfUid.equals(senderUid))) {
                 Log.d(TAG, "Inbound DM: RF destination is local callsign \"" + chatRoom
@@ -309,17 +320,11 @@ public class ChatBridge {
                 peerThreadResolved = true;
             }
 
-            if (!peerThreadResolved && !keepGroupThread && selfUid != null && destUid != null
-                    && selfUid.equals(destUid)
-                    && senderUid != null && !selfUid.equals(senderUid)) {
-                Log.d(TAG, "Inbound DM: destination is self — thread id → remote " + senderUid
-                        + " (RF room was " + chatRoom + ")");
-                chatRoom = senderUid;
-            } else if (!peerThreadResolved && !keepGroupThread
+            if (!peerThreadResolved && !keepGroupThread
                     && senderUid != null && !senderUid.isEmpty()
                     && (selfUid == null || !selfUid.equals(senderUid))) {
-                Log.d(TAG, "Inbound DM: thread id " + chatRoom + " → " + senderUid
-                        + " (match contact chat)");
+                Log.d(TAG, "Inbound DM: destination is self — thread id → remote " + senderUid
+                        + " (RF room was " + chatRoom + ")");
                 chatRoom = senderUid;
             } else if (!peerThreadResolved && destUid != null && !destUid.isEmpty()
                     && (selfUid == null || !selfUid.equals(destUid))) {

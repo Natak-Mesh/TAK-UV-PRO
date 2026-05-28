@@ -299,7 +299,12 @@ public class ChatBridge {
 
             boolean peerThreadResolved = false;
             boolean keepGroupThread = isLikelyGroupConversationThread(chatRoom);
-            boolean destinationLooksSelf = rfDestinationLooksLikeSelf(chatRoom.trim())
+            boolean gatewayToSelf = gatewayToUid != null && !gatewayToUid.trim().isEmpty()
+                    && selfUid != null && gatewayToUid.trim().equalsIgnoreCase(selfUid);
+            boolean destinationLooksSelf = gatewayToSelf
+                    || (selfUid != null && chatRoom != null
+                    && chatRoom.trim().equalsIgnoreCase(selfUid))
+                    || rfDestinationLooksLikeSelf(chatRoom.trim())
                     || (selfUid != null && destUid != null && selfUid.equals(destUid));
 
             // Direct RF chat is not routed/hopped: if this packet is explicitly addressed to
@@ -397,20 +402,24 @@ public class ChatBridge {
 
         out.add(base);
 
-        // Legacy RF room payloads can use only the callsign root (e.g. SMOKEY from SMOKEY_15).
-        String noSuffix = base.replaceFirst("[-_].*$", "");
-        if (!noSuffix.isEmpty()) {
-            out.add(noSuffix);
+        // Avoid ambiguous root-only matches (e.g. JESTER_15 vs JESTER_25).
+        if (base.indexOf('-') < 0 && base.indexOf('_') < 0) {
+            String noSuffix = base.replaceFirst("[-_].*$", "");
+            if (!noSuffix.isEmpty()) {
+                out.add(noSuffix);
+            }
         }
 
         try {
             String radio = CallsignUtil.toRadioCallsign(base);
             if (radio != null && !radio.trim().isEmpty()) {
                 out.add(radio.trim().toUpperCase(Locale.US));
-                String radioNoSuffix = radio.trim().toUpperCase(Locale.US)
-                        .replaceFirst("[-_].*$", "");
-                if (!radioNoSuffix.isEmpty()) {
-                    out.add(radioNoSuffix);
+                String radioUpper = radio.trim().toUpperCase(Locale.US);
+                if (radioUpper.indexOf('-') < 0 && radioUpper.indexOf('_') < 0) {
+                    String radioNoSuffix = radioUpper.replaceFirst("[-_].*$", "");
+                    if (!radioNoSuffix.isEmpty()) {
+                        out.add(radioNoSuffix);
+                    }
                 }
             }
         } catch (Exception ignored) {
@@ -1192,6 +1201,10 @@ public class ChatBridge {
         if (isLikelyGroupConversationThread(conversationId)) {
             // TYPE_CHAT room is 6 bytes on-wire; preserve full group conversationId in payload.
             outbound = wrapGatewayMessage("", conversationId, msg);
+        } else if (conversationId != null && conversationId.toUpperCase(Locale.US)
+                .startsWith(ANDROID_UID_PREFIX) && !outbound.startsWith(GW_PREFIX)) {
+            // Preserve exact DM destination UID across 6-byte room truncation.
+            outbound = wrapGatewayMessage(conversationId, room, msg);
         }
         sendChatOverRadio(localCallsign, room, outbound, lineUid);
         return true;
@@ -1336,7 +1349,16 @@ public class ChatBridge {
                             : chatRoom;
                     sendChatOverRadio(localCallsign, rfRoom, wrapped, lineUid);
                 } else {
-                    sendChatOverRadio(localCallsign, chatRoom, message, lineUid);
+                    String outbound = message;
+                    String upperToUid = toUid != null ? toUid.trim().toUpperCase(Locale.US) : "";
+                    if (!allChatRooms
+                            && !isLikelyGroupConversationThread(chatRoom)
+                            && upperToUid.startsWith(ANDROID_UID_PREFIX)
+                            && !outbound.startsWith(GW_PREFIX)) {
+                        // Preserve exact DM destination UID across 6-byte room truncation.
+                        outbound = wrapGatewayMessage(toUid, chatRoom, message);
+                    }
+                    sendChatOverRadio(localCallsign, chatRoom, outbound, lineUid);
                 }
                 return;
             }
@@ -1469,9 +1491,19 @@ public class ChatBridge {
             return;
         }
 
+        String outbound = message;
+        String rfRoom = chatRoom;
+        String upperRoom = chatRoom != null ? chatRoom.trim().toUpperCase(Locale.US) : "";
+        if (!ALL_CHAT_ROOMS.equalsIgnoreCase(chatRoom)
+                && upperRoom.startsWith(ANDROID_UID_PREFIX)
+                && !isLikelyGroupConversationThread(chatRoom)
+                && !outbound.startsWith(GW_PREFIX)) {
+            outbound = wrapGatewayMessage(chatRoom, chatRoom, message);
+            rfRoom = chatRoom.substring(ANDROID_UID_PREFIX.length());
+        }
         Log.d(TAG, "Relay outbound GeoChat (compact PreSend/CommsLogger) room=" + chatRoom
                 + " lineUid=" + lineUid);
-        sendChatOverRadio(localCallsign, chatRoom, message, lineUid);
+        sendChatOverRadio(localCallsign, rfRoom, outbound, lineUid);
     }
 
     /**

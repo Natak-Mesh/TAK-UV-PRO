@@ -56,7 +56,7 @@ public class BtConnectionManager {
     // BTECH radios often advertise with names containing these patterns
     private static final String[] BTECH_NAME_PATTERNS = {
             "UV-PRO", "BTECH", "GMRS-PRO", "UV-50PRO", "UVPRO",
-            "UV-50X", "UV50", "PRO50", "BT-TNC", "TNC"
+            "UV-50X", "UV50", "PRO50", "VR-N76", "BT-TNC", "TNC"
     };
 
     private final Context context;
@@ -157,19 +157,8 @@ public class BtConnectionManager {
             seenScanAddresses.clear();
         }
 
-        Set<BluetoothDevice> pairedDevices = btAdapter.getBondedDevices();
-        if (pairedDevices != null) {
-            for (BluetoothDevice device : pairedDevices) {
-                if (!isLikelyUvProDevice(device)) {
-                    continue;
-                }
-                String name = device.getName();
-                if (name == null) name = device.getAddress();
-                Log.i(TAG, "Paired UV-PRO: " + name + " [" + device.getAddress() + "]");
-                recordSeenAddress(device.getAddress());
-                notifyDeviceFound(device);
-            }
-        }
+        // Scan & Connect should prefer fresh pairing candidates from active discovery.
+        // Do not pre-populate with bonded radios (they can steal selection from new devices).
 
         registerDiscoveryReceiverIfNeeded();
         boolean started = false;
@@ -698,16 +687,21 @@ public class BtConnectionManager {
                     if (device == null || !isLikelyUvProDevice(device)) {
                         return;
                     }
+                    int bondState = BluetoothDevice.BOND_NONE;
+                    try {
+                        bondState = device.getBondState();
+                    } catch (Exception ignored) {
+                    }
+                    if (bondState == BluetoothDevice.BOND_BONDED) {
+                        Log.d(TAG, "Ignoring bonded UV-PRO during scan: " + resolveName(device)
+                                + " [" + device.getAddress() + "]");
+                        return;
+                    }
                     String address = device.getAddress();
                     if (!markSeenIfNew(address)) {
                         return;
                     }
                     notifyDeviceFound(device);
-                    if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
-                        Log.i(TAG, "Unpaired UV-PRO discovered, ending scan early for faster selection");
-                        stopDiscoveryIfRunning();
-                        notifyScanCompleteOnce();
-                    }
                 } else if (BluetoothAdapter.ACTION_DISCOVERY_FINISHED.equals(action)) {
                     notifyScanCompleteOnce();
                 }

@@ -243,6 +243,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             };
     private final List<BluetoothDevice> foundDevices = new ArrayList<>();
     private final List<BluetoothDevice> meshFoundDevices = new ArrayList<>();
+    private boolean scanForNewRadioOnly = false;
     private int txCount = 0;
     private int rxCount = 0;
     private UVProRadioControlManager radioControlManager;
@@ -268,6 +269,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private ValueAnimator updateGpsButtonPulseAnimator;
     private GradientDrawable updateGpsButtonPulseDrawable;
     private Button updateGpsPulseTargetButton;
+    private ValueAnimator scanConnectPulseAnimator;
+    private GradientDrawable scanConnectPulseDrawable;
+    private final Runnable deferredScanConnectPulseStart = this::startScanConnectButtonPulse;
     private ValueAnimator meshConnectPulseAnimator;
     private GradientDrawable meshConnectPulseDrawable;
     private ValueAnimator initialGroupSetupPulseAnimator;
@@ -988,6 +992,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         boolean connectMode = targetRecord != null && targetRecord.favorite;
 
         if (connectMode) {
+            scanForNewRadioOnly = false;
+            stopScanConnectButtonPulse(true);
             try {
                 BluetoothDevice device = adapter.getRemoteDevice(target);
                 if (isLikelyMeshNamedDevice(device)) {
@@ -996,6 +1002,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     refreshFavoriteStrip();
                     updateScanButtonText();
                     foundDevices.clear();
+                    requestScanConnectButtonPulse();
                     btManager.startScan();
                     return;
                 }
@@ -1015,10 +1022,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         // Scan mode: clear stale auto-target and discover available radios.
         foundDevices.clear();
+        scanForNewRadioOnly = true;
         BluetoothDeviceRegistry.setConnectTargetAddress(ctx, "");
         refreshFavoriteStrip();
         updateScanButtonText();
         appendLog("Scanning for radios...");
+        requestScanConnectButtonPulse();
         btManager.startScan();
     }
 
@@ -1251,6 +1260,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         final String finalDisplay = displayName;
         getMapView().post(() -> {
+            scanForNewRadioOnly = false;
+            stopScanConnectButtonPulse(true);
             updateConnectionUI(true, finalDisplay);
             applyPreferredTransmitModeForConnectionState(false);
             appendLog("Connected to " + finalDisplay);
@@ -1269,6 +1280,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     public void onDisconnected(String reason) {
         radioGpsAugmentController.onRadioDisconnected();
         getMapView().post(() -> {
+            scanForNewRadioOnly = false;
+            stopScanConnectButtonPulse(true);
             clearDigitalOnlyStateUiOnly();
             updateConnectionUI(false, null);
             applyPreferredTransmitModeForConnectionState(false);
@@ -1279,6 +1292,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     @Override
     public void onError(String error) {
         getMapView().post(() -> {
+            stopScanConnectButtonPulse(true);
             appendLog("Error: " + error);
         });
     }
@@ -1289,6 +1303,19 @@ public class UVProDropDownReceiver extends DropDownReceiver
             return;
         }
         String addr = device != null ? device.getAddress() : null;
+        if (scanForNewRadioOnly && device != null) {
+            int bondState = BluetoothDevice.BOND_NONE;
+            try {
+                bondState = device.getBondState();
+            } catch (Exception ignored) {
+            }
+            if (bondState != BluetoothDevice.BOND_NONE) {
+                final String display = resolveDeviceDisplayName(getMapView().getContext(), device);
+                getMapView().post(() ->
+                        appendLog("Skipping bonded radio during new-pair scan: " + display));
+                return;
+            }
+        }
         if (addr != null) {
             for (BluetoothDevice existing : foundDevices) {
                 if (existing != null && addr.equalsIgnoreCase(existing.getAddress())) {
@@ -1306,7 +1333,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     @Override
     public void onScanComplete() {
-        getMapView().post(this::showDevicePicker);
+        getMapView().post(() -> {
+            scanForNewRadioOnly = false;
+            stopScanConnectButtonPulse(true);
+            showDevicePicker();
+        });
     }
 
     // --- Contact Listener callbacks ---
@@ -3764,6 +3795,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private void showDevicePicker() {
         if (foundDevices.isEmpty()) {
+            stopScanConnectButtonPulse(true);
             appendLog("No UV-PRO radios found");
             return;
         }
@@ -3771,6 +3803,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         Context ctx = getMapView().getContext();
 
         if (foundDevices.size() == 1) {
+            stopScanConnectButtonPulse(true);
             BluetoothDevice device = foundDevices.get(0);
             String name = resolveDeviceDisplayName(ctx, device);
             appendLog("Connecting to " + name + "...");
@@ -3914,9 +3947,62 @@ public class UVProDropDownReceiver extends DropDownReceiver
         return false;
     }
 
+    private void requestScanConnectButtonPulse() {
+        if (getMapView() == null) {
+            startScanConnectButtonPulse();
+            return;
+        }
+        // Start after press-state is released so the pulse remains visible until picker display.
+        getMapView().removeCallbacks(deferredScanConnectPulseStart);
+        getMapView().postDelayed(deferredScanConnectPulseStart, 60L);
+    }
+
     private void startMeshConnectButtonPulse() {
         // Keep MeshCore connect button stable (no flashing animation) during connect attempts.
         stopMeshConnectButtonPulse(true);
+    }
+
+    private void startScanConnectButtonPulse() {
+        if (btnScan == null) {
+            return;
+        }
+        stopScanConnectButtonPulse(false);
+        btnScan.setBackgroundTintList(null);
+        scanConnectPulseDrawable = buildVfoButtonBackground(
+                COLOR_PILL_BUTTON_PRIMARY, 0x00FFEB3B, EDIT_SELECTION_STROKE_DP);
+        btnScan.setBackground(scanConnectPulseDrawable);
+        scanConnectPulseAnimator = ValueAnimator.ofObject(
+                new ArgbEvaluator(),
+                0x11FFEB3B,
+                0xFFFFEB3B);
+        scanConnectPulseAnimator.setDuration(260L);
+        scanConnectPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        scanConnectPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
+        scanConnectPulseAnimator.addUpdateListener(animation -> {
+            if (scanConnectPulseDrawable == null || btnScan == null) {
+                return;
+            }
+            int color = (Integer) animation.getAnimatedValue();
+            scanConnectPulseDrawable.setStroke(
+                    dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
+            btnScan.invalidate();
+        });
+        scanConnectPulseAnimator.start();
+    }
+
+    private void stopScanConnectButtonPulse(boolean restoreBackground) {
+        if (getMapView() != null) {
+            getMapView().removeCallbacks(deferredScanConnectPulseStart);
+        }
+        ValueAnimator animator = scanConnectPulseAnimator;
+        scanConnectPulseAnimator = null;
+        if (animator != null) {
+            animator.cancel();
+        }
+        scanConnectPulseDrawable = null;
+        if (restoreBackground && btnScan != null) {
+            applyPillButtonBackground(btnScan, COLOR_PILL_BUTTON_PRIMARY);
+        }
     }
 
     private void stopMeshConnectButtonPulse(boolean restoreBackground) {
@@ -4345,6 +4431,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     public void onDropDownClose() {
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
+        stopScanConnectButtonPulse(true);
         stopMeshConnectButtonPulse(true);
         stopInitialGroupSetupPulse(true);
         if (repeaterLoadFocusAnimator != null) {
@@ -4386,6 +4473,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
+        stopScanConnectButtonPulse(true);
         stopInitialGroupSetupPulse(true);
         if (repeaterLoadFocusAnimator != null) {
             repeaterLoadFocusAnimator.cancel();

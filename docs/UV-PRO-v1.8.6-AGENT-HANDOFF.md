@@ -350,7 +350,7 @@ When a **new chat/agent** starts with no memory:
 
 **Update this document when:** you change the update-server trust strategy, PKCS#12 generation, TPC packaging rules, or VPS paths — so the **next** agent does not rely on chat history.
 
-**Current plugin-repo HEAD (handoff time):** **`ef1f831`** on **`main`** — **v1.9.47**. Update this line after new commits that change trust, TPC, packaging, or transport behavior.
+**Current plugin-repo HEAD (handoff time):** **`8074363`** on **`main`** — **v1.9.50** (pre-`v1.9.51` commit). Update this line after new commits that change trust, TPC, packaging, or transport behavior.
 
 **SQLite handoff:** append rows to **`Plugins/Handoff Docs/handoff.db`** (`uvpro_handoff`) when you learn something new — keeps agents off stale chat-only context.
 
@@ -374,6 +374,24 @@ When a **new chat/agent** starts with no memory:
     avoiding mesh-only disconnect edge cases.
   - transmit default policy applies on open/connect/disconnect:
     UV-PRO preferred when connected, otherwise MeshCore when only mesh is connected.
+
+---
+
+## 13.4 2026-05-29 DM routing + ACK addendum (v1.9.51)
+
+- DM routing/receipt behavior hardening:
+  - outbound DM paths now preserve explicit destination identity via gateway payload metadata,
+  - inbound DM acceptance requires local-destination match (non-target peers ignore and do not ACK),
+  - delivered ACK transmit is now gated on successful local inject/accept.
+- Gateway destination self-match:
+  - receiver matching now accepts callsign variants embedded in gateway destination values, including `ANDROID-<callsign>` suffix forms.
+- Chat sender display:
+  - inbound display now prefers mapped contact name/callsign when a sender UID mapping exists, reducing truncated compact-call sign presentation.
+- Scan-and-pair UX:
+  - scan mode filters for pairable radios (excludes bonded radios in new-pair flow) while still allowing user selection among multiple currently discoverable unpaired radios.
+- ACK correlation hardening:
+  - wire chat message IDs now start from a time-based seed per app launch to reduce stale ACK collisions,
+  - outbound ACK mapping accepts full GeoChat IDs and UUID-only line IDs from ATAK paths; UUID-only values are normalized to an internal GeoChat-shaped key for stable receipt mapping.
 
 ---
 

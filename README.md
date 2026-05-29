@@ -77,6 +77,15 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 - MeshCore connect-button pulse animation was disabled so auto-connect attempts no longer flash the button.
 - Added persistent agent rule `.cursor/rules/transport-agnostic-routing.mdc` requiring all routing/message/CoT fixes to be transport-agnostic and verified on both UV-PRO and MeshCore paths.
 
+### 2026-05-29 Progress Update (v1.9.51)
+
+- Direct-message RF routing now preserves explicit destination identity end-to-end (gateway destination UID + stricter inbound destination checks), preventing non-addressed peers from injecting/acking DMs.
+- Delivered ACK emission is now gated by local message acceptance, so non-target radios no longer emit delivered receipts for packets that were ignored.
+- Inbound DM self-match now handles callsign variants from gateway destination values (including `ANDROID-<callsign>` suffix handling), restoring intended-recipient delivery in mixed UID/callsign environments.
+- Sender display on inbound GeoChat now prefers mapped contact names when available, reducing compressed callsign presentation (`JSTR25`) where full callsign mappings exist.
+- Bluetooth `Scan & Connect` pairing flow now filters for pairable radios in scan mode (excluding bonded radios) while preserving multi-candidate picker selection when multiple unpaired radios are available.
+- Wire chat message IDs now seed from a time-based value each launch to reduce stale ACK collisions across long test sessions and restart boundaries.
+
 ## How It Works
 
 ```

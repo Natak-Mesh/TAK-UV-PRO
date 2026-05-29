@@ -24,8 +24,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class UVProPacket {
 
-    /** Monotonic per-radio-session chat ids ( millis-based ids collided and confused ATAK). */
-    private static final AtomicInteger CHAT_MESSAGE_ID = new AtomicInteger(1);
+    /** Monotonic chat ids; seed away from 1 to reduce stale ACK collisions after app restarts. */
+    private static final AtomicInteger CHAT_MESSAGE_ID =
+            new AtomicInteger(initialChatMessageSeed());
+
+    private static int initialChatMessageSeed() {
+        long now = System.currentTimeMillis();
+        int seed = (int) (now & 0x7fffffff);
+        if (seed == 0) {
+            seed = 1;
+        }
+        return seed;
+    }
 
     // Packet type codes
     public static final byte TYPE_COT = 0x01;

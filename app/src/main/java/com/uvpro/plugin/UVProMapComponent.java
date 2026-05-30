@@ -41,6 +41,7 @@ import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.ax25.AprsIconsetInstaller;
 import com.uvpro.plugin.location.RadioGpsBridge;
 import com.uvpro.plugin.location.RadioPositionFix;
+import com.uvpro.plugin.network.WifiContactKeepalive;
 import com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry.BtDeviceRecord;
@@ -138,6 +139,7 @@ public class UVProMapComponent extends DropDownMapComponent {
     private Runnable iconsetReminderRunnable;
     private android.content.BroadcastReceiver beaconIntervalReceiver;
     private final SmartBeacon smartBeacon = new SmartBeacon();
+    private WifiContactKeepalive wifiContactKeepalive;
     /** One startup pull from radio GPS after first successful BT connect. */
     private final AtomicBoolean startupRadioGpsUpdateDone = new AtomicBoolean(false);
     private final AtomicBoolean startupRadioGpsUpdateInFlight = new AtomicBoolean(false);
@@ -296,6 +298,7 @@ try {
                 // Keep periodic beacon behavior consistent with UV-PRO transport:
                 // first beacon 30s after a successful mesh connection.
                 startBeaconTimer();
+                view.post(() -> ChatBridge.collapseAllCallsignAliasDuplicates());
             }
 
             @Override
@@ -368,7 +371,13 @@ try {
         terminalFilter.addAction(PacketTerminalDropDownReceiver.SHOW_PACKET_TERMINAL);
         registerDropDownReceiver(packetTerminalDropDownReceiver, terminalFilter);
 
-        view.postDelayed(() -> ChatBridge.collapseAllCallsignAliasDuplicates(), 5000L);
+        view.postDelayed(() -> {
+            ChatBridge.collapseAllCallsignAliasDuplicates();
+            ChatBridge.repairAllNativeContactActions();
+        }, 5000L);
+
+        wifiContactKeepalive = new WifiContactKeepalive(view);
+        wifiContactKeepalive.start();
 
         // Repeater selection + APRS marker tap → APRS metadata panel.
         mapItemClickListener = event -> {
@@ -472,6 +481,10 @@ try {
         // Stop beacon timer
         if (beaconHandler != null && beaconRunnable != null) {
             beaconHandler.removeCallbacks(beaconRunnable);
+        }
+        if (wifiContactKeepalive != null) {
+            wifiContactKeepalive.stop();
+            wifiContactKeepalive = null;
         }
         if (iconsetReminderHandler != null && iconsetReminderRunnable != null) {
             iconsetReminderHandler.removeCallbacks(iconsetReminderRunnable);

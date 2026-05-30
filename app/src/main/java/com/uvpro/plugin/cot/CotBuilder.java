@@ -4,7 +4,11 @@ import android.util.Log;
 
 import com.uvpro.plugin.ax25.AprsSymbolMapper;
 
+import com.atakmap.android.cot.CotMapComponent;
+import com.atakmap.android.maps.MapView;
+import com.atakmap.android.maps.PointMapItem;
 import com.atakmap.coremap.cot.event.CotDetail;
+import com.atakmap.coremap.maps.coords.GeoPoint;
 import com.atakmap.coremap.cot.event.CotEvent;
 import com.atakmap.coremap.cot.event.CotPoint;
 
@@ -122,10 +126,30 @@ public class CotBuilder {
                                             Character aprsSymbolTable,
                                             Character aprsSymbolCode,
                                             String remarksInner) {
+        return buildPositionCot(callsign, lat, lon, alt, speed, course, teamColor,
+                staleMillis, cotTypeOverride, aprsSymbolTable, aprsSymbolCode, remarksInner, null);
+    }
+
+    /**
+     * @param mapUidOverride when set, updates that map marker (merged Wi‑Fi/TAK UID); otherwise
+     *                       {@code ANDROID-<CALLSIGN>}.
+     */
+    public static CotEvent buildPositionCot(String callsign,
+                                            double lat, double lon,
+                                            double alt, double speed,
+                                            double course, String teamColor,
+                                            long staleMillis,
+                                            String cotTypeOverride,
+                                            Character aprsSymbolTable,
+                                            Character aprsSymbolCode,
+                                            String remarksInner,
+                                            String mapUidOverride) {
         CotEvent event = new CotEvent();
 
         String normalizedCall = callsign.trim().toUpperCase();
-        String uid = "ANDROID-" + normalizedCall;
+        String uid = (mapUidOverride != null && !mapUidOverride.trim().isEmpty())
+                ? mapUidOverride.trim()
+                : "ANDROID-" + normalizedCall;
         event.setUID(uid);
         String iconsetPath = null;
         if (aprsSymbolTable != null && aprsSymbolCode != null) {
@@ -531,6 +555,106 @@ public class CotBuilder {
         String senderUid = rest.substring(0, prevDot);
         String threadId = rest.substring(prevDot + 1);
         return new String[]{senderUid, threadId};
+    }
+
+    /**
+     * Build a mini self-SA for unicast Wi‑Fi keepalive (local device UID, endpoint, position).
+     */
+    public static CotEvent buildSelfWifiKeepaliveCot(MapView mapView, long staleMillis) {
+        if (mapView == null) {
+            return null;
+        }
+        PointMapItem self;
+        try {
+            self = mapView.getSelfMarker();
+        } catch (Exception e) {
+            return null;
+        }
+        if (self == null) {
+            return null;
+        }
+        GeoPoint gp = self.getPoint();
+        if (gp == null || !gp.isValid()) {
+            return null;
+        }
+
+        String uid;
+        try {
+            uid = MapView.getDeviceUid();
+        } catch (Exception e) {
+            return null;
+        }
+        if (uid == null || uid.trim().isEmpty()) {
+            return null;
+        }
+
+        String callsign = mapView.getDeviceCallsign();
+        if (callsign == null || callsign.trim().isEmpty()) {
+            callsign = self.getMetaString("callsign", "UNKNOWN");
+        }
+
+        String teamColor = "Cyan";
+        try {
+            String deviceTeam = mapView.getMapData().getMetaString("deviceTeam", null);
+            if (deviceTeam != null && !deviceTeam.trim().isEmpty()) {
+                teamColor = deviceTeam.trim();
+            }
+        } catch (Exception ignored) {
+        }
+
+        double speedMs = 0.0;
+        double course = 0.0;
+        try {
+            speedMs = Double.parseDouble(self.getMetaString("Speed", "0"));
+        } catch (Exception ignored) {
+        }
+        try {
+            course = Double.parseDouble(self.getMetaString("course", "0"));
+        } catch (Exception ignored) {
+        }
+
+        CotEvent event = buildPositionCot(
+                callsign,
+                gp.getLatitude(),
+                gp.getLongitude(),
+                gp.getAltitude(),
+                (float) speedMs,
+                (float) course,
+                teamColor,
+                staleMillis,
+                null,
+                null,
+                null,
+                null,
+                uid.trim());
+
+        if (event == null || event.getDetail() == null) {
+            return event;
+        }
+
+        CotDetail detail = event.getDetail();
+        CotDetail contact = detail.getFirstChildByName(0, "contact");
+        if (contact == null) {
+            contact = new CotDetail("contact");
+            contact.setAttribute("callsign", callsign.trim().toUpperCase(Locale.US));
+            detail.addChild(contact);
+        }
+
+        try {
+            String endpoint = CotMapComponent.getEndpoint();
+            if (endpoint != null && !endpoint.trim().isEmpty()) {
+                contact.setAttribute("endpoint", endpoint.trim());
+            }
+        } catch (Exception ignored) {
+        }
+
+        CotDetail remarks = detail.getFirstChildByName(0, "remarks");
+        if (remarks != null) {
+            remarks.setAttribute("source", "UV-PRO WiFi keepalive");
+            remarks.setInnerText("");
+        }
+
+        return event;
     }
 
     /**

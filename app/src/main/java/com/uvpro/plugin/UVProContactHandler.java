@@ -9,6 +9,7 @@ import com.atakmap.android.contact.ContactConnectorManager;
 import com.atakmap.android.contact.Contacts;
 import com.atakmap.android.contact.IndividualContact;
 import com.atakmap.android.contact.PluginConnector;
+import com.atakmap.android.maps.MapView;
 import com.atakmap.coremap.filesystem.FileSystemUtils;
 
 import java.util.Map;
@@ -19,7 +20,7 @@ public class UVProContactHandler extends
         ContactConnectorManager.ContactConnectorHandler {
 
     /** Must match ChatBridge.ACTION_PLUGIN_CONTACT_GEOCHAT_SEND. */
-    private static final String PLUGIN_GEOCHAT_ACTION =
+    public static final String PLUGIN_GEOCHAT_ACTION =
             "com.uvpro.plugin.action.PLUGIN_CONTACT_GEOCHAT_SEND";
 
     private final Context pluginContext;
@@ -109,10 +110,22 @@ public class UVProContactHandler extends
         Contact contact = Contacts.getInstance().getContactByUuid(contactUID);
 
         if (contact instanceof IndividualContact) {
+            IndividualContact ic = (IndividualContact) contact;
+            Context ctx = pluginContext != null ? pluginContext
+                    : (MapView.getMapView() != null ? MapView.getMapView().getContext() : null);
+            if (com.uvpro.plugin.contacts.ContactReachability.isPolicyEnabled(ctx)
+                    && !com.uvpro.plugin.contacts.ContactReachability.isGeoChatReachable(
+                    ic, com.uvpro.plugin.chat.ChatBridge.getMergeRoutingBridge())) {
+                com.uvpro.plugin.contacts.ContactReachability.handleUnreachableContactSelected(
+                        ctx, ic);
+                clearUnread(contactUID);
+                Log.i("BTRelay", "Contact selected (position only): " + contactUID);
+                return true;
+            }
 
             // Open chat UI
             ChatManagerMapComponent.getInstance().openConversation(
-                    (IndividualContact) contact, true);
+                    ic, true);
 
             // User is viewing this contact; clear unread badge.
             clearUnread(contactUID);

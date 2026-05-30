@@ -109,6 +109,22 @@ public final class GeoChatContactListHelper {
         return remarks.getInnerText();
     }
 
+    public static CotDetail findChatDetailPublic(CotEvent event) {
+        return findChatDetail(event);
+    }
+
+    public static boolean isAllChatRoomsGeoChat(CotEvent event) {
+        CotDetail chat = findChatDetail(event);
+        if (chat == null) {
+            return false;
+        }
+        String room = chat.getAttribute("chatroom");
+        if (room == null || room.trim().isEmpty()) {
+            room = chat.getAttribute("chatRoom");
+        }
+        return room != null && "All Chat Rooms".equalsIgnoreCase(room.trim());
+    }
+
     private static CotDetail findChatDetail(CotEvent event) {
         if (event == null) {
             return null;

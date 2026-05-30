@@ -210,12 +210,11 @@ public class PacketRouter {
                             ? resolvedUid.trim()
                             : syntheticUid;
 
-                    // Position CoT first so map marker + __group (sender team) exist before we
-                    // register/link the IndividualContact (contacts list color follows MapItem).
-                    cotBridge.injectPositionCot(gps.callsign, gps.latitude,
+                    // Position CoT at canonical map UID (one marker per callsign when Wi‑Fi peer exists).
+                    cotBridge.injectPositionCotAtMapUid(gps.callsign, gps.latitude,
                             gps.longitude, gps.altitude, gps.speed,
                             gps.course,
-                            gps.teamColor);
+                            gps.teamColor, uid);
 
                     cotBridge.registerBtechContactUid(uid);
                     cotBridge.registerBtechContactId(normalized, uid);

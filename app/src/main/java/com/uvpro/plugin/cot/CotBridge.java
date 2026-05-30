@@ -249,8 +249,90 @@ public class CotBridge {
         registerBtechContactUid(uid);
     }
 
+    /**
+     * After contact-list merge, register the keeper for RF routing and alias lookup.
+     */
+    public void registerMergedContact(IndividualContact contact) {
+        if (contact == null) {
+            return;
+        }
+        String uid = contact.getUID();
+        if (uid == null || uid.trim().isEmpty()) {
+            return;
+        }
+        String bareUid = null;
+        if (uid.toUpperCase(Locale.US).startsWith(ANDROID_UID_PREFIX)) {
+            bareUid = uid.substring(ANDROID_UID_PREFIX.length());
+        }
+        // Opaque Wi-Fi device UIDs are map/chat identities, not RF plugin contact UIDs.
+        if (bareUid == null || !isOpaqueDeviceId(bareUid)) {
+            registerBtechContactUid(uid.trim());
+        }
+        String name = contact.getName();
+        if (name != null && !name.trim().isEmpty()) {
+            registerBtechContactId(name.trim(), uid);
+            String radio = com.uvpro.plugin.util.CallsignUtil.toRadioCallsign(name.trim());
+            if (radio != null && !radio.trim().isEmpty()
+                    && !radio.equalsIgnoreCase(name.trim())) {
+                registerBtechContactId(radio.trim(), uid);
+            }
+        }
+        if (bareUid != null && !bareUid.isEmpty() && !isOpaqueDeviceId(bareUid)) {
+            registerBtechContactId(bareUid, uid);
+        }
+    }
+
+    /**
+     * Remove synthetic {@code ANDROID-<CALLSIGN>} map marker when canonical UID differs.
+     */
+    public void removeOrphanRfMapMarkerForCallsign(String callsignRaw, String canonicalUid) {
+        if (callsignRaw == null || canonicalUid == null) {
+            return;
+        }
+        String normalized = callsignRaw.trim().toUpperCase(Locale.US);
+        if (normalized.isEmpty()) {
+            return;
+        }
+        String syntheticUid = ANDROID_UID_PREFIX + normalized;
+        if (syntheticUid.equalsIgnoreCase(canonicalUid.trim())) {
+            return;
+        }
+        MapView mv = mapView;
+        if (mv == null) {
+            return;
+        }
+        Runnable work = () -> {
+            try {
+                com.atakmap.android.maps.MapItem orphan =
+                        mv.getRootGroup().deepFindUID(syntheticUid);
+                if (orphan != null && orphan.getGroup() != null) {
+                    orphan.getGroup().removeItem(orphan);
+                    Log.d(TAG, "Removed orphan RF map marker uid=" + syntheticUid
+                            + " canonical=" + canonicalUid);
+                }
+                Contact dup = Contacts.getInstance().getContactByUuid(syntheticUid);
+                if (dup != null && !canonicalUid.equalsIgnoreCase(dup.getUID())) {
+                    Contacts.getInstance().removeContact(dup);
+                    btechContactUids.remove(syntheticUid);
+                    btechIdToUid.entrySet().removeIf(e -> syntheticUid.equals(e.getValue()));
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "removeOrphanRfMapMarkerForCallsign failed callsign=" + normalized, e);
+            }
+        };
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            work.run();
+        } else {
+            mv.post(work);
+        }
+    }
+
     public boolean isBtechContactUid(String uid) {
         return uid != null && btechContactUids.contains(uid);
+    }
+
+    public boolean isRadioConnected() {
+        return btManager != null && btManager.isConnected();
     }
 
     private static final String ANDROID_UID_PREFIX = "ANDROID-";
@@ -524,14 +606,22 @@ public class CotBridge {
                                   double alt, double speed, double course,
                                   String senderTeamFromPeer) {
         injectPositionCot(callsign, lat, lon, alt, speed, course,
-                senderTeamFromPeer, null, null, null, null);
+                senderTeamFromPeer, null, null, null, null, null);
+    }
+
+    /** Position inject with explicit map UID (merged contact / single-marker policy). */
+    public void injectPositionCotAtMapUid(String callsign, double lat, double lon,
+                                        double alt, double speed, double course,
+                                        String senderTeamFromPeer, String mapUidOverride) {
+        injectPositionCot(callsign, lat, lon, alt, speed, course,
+                senderTeamFromPeer, null, null, null, null, mapUidOverride);
     }
 
     public void injectPositionCot(String callsign, double lat, double lon,
                                   double alt, double speed, double course,
                                   String senderTeamFromPeer, String cotTypeOverride) {
         injectPositionCot(callsign, lat, lon, alt, speed, course,
-                senderTeamFromPeer, cotTypeOverride, null, null, null);
+                senderTeamFromPeer, cotTypeOverride, null, null, null, null);
     }
 
     public void injectPositionCot(String callsign, double lat, double lon,
@@ -540,7 +630,7 @@ public class CotBridge {
                                   Character aprsSymbolTable,
                                   Character aprsSymbolCode) {
         injectPositionCot(callsign, lat, lon, alt, speed, course,
-                senderTeamFromPeer, null, aprsSymbolTable, aprsSymbolCode, null);
+                senderTeamFromPeer, null, aprsSymbolTable, aprsSymbolCode, null, null);
     }
 
     /**
@@ -553,18 +643,30 @@ public class CotBridge {
                                   Character aprsSymbolCode,
                                   String remarksInner) {
         injectPositionCot(callsign, lat, lon, alt, speed, course,
-                senderTeamFromPeer, null, aprsSymbolTable, aprsSymbolCode, remarksInner);
+                senderTeamFromPeer, null, aprsSymbolTable, aprsSymbolCode, remarksInner, null);
     }
 
     private void injectPositionCot(String callsign, double lat, double lon,
                                    double alt, double speed, double course,
                                    String senderTeamFromPeer, String cotTypeOverride,
                                    Character aprsSymbolTable, Character aprsSymbolCode,
-                                   String remarksInner) {
+                                   String remarksInner, String mapUidOverride) {
         try {
             String teamForCot = senderTeamFromPeer != null && !senderTeamFromPeer.trim().isEmpty()
                     ? senderTeamFromPeer.trim()
                     : "Cyan";
+
+            String normalizedCall = callsign != null ? callsign.trim().toUpperCase(Locale.US) : "";
+            String syntheticUid = ANDROID_UID_PREFIX + normalizedCall;
+            String mapUid = mapUidOverride;
+            if (mapUid == null || mapUid.trim().isEmpty()) {
+                mapUid = ChatBridge.resolveCanonicalPeerUid(normalizedCall, syntheticUid);
+            }
+            if (mapUid == null || mapUid.trim().isEmpty()) {
+                mapUid = syntheticUid;
+            } else {
+                mapUid = mapUid.trim();
+            }
 
             CotEvent event = CotBuilder.buildPositionCot(
                     callsign, lat, lon, alt, speed, course, teamForCot,
@@ -572,13 +674,18 @@ public class CotBridge {
                     cotTypeOverride,
                     aprsSymbolTable,
                     aprsSymbolCode,
-                    remarksInner);
+                    remarksInner,
+                    mapUid);
 
             if (event != null && event.isValid()) {
-                Log.d(TAG, "Injecting position CoT for " + callsign + " team=" + teamForCot);
+                Log.d(TAG, "Injecting position CoT for " + callsign + " uid=" + mapUid
+                        + " team=" + teamForCot);
                 markInboundInjectSkipOutboundRelay(event.getUID());
                 dispatchCotEvent(event);
                 maybeRelayInboundRadioCotToTak(event);
+                if (!mapUid.equalsIgnoreCase(syntheticUid)) {
+                    removeOrphanRfMapMarkerForCallsign(normalizedCall, mapUid);
+                }
             } else {
                 Log.w(TAG, "Invalid position CoT for " + callsign);
             }
@@ -769,9 +876,7 @@ public class CotBridge {
                 Log.d(TAG, "injectChatCot: ignored self-origin chat sender uid=" + canonicalUid);
                 return;
             }
-            String displayCallsign = canonicalUid.startsWith(ANDROID_UID_PREFIX)
-                    ? canonicalUid.substring(ANDROID_UID_PREFIX.length())
-                    : trimmed.toUpperCase();
+            String displayCallsign = ChatBridge.displayCallsignForContact(trimmed, canonicalUid);
             String chatGrpUid1ForDm = null;
             if (chatRoom != null && chatRoom.startsWith("ANDROID-")) {
                 chatGrpUid1ForDm = cachedLocalDeviceUidForGeoChat;
@@ -1435,6 +1540,11 @@ public class CotBridge {
         if (!"b-t-f".equals(event.getType())) {
             return;
         }
+        if (com.uvpro.plugin.contacts.ContactReachability.isPolicyEnabled(pluginContext)
+                && !com.uvpro.plugin.contacts.ContactReachability
+                .isInboundNetworkGeoChatForLocalDevice(event)) {
+            return;
+        }
         String lineUid = ChatBridge.resolveGeoChatLineUid(event);
         if (lineUid == null) {
             lineUid = event.getUID();
@@ -1662,10 +1772,23 @@ public class CotBridge {
         if (btManager == null || !btManager.isConnected()) return;
 
         String type = event.getType();
-        if (!isSaRelayEligibleType(type)) return;
-
         String uid = event.getUID();
         if (uid == null) return;
+
+        // GeoChat: only All Chat Rooms may be relayed; DMs stay on WiFi/TAK unicast.
+        if ("b-t-f".equals(type)) {
+            if (relayInboundNetworkGeoChatIfAllRooms(event)) {
+                Log.d(TAG, "SA Relay: forwarded All Chat Rooms uid=" + uid);
+            } else {
+                Log.d(TAG, "SA Relay: skip directed GeoChat uid=" + uid);
+            }
+            return;
+        }
+        if ("b-t-f-r".equals(type) || "b-t-f-d".equals(type)) {
+            return;
+        }
+
+        if (!isSaRelayEligibleType(type)) return;
 
         // Skip CoT we injected from the radio — loop prevention
         if (shouldSkipOutboundRelayWasInboundInject(uid)) return;
@@ -1675,15 +1798,20 @@ public class CotBridge {
         try { localUid = MapView.getDeviceUid(); } catch (Exception ignored) {}
         if (uid.equals(localUid)) return;
 
+        if (isDirectedInboundNetworkCot(event)) {
+            Log.d(TAG, "SA Relay: skip directed CoT type=" + type + " uid=" + uid);
+            return;
+        }
+
+        if (!com.uvpro.plugin.contacts.ContactReachability.shouldSaRelayNetworkSa(event, this)) {
+            return;
+        }
+
         // Per-UID throttle: don't relay the same contact more than once per SA_RELAY_INTERVAL_MS
         long now = System.currentTimeMillis();
         Long lastRelay = saRelayLastSentByUid.get(uid);
         if (lastRelay != null && (now - lastRelay) < SA_RELAY_INTERVAL_MS) return;
         saRelayLastSentByUid.put(uid, now);
-
-        if ("b-t-f".equals(type) && relayInboundNetworkGeoChatIfAllRooms(event)) {
-            return;
-        }
 
         // Suppress unchanged periodic SA/status relays (Wi-Fi/TAK contact PLI churn).
         // Keep non-SA events (routes, markers, chat-like events) forwarding normally.
@@ -1725,22 +1853,19 @@ public class CotBridge {
 
     private static boolean isSaRelayEligibleType(String type) {
         if (type == null || type.isEmpty()) return false;
-        if ("b-t-f".equals(type)) return true;
         return SA_RELAY_TYPE_PATTERN.matcher(type).find();
     }
 
-    private boolean relayInboundNetworkGeoChatIfAllRooms(CotEvent event) {
-        if (event == null || chatBridge == null) return false;
-        if (!"b-t-f".equals(event.getType())) return false;
+    /** True for net-wide All Chat Rooms traffic; false for DMs and other directed GeoChat. */
+    private static boolean isAllChatRoomsGeoChat(CotEvent event) {
+        if (event == null || !"b-t-f".equals(event.getType())) {
+            return false;
+        }
         try {
             com.atakmap.coremap.cot.event.CotDetail detail = event.getDetail();
-            if (detail == null) return false;
-
-            com.atakmap.coremap.cot.event.CotDetail remarks =
-                    detail.getFirstChildByName(0, "remarks");
-            String message = remarks != null ? remarks.getInnerText() : null;
-            if (message == null || message.trim().isEmpty()) return false;
-
+            if (detail == null) {
+                return false;
+            }
             com.atakmap.coremap.cot.event.CotDetail chat =
                     detail.getFirstChildByName(0, "__chat");
             if (chat == null) {
@@ -1750,9 +1875,55 @@ public class CotBridge {
             if (room == null || room.trim().isEmpty()) {
                 room = ALL_CHAT_ROOMS;
             }
-            if (!ALL_CHAT_ROOMS.equalsIgnoreCase(room.trim())) {
+            return ALL_CHAT_ROOMS.equalsIgnoreCase(room.trim());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Inbound network CoT addressed to a specific peer (not net-wide broadcast).
+     * SA Relay must not rebroadcast these over RF.
+     */
+    private static boolean isDirectedInboundNetworkCot(CotEvent event) {
+        if (event == null) {
+            return false;
+        }
+        String type = event.getType();
+        if ("b-t-f".equals(type)) {
+            return !isAllChatRoomsGeoChat(event);
+        }
+        if ("b-t-f-r".equals(type) || "b-t-f-d".equals(type)) {
+            return true;
+        }
+        try {
+            com.atakmap.coremap.cot.event.CotDetail detail = event.getDetail();
+            if (detail == null) {
                 return false;
             }
+            if (detail.getChild("__dest") != null) {
+                return true;
+            }
+            com.atakmap.coremap.cot.event.CotDetail marti = detail.getChild("marti");
+            if (marti != null && marti.getChild("dest") != null) {
+                return true;
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private boolean relayInboundNetworkGeoChatIfAllRooms(CotEvent event) {
+        if (event == null || chatBridge == null) return false;
+        if (!isAllChatRoomsGeoChat(event)) return false;
+        try {
+            com.atakmap.coremap.cot.event.CotDetail detail = event.getDetail();
+            if (detail == null) return false;
+
+            com.atakmap.coremap.cot.event.CotDetail remarks =
+                    detail.getFirstChildByName(0, "remarks");
+            String message = remarks != null ? remarks.getInnerText() : null;
+            if (message == null || message.trim().isEmpty()) return false;
 
             String lineUid = event.getUID();
             Log.d(TAG, "SA Relay: forwarding network All Chat Rooms over RF uid=" + lineUid);

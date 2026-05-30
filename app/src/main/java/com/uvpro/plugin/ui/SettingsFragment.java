@@ -56,6 +56,8 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String PREF_RETRY_MAX = "uvpro_retry_max";
     public static final String PREF_SA_RELAY_ENABLED = "uvpro_sa_relay_enabled";
     public static final String PREF_RF_TO_TAK_UPLINK_ENABLED = "uvpro_rf_to_tak_uplink_enabled";
+    public static final String PREF_RESTRICT_CHAT_TO_REACHABLE_PEERS =
+            "uvpro_restrict_chat_to_reachable_peers";
     public static final String PREF_PING_REPLY_ENABLED = "uvpro_ping_reply_enabled";
 
     public static final String PREF_APRS_CALLSIGN = "uvpro_aprs_callsign";
@@ -527,6 +529,11 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static boolean isRfToTakUplinkEnabled(Context context) {
         return getPrefs(context)
                 .getBoolean(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
+    }
+
+    public static boolean isRestrictChatToReachablePeers(Context context) {
+        return getPrefs(context)
+                .getBoolean(PREF_RESTRICT_CHAT_TO_REACHABLE_PEERS, true);
     }
 
     public static boolean isEncryptionEnabled(Context context) {

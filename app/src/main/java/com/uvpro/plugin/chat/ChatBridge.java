@@ -72,6 +72,8 @@ public class ChatBridge {
     private static final String GW_PREFIX = "__UVGW__|";
     private static final String ALL_CHAT_ROOMS = "All Chat Rooms";
     private static final String ANDROID_UID_PREFIX = "ANDROID-";
+    private static final java.util.regex.Pattern OPAQUE_WIFI_DEVICE_UID =
+            java.util.regex.Pattern.compile("^[A-F0-9]{16}$");
 
     /**
      * Broadcast action for outbound GeoChat to a contact whose delivery path uses
@@ -211,13 +213,29 @@ public class ChatBridge {
 
     private volatile boolean loggedPluginChatBundleKeysMissingUid;
 
+    private static volatile CotBridge mergeRoutingBridge;
+
+    private final android.os.Handler contactMergeHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final ConcurrentHashMap<String, Runnable> pendingMergeByCallsign =
+            new ConcurrentHashMap<>();
+
     public ChatBridge(Context pluginContext, MapView mapView) {
         this.pluginContext = pluginContext;
         this.mapView = mapView;
     }
 
+    public static void setMergeRoutingBridge(CotBridge cotBridge) {
+        mergeRoutingBridge = cotBridge;
+    }
+
+    public static CotBridge getMergeRoutingBridge() {
+        return mergeRoutingBridge;
+    }
+
     public void setCotBridge(CotBridge cotBridge) {
         this.cotBridge = cotBridge;
+        mergeRoutingBridge = cotBridge;
     }
 
     public void setBtManager(BtConnectionManager btManager) {
@@ -281,8 +299,14 @@ public class ChatBridge {
         }
         // gatewayWireDest is the 6-char AX.25 address (wire only, never shown in UI).
 
+        String lineSenderUid = parseGeoChatSenderUid(gatewayLineUid);
         String btechUid = cotBridge != null ? cotBridge.resolveBtechUidForId(fromCallsign) : null;
-        String senderUid = resolveCanonicalPeerUid(fromCallsign, btechUid);
+        String senderUid;
+        if (lineSenderUid != null && !lineSenderUid.isEmpty()) {
+            senderUid = resolveCanonicalPeerUid(fromCallsign, lineSenderUid, btechUid);
+        } else {
+            senderUid = resolveCanonicalPeerUid(fromCallsign, btechUid);
+        }
 
         // Direct DM: thread id must be the *remote* peer's ANDROID-* UID. Packets include a
         // 6-byte "room" (RF destination) that is often THIS operator's callsign (e.g. JUNIOR).
@@ -297,6 +321,21 @@ public class ChatBridge {
                 selfUid = MapView.getDeviceUid();
             } catch (Exception ignored) {
             }
+
+            boolean peerThreadResolved = false;
+            boolean keepGroupThread = isLikelyGroupConversationThread(chatRoom);
+            boolean destinationLooksSelf = inboundRfDestinationLooksLikeSelf(
+                    gatewayWireDest, gatewayDisplayCallsign, chatRoom, toCallsign);
+
+            // Direct RF chat is not routed/hopped: if this packet is explicitly addressed to
+            // another peer, do not inject it locally or mutate Contacts. Prevents bridge nodes
+            // from spawning abbreviated ghost rows (e.g. SMKY15) for transit DMs.
+            if (!keepGroupThread && !destinationLooksSelf) {
+                Log.d(TAG, "Inbound DM ignored (not for this device): from=" + fromCallsign
+                        + " room=" + chatRoom + " destUid=" + destUid + " selfUid=" + selfUid);
+                return false;
+            }
+
             // APRS senders are intentionally not registered as ATAK Contacts; synthesize an
             // ANDROID-* UID so GeoChat can thread and badge them like normal conversations.
             if ((senderUid == null || senderUid.isEmpty()) && fromCallsign != null) {
@@ -318,31 +357,9 @@ public class ChatBridge {
                         cotBridge.registerBtechContactId(radioTrunc, senderUid);
                     }
                 }
-            }
-
-            boolean peerThreadResolved = false;
-            boolean keepGroupThread = isLikelyGroupConversationThread(chatRoom);
-            boolean gatewayToSelf = false;
-            if (gatewayWireDest != null && !gatewayWireDest.trim().isEmpty()) {
-                String wireDest = gatewayWireDest.trim();
-                if (rfDestinationLooksLikeSelf(wireDest)) {
-                    gatewayToSelf = true;
+                if (lineSenderUid != null && !lineSenderUid.isEmpty()) {
+                    cotBridge.registerBtechContactUid(lineSenderUid);
                 }
-            }
-            if (gatewayDisplayCallsign != null && rfDestinationLooksLikeSelf(gatewayDisplayCallsign.trim())) {
-                gatewayToSelf = true;
-            }
-            boolean destinationLooksSelf = gatewayToSelf
-                    || rfDestinationLooksLikeSelf(gatewayWireDest != null ? gatewayWireDest.trim() : "")
-                    || rfDestinationLooksLikeSelf(chatRoom != null ? chatRoom.trim() : "")
-                    || rfDestinationLooksLikeSelf(toCallsign != null ? toCallsign.trim() : "");
-
-            // Direct RF chat is not routed/hopped: if this packet is explicitly addressed to
-            // another peer, do not inject it locally. This prevents "A->B also appears on C".
-            if (!keepGroupThread && !destinationLooksSelf) {
-                Log.d(TAG, "Inbound DM ignored (not for this device): from=" + fromCallsign
-                        + " room=" + chatRoom + " destUid=" + destUid + " selfUid=" + selfUid);
-                return false;
             }
 
             if (destinationLooksSelf
@@ -579,6 +596,54 @@ public class ChatBridge {
         return false;
     }
 
+    private boolean inboundRfDestinationLooksLikeSelf(String gatewayWireDest,
+                                                      String gatewayDisplayCallsign,
+                                                      String chatRoom,
+                                                      String wireToCallsign) {
+        if (gatewayWireDest != null && !gatewayWireDest.trim().isEmpty()
+                && rfDestinationLooksLikeSelf(gatewayWireDest.trim())) {
+            return true;
+        }
+        if (gatewayDisplayCallsign != null && !gatewayDisplayCallsign.trim().isEmpty()
+                && rfDestinationLooksLikeSelf(gatewayDisplayCallsign.trim())) {
+            return true;
+        }
+        if (chatRoom != null && !chatRoom.trim().isEmpty()
+                && rfDestinationLooksLikeSelf(chatRoom.trim())) {
+            return true;
+        }
+        if (wireToCallsign != null && !wireToCallsign.trim().isEmpty()
+                && rfDestinationLooksLikeSelf(wireToCallsign.trim())) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Sender UID from {@code GeoChat.{senderUid}.{thread}.{suffix}} when present on RF gateway relay.
+     */
+    static String parseGeoChatSenderUid(String geoChatLineUid) {
+        if (geoChatLineUid == null || geoChatLineUid.trim().isEmpty()) {
+            return null;
+        }
+        String trimmed = geoChatLineUid.trim();
+        if (!trimmed.startsWith("GeoChat.")) {
+            return null;
+        }
+        String rest = trimmed.substring("GeoChat.".length());
+        int lastDot = rest.lastIndexOf('.');
+        if (lastDot <= 0) {
+            return null;
+        }
+        rest = rest.substring(0, lastDot);
+        int prevDot = rest.lastIndexOf('.');
+        if (prevDot <= 0 || prevDot >= rest.length() - 1) {
+            return null;
+        }
+        String senderUid = rest.substring(0, prevDot).trim();
+        return senderUid.isEmpty() ? null : senderUid;
+    }
+
     /** Match full/radio/alphanumeric callsign forms (SMOKEY_15 == SMOKEY15 == SMKY15). */
     private static boolean matchesSelfCallsignVariants(String candidate, Set<String> accepted) {
         if (candidate == null || candidate.isEmpty() || accepted == null || accepted.isEmpty()) {
@@ -777,6 +842,7 @@ public class ChatBridge {
                     preferNativeContactAction(ic);
                     removeDuplicateUidContact(contacts, uid, ic.getUID());
                     collapseDuplicateContactsForCallsign(callsign, ic.getUID());
+                    finishContactMerge(ic, callsign);
                     return ic.getUID();
                 }
             }
@@ -834,6 +900,7 @@ public class ChatBridge {
                     preferNativeContactAction(ic);
                     removeDuplicateUidContact(contacts, uid, ic.getUID());
                     collapseDuplicateContactsForCallsign(callsign, ic.getUID());
+                    finishContactMerge(ic, callsign);
                     return ic.getUID();
                 }
             }
@@ -963,27 +1030,156 @@ public class ChatBridge {
         if (contact == null) {
             return;
         }
+        Context ctx = MapView.getMapView() != null
+                ? MapView.getMapView().getContext() : null;
+        if (com.uvpro.plugin.contacts.ContactReachability.isPolicyEnabled(ctx)) {
+            com.uvpro.plugin.contacts.ContactReachability.applyContactCommsPolicy(
+                    contact, mergeRoutingBridge);
+            return;
+        }
+        preferNativeContactActionInternal(contact);
+    }
+
+    public static boolean preferNativeContactActionInternal(IndividualContact contact) {
+        if (contact == null) {
+            return false;
+        }
         try {
             MapView mv = MapView.getMapView();
             if (mv == null) {
-                return;
+                return false;
             }
-            // Clear any persisted plugin-default action so ATAK reverts to native contact behavior.
             AtakPreferences prefs = new AtakPreferences(mv.getContext());
-            prefs.set("contact.connector.default." + contact.getUID(), "");
+            String uid = contact.getUID();
+            clearDefaultConnectorPref(prefs, uid);
 
-            // If a plugin connector was previously injected on this native contact, remove it.
             contact.removeConnector(PluginConnector.CONNECTOR_TYPE);
 
-            // Force native GeoChat icon/action path.
             if (contact.getConnector(GeoChatConnector.CONNECTOR_TYPE) == null) {
                 String callsign = contact.getName() != null ? contact.getName() : "";
                 contact.addConnector(new GeoChatConnector(buildNativeConnectorSeed(callsign)));
             }
-            prefs.set("contact.connector.default." + contact.getUID(),
-                    GeoChatConnector.CONNECTOR_TYPE);
+            writeDefaultConnectorPref(prefs, uid, GeoChatConnector.CONNECTOR_TYPE);
+            contact.dispatchChangeEvent();
+            Log.i(TAG, "preferNativeContactAction uid=" + uid
+                    + " callsign=" + contact.getName());
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "preferNativeContactAction failed uid="
+                    + (contact != null ? contact.getUID() : "?"), e);
+            return false;
+        }
+    }
+
+    private static void writeDefaultConnectorPref(AtakPreferences prefs, String contactUid,
+                                                  String connectorType) {
+        if (prefs == null || contactUid == null || contactUid.trim().isEmpty()) {
+            return;
+        }
+        String trimmed = contactUid.trim();
+        LinkedHashSet<String> keys = new LinkedHashSet<>();
+        keys.add(trimmed);
+        keys.add(trimmed.toUpperCase(Locale.US));
+        keys.add(trimmed.toLowerCase(Locale.US));
+        for (String key : keys) {
+            prefs.set("contact.connector.default." + key, connectorType);
+        }
+    }
+
+    private static void clearDefaultConnectorPref(AtakPreferences prefs, String contactUid) {
+        writeDefaultConnectorPref(prefs, contactUid, "");
+    }
+
+    /**
+     * Repair persisted connector prefs and in-memory connectors after plugin updates or
+     * duplicate UID rows from prior RF/Wi-Fi sessions.
+     */
+    public static void repairAllNativeContactActions() {
+        try {
+            Contacts contacts = Contacts.getInstance();
+            java.util.List<Contact> all = contacts.getAllContacts();
+            if (all == null || all.isEmpty()) {
+                return;
+            }
+            Context ctx = MapView.getMapView() != null
+                    ? MapView.getMapView().getContext() : null;
+            boolean reachabilityPolicy =
+                    com.uvpro.plugin.contacts.ContactReachability.isPolicyEnabled(ctx);
+            int repaired = 0;
+            for (Contact c : all) {
+                if (!(c instanceof IndividualContact)) {
+                    continue;
+                }
+                IndividualContact ic = (IndividualContact) c;
+                if (reachabilityPolicy) {
+                    if (com.uvpro.plugin.contacts.ContactReachability.applyContactCommsPolicy(
+                            ic, mergeRoutingBridge)) {
+                        repaired++;
+                    }
+                } else if (needsNativeContactRepair(ic)) {
+                    preferNativeContactAction(ic);
+                    repaired++;
+                }
+            }
+            Log.i(TAG, "repairAllNativeContactActions repaired=" + repaired);
+        } catch (Exception e) {
+            Log.w(TAG, "repairAllNativeContactActions failed", e);
+        }
+    }
+
+    private static boolean needsNativeContactRepair(IndividualContact ic) {
+        if (ic == null) {
+            return false;
+        }
+        String uid = ic.getUID();
+        if (isOpaqueWifiDeviceUid(uid)) {
+            return ic.getConnector(PluginConnector.CONNECTOR_TYPE) != null
+                    || hasWrongDefaultConnectorPref(ic);
+        }
+        if (ic.getConnector(PluginConnector.CONNECTOR_TYPE) != null
+                && shouldPreferNativeContactAction(ic)) {
+            return true;
+        }
+        return hasWrongDefaultConnectorPref(ic);
+    }
+
+    private static boolean hasWrongDefaultConnectorPref(IndividualContact ic) {
+        if (ic == null) {
+            return false;
+        }
+        try {
+            MapView mv = MapView.getMapView();
+            if (mv == null) {
+                return false;
+            }
+            AtakPreferences prefs = new AtakPreferences(mv.getContext());
+            android.content.SharedPreferences sp = prefs.getSharedPrefs();
+            String uid = ic.getUID();
+            if (uid == null || uid.trim().isEmpty()) {
+                return false;
+            }
+            for (String key : connectorDefaultPrefKeys(uid)) {
+                String type = sp.getString(key, null);
+                if (PluginConnector.CONNECTOR_TYPE.equals(type)) {
+                    return true;
+                }
+                if (isOpaqueWifiDeviceUid(uid)
+                        && IpConnector.CONNECTOR_TYPE.equals(type)) {
+                    return true;
+                }
+            }
         } catch (Exception ignored) {
         }
+        return false;
+    }
+
+    private static java.util.ArrayList<String> connectorDefaultPrefKeys(String contactUid) {
+        java.util.ArrayList<String> keys = new java.util.ArrayList<>(3);
+        String trimmed = contactUid.trim();
+        keys.add("contact.connector.default." + trimmed);
+        keys.add("contact.connector.default." + trimmed.toUpperCase(Locale.US));
+        keys.add("contact.connector.default." + trimmed.toLowerCase(Locale.US));
+        return keys;
     }
 
     public static void collapseDuplicateContactsForCallsign(String rawCallsign, String keepUidHint) {
@@ -1011,6 +1207,13 @@ public class ChatBridge {
                 }
             }
             if (candidates.size() <= 1) {
+                if (candidates.size() == 1) {
+                    IndividualContact only = candidates.get(0);
+                    if (needsNativeContactRepair(only)) {
+                        preferNativeContactAction(only);
+                    }
+                    finishContactMerge(only, rawCallsign);
+                }
                 return;
             }
 
@@ -1037,10 +1240,154 @@ public class ChatBridge {
                 if (ic.getUID().equalsIgnoreCase(keepUid)) {
                     continue;
                 }
+                Log.d(TAG, "collapseDuplicate removing uid=" + ic.getUID()
+                        + " keeping uid=" + keepUid + " callsign=" + rawCallsign);
                 contacts.removeContact(ic);
+            }
+            finishContactMerge(keep, rawCallsign);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void finishContactMerge(IndividualContact keep, String callsignRaw) {
+        if (keep == null) {
+            return;
+        }
+        CotBridge bridge = mergeRoutingBridge;
+        if (bridge == null) {
+            return;
+        }
+        bridge.registerMergedContact(keep);
+        if (callsignRaw != null && !callsignRaw.trim().isEmpty()) {
+            bridge.removeOrphanRfMapMarkerForCallsign(callsignRaw, keep.getUID());
+        } else if (keep.getName() != null && !keep.getName().trim().isEmpty()) {
+            bridge.removeOrphanRfMapMarkerForCallsign(keep.getName(), keep.getUID());
+        }
+    }
+
+    public static String displayCallsignForContact(String callsignFallback, String uid) {
+        if (uid != null && !uid.trim().isEmpty()) {
+            try {
+                Contact c = Contacts.getInstance().getContactByUuid(uid.trim());
+                if (c != null && c.getName() != null && !c.getName().trim().isEmpty()) {
+                    return c.getName().trim();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        String fallback = callsignFallback != null ? callsignFallback.trim() : "";
+        if (!fallback.isEmpty()) {
+            return fallback;
+        }
+        if (uid != null && uid.toUpperCase(Locale.US).startsWith(ANDROID_UID_PREFIX)) {
+            String bare = uid.substring(ANDROID_UID_PREFIX.length());
+            if (bare.matches("^[0-9A-F]{16}$")) {
+                return uid;
+            }
+            return bare;
+        }
+        return uid != null ? uid : "";
+    }
+
+    public void scheduleContactMergeForNetworkContact(String contactUid) {
+        if (contactUid == null || contactUid.trim().isEmpty()) {
+            return;
+        }
+        try {
+            Contact c = Contacts.getInstance().getContactByUuid(contactUid.trim());
+            if (!(c instanceof IndividualContact)) {
+                return;
+            }
+            IndividualContact ic = (IndividualContact) c;
+            String name = ic.getName();
+            if (name == null || name.trim().isEmpty()) {
+                return;
+            }
+            String key = name.trim().toUpperCase(Locale.US);
+            Runnable existing = pendingMergeByCallsign.remove(key);
+            if (existing != null) {
+                contactMergeHandler.removeCallbacks(existing);
+            }
+            Runnable task = () -> {
+                pendingMergeByCallsign.remove(key);
+                collapseDuplicateContactsForCallsign(name, ic.getUID());
+                try {
+                    IndividualContact merged = resolveMergedContact(name, contactUid.trim());
+                    if (merged != null) {
+                        if (com.uvpro.plugin.contacts.ContactReachability.isPolicyEnabled(
+                                MapView.getMapView() != null
+                                        ? MapView.getMapView().getContext() : null)) {
+                            com.uvpro.plugin.contacts.ContactReachability.applyContactCommsPolicy(
+                                    merged, mergeRoutingBridge);
+                        } else if (needsNativeContactRepair(merged)) {
+                            preferNativeContactAction(merged);
+                        }
+                        finishContactMerge(merged, name);
+                        merged.dispatchChangeEvent();
+                    }
+                } catch (Exception ignored) {
+                }
+            };
+            pendingMergeByCallsign.put(key, task);
+            contactMergeHandler.postDelayed(task, 150L);
+        } catch (Exception e) {
+            Log.w(TAG, "scheduleContactMergeForNetworkContact failed uid=" + contactUid, e);
+        }
+    }
+
+    private static IndividualContact resolveMergedContact(String callsignRaw, String preferredUid) {
+        try {
+            Contacts contacts = Contacts.getInstance();
+            Contact byCallsign = findContactByCallsignVariants(contacts, callsignRaw);
+            if (byCallsign instanceof IndividualContact) {
+                return (IndividualContact) byCallsign;
+            }
+            if (preferredUid != null && !preferredUid.trim().isEmpty()) {
+                Contact byUid = contacts.getContactByUuid(preferredUid.trim());
+                if (byUid instanceof IndividualContact) {
+                    return (IndividualContact) byUid;
+                }
             }
         } catch (Exception ignored) {
         }
+        return null;
+    }
+
+    /**
+     * Restore native GeoChat action when TAK/Wi-Fi connectors are present.
+     * Pure RF plugin contacts (plugin connector only) are left unchanged.
+     */
+    private static boolean shouldPreferNativeContactAction(IndividualContact ic) {
+        if (ic == null) {
+            return false;
+        }
+        if (ic.getConnector(GeoChatConnector.CONNECTOR_TYPE) != null
+                || ic.getConnector(IpConnector.CONNECTOR_TYPE) != null) {
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean isOpaqueWifiDeviceUid(String uid) {
+        if (uid == null || uid.trim().isEmpty()) {
+            return false;
+        }
+        String upper = uid.trim().toUpperCase(Locale.US);
+        if (upper.startsWith(ANDROID_UID_PREFIX)) {
+            upper = upper.substring(ANDROID_UID_PREFIX.length());
+        }
+        return OPAQUE_WIFI_DEVICE_UID.matcher(upper).matches();
+    }
+
+    private static boolean isSyntheticCallsignUid(String uid, String callsign) {
+        if (uid == null || callsign == null) {
+            return false;
+        }
+        String normalizedCall = callsign.trim().toUpperCase(Locale.US);
+        if (normalizedCall.isEmpty()) {
+            return false;
+        }
+        return uid.trim().equalsIgnoreCase(ANDROID_UID_PREFIX + normalizedCall);
     }
 
     private static int scorePreferredNativeContact(IndividualContact ic) {
@@ -1049,11 +1396,18 @@ public class ChatBridge {
             return score;
         }
         String uid = ic.getUID() != null ? ic.getUID().trim().toUpperCase(Locale.US) : "";
+        String name = ic.getName() != null ? ic.getName().trim().toUpperCase(Locale.US) : "";
         if (ic.getConnector(GeoChatConnector.CONNECTOR_TYPE) != null) {
             score += 300;
         }
         if (ic.getConnector(IpConnector.CONNECTOR_TYPE) != null) {
             score += 100;
+        }
+        if (isOpaqueWifiDeviceUid(uid)) {
+            score += 400;
+        }
+        if (isSyntheticCallsignUid(uid, name)) {
+            score -= 250;
         }
         if (!uid.startsWith(ANDROID_UID_PREFIX)) {
             score += 50;
@@ -1061,7 +1415,6 @@ public class ChatBridge {
         if (ic.getConnector(PluginConnector.CONNECTOR_TYPE) != null) {
             score -= 40;
         }
-        String name = ic.getName() != null ? ic.getName().trim() : "";
         if (name.contains("_")) {
             score += 25;
         }
@@ -1104,9 +1457,81 @@ public class ChatBridge {
                     collapseDuplicateContactsForCallsign(compressed, null);
                 }
             }
+            removeOrphanSyntheticRadioContacts();
+            repairAllNativeContactActions();
+            com.uvpro.plugin.contacts.ContactReachability.applyAllContactCommsPolicies(
+                    mergeRoutingBridge);
         } catch (Exception e) {
             Log.w(TAG, "collapseAllCallsignAliasDuplicates failed", e);
         }
+    }
+
+    /**
+     * Drop abbreviated synthetic rows (e.g. {@code SMKY15}/{@code ANDROID-SMKY15}) when a fuller
+     * peer with the same radio key already exists (e.g. {@code SMOKEY_15}).
+     */
+    static void removeOrphanSyntheticRadioContacts() {
+        try {
+            Contacts contacts = Contacts.getInstance();
+            java.util.List<Contact> all = contacts.getAllContacts();
+            if (all == null || all.size() < 2) {
+                return;
+            }
+            java.util.ArrayList<IndividualContact> orphans = new java.util.ArrayList<>();
+            for (Contact c : all) {
+                if (!(c instanceof IndividualContact)) {
+                    continue;
+                }
+                IndividualContact ic = (IndividualContact) c;
+                if (isOrphanSyntheticRadioContact(ic, all)) {
+                    orphans.add(ic);
+                }
+            }
+            for (IndividualContact orphan : orphans) {
+                Log.d(TAG, "Removing orphan synthetic radio contact uid=" + orphan.getUID()
+                        + " callsign=" + orphan.getName());
+                contacts.removeContact(orphan);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "removeOrphanSyntheticRadioContacts failed", e);
+        }
+    }
+
+    private static boolean isOrphanSyntheticRadioContact(IndividualContact ic,
+                                                         java.util.List<Contact> all) {
+        if (ic == null || all == null) {
+            return false;
+        }
+        String uid = ic.getUID();
+        String name = ic.getName() != null ? ic.getName().trim().toUpperCase(Locale.US) : "";
+        if (name.isEmpty() || !isSyntheticCallsignUid(uid, name)) {
+            return false;
+        }
+        if (name.contains("_") || name.contains("-")) {
+            return false;
+        }
+        String radioKey = radioCallsignKey(name);
+        if (radioKey.isEmpty() || radioKey.length() < 4) {
+            return false;
+        }
+        int selfScore = scorePreferredNativeContact(ic);
+        for (Contact c : all) {
+            if (c == ic || !(c instanceof IndividualContact)) {
+                continue;
+            }
+            IndividualContact other = (IndividualContact) c;
+            String otherName = other.getName() != null ? other.getName().trim().toUpperCase(Locale.US) : "";
+            if (otherName.isEmpty()) {
+                continue;
+            }
+            if (!radioKey.equals(radioCallsignKey(otherName))) {
+                continue;
+            }
+            if (scorePreferredNativeContact(other) > selfScore) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static NetConnectString buildNativeConnectorSeed(String callsign) {
@@ -1371,7 +1796,11 @@ public class ChatBridge {
 
                 @Override
                 public void onContactChanged(String contactUid) {
-                    if (contactUid == null || !contactUid.startsWith("ANDROID-")) {
+                    if (contactUid == null || contactUid.trim().isEmpty()) {
+                        return;
+                    }
+                    scheduleContactMergeForNetworkContact(contactUid);
+                    if (!contactUid.startsWith("ANDROID-")) {
                         return;
                     }
                     try {

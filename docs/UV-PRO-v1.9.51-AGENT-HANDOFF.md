@@ -1,6 +1,6 @@
 # UV-PRO Plugin — Agent Handoff Document
 
-> **Note:** This file kept its historical name (`…v1.8.6…`); treat it as the **current** UV-PRO agent handoff unless superseded.
+> **Version:** **v1.9.51** — filename matches current plugin release (`ext.PLUGIN_VERSION` in root `build.gradle`).
 
 ---
 

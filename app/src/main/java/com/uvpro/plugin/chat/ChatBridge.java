@@ -282,8 +282,17 @@ public class ChatBridge {
             gatewayLineUid = gw.lineUid;
             Log.d(TAG, "Inbound RF gateway envelope wireDest=" + gatewayWireDest
                     + " displayCallsign=" + gatewayDisplayCallsign
+                    + (gw.aprsSenderCall != null && !gw.aprsSenderCall.isEmpty()
+                    ? " aprsSender=" + gw.aprsSenderCall : "")
                     + (gatewayLineUid != null && !gatewayLineUid.isEmpty()
                     ? " lineUid=" + gatewayLineUid : ""));
+        }
+
+        final boolean aprsContext = radioPacketMessageId == 0
+                || (gw != null && gw.aprsSenderCall != null && !gw.aprsSenderCall.trim().isEmpty());
+        String effectiveFromCallsign = fromCallsign;
+        if (gw != null && gw.aprsSenderCall != null && !gw.aprsSenderCall.trim().isEmpty()) {
+            effectiveFromCallsign = gw.aprsSenderCall.trim();
         }
 
         // Determine chat room — if destination is a specific callsign,
@@ -300,12 +309,20 @@ public class ChatBridge {
         // gatewayWireDest is the 6-char AX.25 address (wire only, never shown in UI).
 
         String lineSenderUid = parseGeoChatSenderUid(gatewayLineUid);
-        String btechUid = cotBridge != null ? cotBridge.resolveBtechUidForId(fromCallsign) : null;
         String senderUid;
-        if (lineSenderUid != null && !lineSenderUid.isEmpty()) {
-            senderUid = resolveCanonicalPeerUid(fromCallsign, lineSenderUid, btechUid);
+        if (aprsContext) {
+            senderUid = ensureAprsPluginChatContact(effectiveFromCallsign);
+            if (senderUid.isEmpty() && effectiveFromCallsign != null) {
+                senderUid = syntheticAndroidUid(
+                        AprsMessageTransmitter.normalizeAddressee(effectiveFromCallsign));
+            }
         } else {
-            senderUid = resolveCanonicalPeerUid(fromCallsign, btechUid);
+            String btechUid = cotBridge != null ? cotBridge.resolveBtechUidForId(fromCallsign) : null;
+            if (lineSenderUid != null && !lineSenderUid.isEmpty()) {
+                senderUid = resolveCanonicalPeerUid(fromCallsign, lineSenderUid, btechUid);
+            } else {
+                senderUid = resolveCanonicalPeerUid(fromCallsign, btechUid);
+            }
         }
 
         // Direct DM: thread id must be the *remote* peer's ANDROID-* UID. Packets include a
@@ -336,29 +353,29 @@ public class ChatBridge {
                 return false;
             }
 
-            // APRS senders are intentionally not registered as ATAK Contacts; synthesize an
-            // ANDROID-* UID so GeoChat can thread and badge them like normal conversations.
-            if ((senderUid == null || senderUid.isEmpty()) && fromCallsign != null) {
-                senderUid = syntheticAndroidUid(fromCallsign);
-            }
+            // APRS: create a Contacts row keyed by FCC callsign (not ATAK tactical name).
             if (senderUid != null && senderUid.startsWith(ANDROID_UID_PREFIX)
                     && (selfUid == null || !selfUid.equalsIgnoreCase(senderUid))) {
-                ensurePluginChatContact(fromCallsign, senderUid);
-                collapseDuplicateContactsForCallsign(fromCallsign, senderUid);
-                if (radioPacketMessageId == 0) {
-                    markAprsContactUid(senderUid);
-                }
-                cotBridge.registerBtechContactUid(senderUid);
-                if (fromCallsign != null && !fromCallsign.trim().isEmpty()) {
-                    cotBridge.registerBtechContactId(fromCallsign, senderUid);
-                    String radioTrunc = CallsignUtil.toRadioCallsign(fromCallsign);
-                    if (radioTrunc != null && !radioTrunc.isEmpty()
-                            && !radioTrunc.equalsIgnoreCase(fromCallsign.trim())) {
-                        cotBridge.registerBtechContactId(radioTrunc, senderUid);
+                if (aprsContext) {
+                    registerAprsChatContactRouting(effectiveFromCallsign, senderUid);
+                } else {
+                    if ((senderUid == null || senderUid.isEmpty()) && fromCallsign != null) {
+                        senderUid = syntheticAndroidUid(fromCallsign);
                     }
-                }
-                if (lineSenderUid != null && !lineSenderUid.isEmpty()) {
-                    cotBridge.registerBtechContactUid(lineSenderUid);
+                    ensurePluginChatContact(fromCallsign, senderUid);
+                    collapseDuplicateContactsForCallsign(fromCallsign, senderUid);
+                    cotBridge.registerBtechContactUid(senderUid);
+                    if (fromCallsign != null && !fromCallsign.trim().isEmpty()) {
+                        cotBridge.registerBtechContactId(fromCallsign, senderUid);
+                        String radioTrunc = CallsignUtil.toRadioCallsign(fromCallsign);
+                        if (radioTrunc != null && !radioTrunc.isEmpty()
+                                && !radioTrunc.equalsIgnoreCase(fromCallsign.trim())) {
+                            cotBridge.registerBtechContactId(radioTrunc, senderUid);
+                        }
+                    }
+                    if (lineSenderUid != null && !lineSenderUid.isEmpty()) {
+                        cotBridge.registerBtechContactUid(lineSenderUid);
+                    }
                 }
             }
 
@@ -417,9 +434,14 @@ public class ChatBridge {
             }
         }
 
-        String senderDisplay = resolveSenderDisplayCallsign(fromCallsign, senderUid);
+        String senderDisplay = aprsContext
+                ? AprsMessageTransmitter.normalizeAddressee(effectiveFromCallsign)
+                : resolveSenderDisplayCallsign(fromCallsign, senderUid);
+        if ((senderDisplay == null || senderDisplay.isEmpty()) && effectiveFromCallsign != null) {
+            senderDisplay = effectiveFromCallsign.trim();
+        }
         cotBridge.injectChatCot(senderDisplay, message, chatRoom,
-                radioPacketMessageId, gatewayLineUid);
+                radioPacketMessageId, gatewayLineUid, aprsContext ? senderUid : null);
         noteInboundGeoChatDelivered(gatewayLineUid, senderUid, message, radioPacketMessageId);
         return true;
     }
@@ -567,7 +589,7 @@ public class ChatBridge {
 
     /** True if the RF payload "chat room" equals this operator's callsign or its AX.25 form. */
     private boolean rfDestinationLooksLikeSelf(String room) {
-        if (room == null || room.isEmpty() || localCallsign == null) {
+        if (room == null || room.isEmpty()) {
             return false;
         }
         String r = room.trim().toUpperCase(Locale.US);
@@ -576,24 +598,60 @@ public class ChatBridge {
         }
 
         Set<String> accepted = new HashSet<>();
-        addSelfCallsignVariants(accepted, localCallsign);
-
-        try {
-            com.atakmap.android.maps.PointMapItem selfMarker = mapView.getSelfMarker();
-            if (selfMarker != null) {
-                addSelfCallsignVariants(accepted, selfMarker.getMetaString("callsign", null));
-            }
-        } catch (Exception ignored) {
+        collectLocalStationDestinationVariants(accepted);
+        if (accepted.isEmpty()) {
+            return false;
         }
 
         if (matchesSelfCallsignVariants(r, accepted)) {
             return true;
         }
+        String normalized = normalizeAprsDestination(r);
+        if (!normalized.isEmpty() && accepted.contains(normalized)) {
+            return true;
+        }
         if (r.startsWith(ANDROID_UID_PREFIX)) {
             String bare = r.substring(ANDROID_UID_PREFIX.length());
-            return matchesSelfCallsignVariants(bare, accepted);
+            if (matchesSelfCallsignVariants(bare, accepted)) {
+                return true;
+            }
+            normalized = normalizeAprsDestination(bare);
+            return !normalized.isEmpty() && accepted.contains(normalized);
         }
         return false;
+    }
+
+    /** ATAK tactical callsign + configured APRS FCC identity for inbound DM routing. */
+    private void collectLocalStationDestinationVariants(Set<String> out) {
+        if (out == null) {
+            return;
+        }
+        if (localCallsign != null) {
+            addSelfCallsignVariants(out, localCallsign);
+        }
+        try {
+            if (mapView != null && mapView.getSelfMarker() != null) {
+                addSelfCallsignVariants(out, mapView.getSelfMarker().getMetaString("callsign", null));
+            }
+        } catch (Exception ignored) {
+        }
+        addAprsConfiguredDestinationVariants(out);
+    }
+
+    private void addAprsConfiguredDestinationVariants(Set<String> out) {
+        try {
+            if (pluginContext == null) {
+                return;
+            }
+            String aprsBase = SettingsFragment.getAprsCallsign(pluginContext);
+            int aprsSsid = SettingsFragment.getAprsSsid(pluginContext);
+            addAprsDestinationVariants(out, aprsBase);
+            if (aprsBase != null && !aprsBase.trim().isEmpty()
+                    && aprsSsid > 0 && aprsSsid <= 15) {
+                addAprsDestinationVariants(out, aprsBase.trim() + "-" + aprsSsid);
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     private boolean inboundRfDestinationLooksLikeSelf(String gatewayWireDest,
@@ -1621,6 +1679,9 @@ public class ChatBridge {
             return false;
         }
         String uid = ic.getUID();
+        if (isAprsContactUid(uid)) {
+            return false;
+        }
         String name = ic.getName() != null ? ic.getName().trim().toUpperCase(Locale.US) : "";
         if (name.isEmpty() || !isSyntheticCallsignUid(uid, name)) {
             return false;
@@ -1693,6 +1754,64 @@ public class ChatBridge {
         aprsConversationUids.add(uid);
     }
 
+    /**
+     * Ensure a Contacts row for APRS chat using the FCC callsign from the RF packet.
+     * Does not merge with ATAK tactical callsign or Wi‑Fi contacts.
+     */
+    public static String ensureAprsPluginChatContact(String fccCallsignRaw) {
+        String callsign = AprsMessageTransmitter.normalizeAddressee(fccCallsignRaw);
+        if (callsign.isEmpty()) {
+            return "";
+        }
+        String uid = syntheticAndroidUid(callsign);
+        if (uid.isEmpty()) {
+            return "";
+        }
+        try {
+            Contacts contacts = Contacts.getInstance();
+            Contact existing = contacts.getContactByUuid(uid);
+            if (existing instanceof IndividualContact) {
+                markAprsContactUid(uid);
+                return uid;
+            }
+            if (existing != null) {
+                markAprsContactUid(uid);
+                return uid;
+            }
+
+            MapItem item = null;
+            MapView mv = MapView.getMapView();
+            if (mv != null && mv.getRootGroup() != null) {
+                item = mv.getRootGroup().deepFindUID(uid);
+            }
+
+            IndividualContact c = new IndividualContact(callsign, uid, item,
+                    buildNativeConnectorSeed(callsign));
+            contacts.addContact(c);
+            markAprsContactUid(uid);
+            Log.i(TAG, "Created APRS chat contact " + callsign + " uid=" + uid);
+            return uid;
+        } catch (Exception e) {
+            Log.e(TAG, "ensureAprsPluginChatContact failed callsign=" + fccCallsignRaw, e);
+            return "";
+        }
+    }
+
+    private void registerAprsChatContactRouting(String fromCallsignRaw, String senderUid) {
+        if (cotBridge == null || senderUid == null || senderUid.isEmpty()) {
+            return;
+        }
+        cotBridge.registerBtechContactUid(senderUid);
+        String aprsCall = AprsMessageTransmitter.normalizeAddressee(fromCallsignRaw);
+        if (!aprsCall.isEmpty()) {
+            cotBridge.registerBtechContactId(aprsCall, senderUid);
+        }
+        if (fromCallsignRaw != null && !fromCallsignRaw.trim().isEmpty()
+                && !fromCallsignRaw.trim().equalsIgnoreCase(aprsCall)) {
+            cotBridge.registerBtechContactId(fromCallsignRaw.trim(), senderUid);
+        }
+    }
+
     private static boolean isAprsContactUid(String contactUid) {
         if (contactUid == null) {
             return false;
@@ -1705,6 +1824,34 @@ public class ChatBridge {
             uid = ANDROID_UID_PREFIX + uid;
         }
         return aprsConversationUids.contains(uid);
+    }
+
+    /** Public wrapper for CotBridge inbound GeoChat seeding. */
+    public static boolean isAprsChatContactUid(String contactUid) {
+        if (isAprsContactUid(contactUid)) {
+            return true;
+        }
+        return looksLikeAprsContactUid(contactUid);
+    }
+
+    /** {@code ANDROID-N7JDI-9} style FCC contact UIDs (not tactical {@code SMOKEY_15}). */
+    private static boolean looksLikeAprsContactUid(String contactUid) {
+        if (contactUid == null) {
+            return false;
+        }
+        String uid = contactUid.trim().toUpperCase(Locale.US);
+        if (uid.startsWith(ANDROID_UID_PREFIX)) {
+            uid = uid.substring(ANDROID_UID_PREFIX.length());
+        }
+        if (uid.isEmpty() || uid.contains("_")) {
+            return false;
+        }
+        String base = uid;
+        int dash = uid.indexOf('-');
+        if (dash > 0) {
+            base = uid.substring(0, dash);
+        }
+        return SettingsFragment.isValidAprsCallsign(base);
     }
 
     /**
@@ -1721,23 +1868,7 @@ public class ChatBridge {
         }
 
         Set<String> accepted = new HashSet<>();
-        addAprsDestinationVariants(accepted, localCallsign);
-        try {
-            if (mapView != null && mapView.getSelfMarker() != null) {
-                addAprsDestinationVariants(accepted,
-                        mapView.getSelfMarker().getMetaString("callsign", null));
-            }
-        } catch (Exception ignored) {
-        }
-        try {
-            String aprsBase = SettingsFragment.getAprsCallsign(pluginContext);
-            int aprsSsid = SettingsFragment.getAprsSsid(pluginContext);
-            addAprsDestinationVariants(accepted, aprsBase);
-            if (aprsBase != null && !aprsBase.trim().isEmpty() && aprsSsid > 0 && aprsSsid <= 15) {
-                addAprsDestinationVariants(accepted, aprsBase.trim() + "-" + aprsSsid);
-            }
-        } catch (Exception ignored) {
-        }
+        collectLocalStationDestinationVariants(accepted);
         return accepted.contains(to);
     }
 
@@ -2184,7 +2315,7 @@ public class ChatBridge {
             Log.i(TAG, "Plugin GeoChat bundle contains paths; relaying compact RF chat fallback");
         }
 
-        if (isAprsContactUid(conversationId)) {
+        if (isAprsChatContactUid(conversationId)) {
             if (!SettingsFragment.isValidAprsCallsign(SettingsFragment.getAprsCallsign(pluginContext))) {
                 postAprsCallsignWarning();
                 return true;
@@ -2479,7 +2610,100 @@ public class ChatBridge {
             return;
         }
 
+        if (tryRelayOutboundGeoChatAsAprs(event, lineUid)) {
+            return;
+        }
+
         relayOutboundGeoChatCotAsCompact(event);
+    }
+
+    /**
+     * When GeoChat targets an APRS FCC contact ({@code ANDROID-N7JDI-9}), send over APRS KISS
+     * instead of UV-PRO TYPE_CHAT so the receiver gets the sender's ham call, not tactical ID.
+     */
+    private boolean tryRelayOutboundGeoChatAsAprs(CotEvent event, String lineUid) {
+        if (event == null) {
+            return false;
+        }
+        CotDetail detail = event.getDetail();
+        if (detail == null) {
+            return false;
+        }
+
+        String message = null;
+        String chatRoom = ALL_CHAT_ROOMS;
+        CotDetail remarks = detail.getFirstChildByName(0, "remarks");
+        if (remarks != null) {
+            message = remarks.getInnerText();
+        }
+        CotDetail chat = detail.getFirstChildByName(0, "__chat");
+        if (chat == null) {
+            chat = detail.getFirstChildByName(0, "chat");
+        }
+        if (chat != null) {
+            String room = chat.getAttribute("chatroom");
+            if (room != null && !room.isEmpty()) {
+                chatRoom = room;
+            }
+        }
+        if (message == null || message.isEmpty()) {
+            return false;
+        }
+
+        String destHint = extractGeoChatDestinationHint(event, chatRoom);
+        if (!isAprsChatDestination(chatRoom, destHint, event)) {
+            return false;
+        }
+        if (!SettingsFragment.isValidAprsCallsign(SettingsFragment.getAprsCallsign(pluginContext))) {
+            postAprsCallsignWarning();
+            return true;
+        }
+        String destUid = resolveAprsGeoChatDestinationUid(chatRoom, destHint, event);
+        String to = AprsMessageTransmitter.normalizeAddressee(
+                destUid != null && !destUid.isEmpty() ? destUid : destHint);
+        if (to.isEmpty()) {
+            Log.w(TAG, "APRS GeoChat relay blocked (invalid destination)");
+            return true;
+        }
+        Log.i(TAG, "Outbound GeoChat → APRS TX to " + to + " lineUid=" + lineUid);
+        boolean ok = AprsMessageTransmitter.sendMessage(pluginContext, btManager, to, message);
+        if (!ok) {
+            Log.w(TAG, "APRS TX failed for GeoChat destination " + to);
+        }
+        return true;
+    }
+
+    private static boolean isAprsChatDestination(String chatRoom, String destHint, CotEvent event) {
+        if (isAprsChatContactUid(chatRoom)) {
+            return true;
+        }
+        if (isAprsChatContactUid(destHint)) {
+            return true;
+        }
+        if (event != null) {
+            String conv = GeoChatContactListHelper.extractConversationId(event);
+            if (isAprsChatContactUid(conv)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String resolveAprsGeoChatDestinationUid(String chatRoom, String destHint,
+                                                           CotEvent event) {
+        if (isAprsChatContactUid(chatRoom)) {
+            return chatRoom.trim();
+        }
+        if (destHint != null && isAprsChatContactUid(destHint)) {
+            return destHint.trim();
+        }
+        if (event != null) {
+            String conv = GeoChatContactListHelper.extractConversationId(event);
+            if (isAprsChatContactUid(conv)) {
+                return conv.trim();
+            }
+        }
+        return destHint != null ? destHint.trim() : "";
     }
 
     /**
@@ -2529,6 +2753,10 @@ public class ChatBridge {
             return;
         }
 
+        if (tryRelayOutboundGeoChatAsAprs(event, lineUid)) {
+            return;
+        }
+
         String outbound = message;
         String rfRoom = chatRoom;
         if (!ALL_CHAT_ROOMS.equalsIgnoreCase(chatRoom)
@@ -2537,7 +2765,9 @@ public class ChatBridge {
             String destHint = extractGeoChatDestinationHint(event, chatRoom);
             String dmWireDest = resolveRfWireDestination(destHint, chatRoom);
             if (!dmWireDest.isEmpty()) {
-                outbound = wrapGatewayMessage(dmWireDest, chatRoom, lineUid, message);
+                String aprsSender = isAprsChatDestination(chatRoom, destHint, event)
+                        ? SettingsFragment.getAprsCallsign(pluginContext) : null;
+                outbound = wrapGatewayMessage(dmWireDest, chatRoom, lineUid, aprsSender, message);
                 rfRoom = dmWireDest;
             }
         }
@@ -2668,17 +2898,28 @@ public class ChatBridge {
 
     /**
      * Build RF gateway envelope.
-     * Format: {@code __UVGW__|wireDest|displayCallsign|lineUid|message}
+     * Format: {@code __UVGW__|wireDest|displayCallsign|lineUid|[aprsSenderCall|]message}
      * <ul>
      *   <li>{@code wireDest} — 6-char AX.25 address only (never shown in UI)</li>
-     *   <li>{@code displayCallsign} — full ATAK callsign ({@code SMOKEY_15})</li>
+     *   <li>{@code displayCallsign} — full destination callsign ({@code N7JDI-9})</li>
+     *   <li>{@code aprsSenderCall} — optional sender FCC call when UV-PRO carries APRS chat</li>
      * </ul>
      */
     private static String wrapGatewayMessage(String wireDest, String displayCallsign,
                                            String lineUid, String message) {
+        return wrapGatewayMessage(wireDest, displayCallsign, lineUid, null, message);
+    }
+
+    private static String wrapGatewayMessage(String wireDest, String displayCallsign,
+                                           String lineUid, String aprsSenderCall,
+                                           String message) {
         String wire = wireDest != null ? wireDest.trim() : "";
         String display = displayCallsign != null ? displayCallsign.trim() : "";
         String line = lineUid != null ? lineUid.trim() : "";
+        String aprs = aprsSenderCall != null ? aprsSenderCall.trim().toUpperCase(Locale.US) : "";
+        if (!aprs.isEmpty()) {
+            return GW_PREFIX + wire + "|" + display + "|" + line + "|" + aprs + "|" + message;
+        }
         return GW_PREFIX + wire + "|" + display + "|" + line + "|" + message;
     }
 
@@ -2696,15 +2937,31 @@ public class ChatBridge {
         String afterRoom = rest.substring(p2 + 1);
         int p3 = afterRoom.indexOf('|');
         String lineUid = "";
+        String aprsSenderCall = "";
         String body;
         if (p3 >= 0) {
             lineUid = afterRoom.substring(0, p3).trim();
-            body = afterRoom.substring(p3 + 1);
+            String afterLine = afterRoom.substring(p3 + 1);
+            int p4 = afterLine.indexOf('|');
+            if (p4 >= 0) {
+                String field = afterLine.substring(0, p4).trim();
+                String tail = afterLine.substring(p4 + 1);
+                if (SettingsFragment.isValidAprsCallsign(field)
+                        || (field.contains("-") && SettingsFragment.isValidAprsCallsign(
+                                field.substring(0, field.indexOf('-'))))) {
+                    aprsSenderCall = field;
+                    body = tail;
+                } else {
+                    body = afterLine;
+                }
+            } else {
+                body = afterLine;
+            }
         } else {
             body = afterRoom;
         }
         if (body.isEmpty()) return null;
-        return new GatewayWrapped(toUid, room, lineUid, body);
+        return new GatewayWrapped(toUid, room, lineUid, aprsSenderCall, body);
     }
 
     /**
@@ -2777,15 +3034,19 @@ public class ChatBridge {
     private static final class GatewayWrapped {
         /** 6-char AX.25 wire destination (internal routing only). */
         final String wireDest;
-        /** Full ATAK callsign for display/threading ({@code SMOKEY_15}). */
+        /** Full destination callsign for display/threading ({@code N7JDI-9}). */
         final String displayCallsign;
         final String lineUid;
+        /** Sender FCC call when UV-PRO gateway carries APRS-context chat. */
+        final String aprsSenderCall;
         final String message;
 
-        GatewayWrapped(String wireDest, String displayCallsign, String lineUid, String message) {
+        GatewayWrapped(String wireDest, String displayCallsign, String lineUid,
+                       String aprsSenderCall, String message) {
             this.wireDest = wireDest;
             this.displayCallsign = displayCallsign;
             this.lineUid = lineUid;
+            this.aprsSenderCall = aprsSenderCall;
             this.message = message;
         }
     }

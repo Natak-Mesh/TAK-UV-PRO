@@ -1062,23 +1062,47 @@ public class CotBridge {
     public void injectChatCot(String senderCallsign, String message,
                               String chatRoom, int radioPacketMessageId,
                               String originatingLineUidOrNull) {
+        injectChatCot(senderCallsign, message, chatRoom, radioPacketMessageId,
+                originatingLineUidOrNull, null);
+    }
+
+    /**
+     * @param senderUidOverride When set (APRS inbound), use this exact ANDROID-* UID and FCC
+     *                          display label — do not re-resolve via UV-PRO contact maps.
+     */
+    public void injectChatCot(String senderCallsign, String message,
+                              String chatRoom, int radioPacketMessageId,
+                              String originatingLineUidOrNull, String senderUidOverride) {
         try {
             String trimmed = senderCallsign != null ? senderCallsign.trim() : "";
-            // Align with GPS-registered contacts: AX.25 truncates sender (e.g. JUNIOR → JNR).
-            String canonicalUid = resolveBtechUidForId(trimmed);
-            if (canonicalUid == null && !trimmed.isEmpty()) {
-                if (isOpaqueDeviceId(trimmed)) {
-                    Log.w(TAG, "injectChatCot: dropping sender opaque device id: " + trimmed);
+            String canonicalUid;
+            String displayCallsign;
+            if (senderUidOverride != null && !senderUidOverride.trim().isEmpty()) {
+                canonicalUid = senderUidOverride.trim().toUpperCase(Locale.US);
+                if (!canonicalUid.startsWith(ANDROID_UID_PREFIX)) {
+                    canonicalUid = ANDROID_UID_PREFIX + canonicalUid;
+                }
+                displayCallsign = trimmed.isEmpty()
+                        ? canonicalUid.substring(ANDROID_UID_PREFIX.length())
+                        : trimmed;
+            } else {
+                // Align with GPS-registered contacts: AX.25 truncates sender (e.g. JUNIOR → JNR).
+                canonicalUid = resolveBtechUidForId(trimmed);
+                if (canonicalUid == null && !trimmed.isEmpty()) {
+                    if (isOpaqueDeviceId(trimmed)) {
+                        Log.w(TAG, "injectChatCot: dropping sender opaque device id: " + trimmed);
+                        return;
+                    }
+                    String key = normalizeBtechRoutingId(trimmed);
+                    if (!key.isEmpty()) {
+                        canonicalUid = ANDROID_UID_PREFIX + key;
+                    }
+                }
+                if (canonicalUid == null || canonicalUid.isEmpty()) {
+                    Log.w(TAG, "injectChatCot: no UID for sender " + trimmed);
                     return;
                 }
-                String key = normalizeBtechRoutingId(trimmed);
-                if (!key.isEmpty()) {
-                    canonicalUid = ANDROID_UID_PREFIX + key;
-                }
-            }
-            if (canonicalUid == null || canonicalUid.isEmpty()) {
-                Log.w(TAG, "injectChatCot: no UID for sender " + trimmed);
-                return;
+                displayCallsign = ChatBridge.displayCallsignForContact(trimmed, canonicalUid);
             }
             String localUid = cachedLocalDeviceUidForGeoChat;
             if (localUid == null || localUid.isEmpty()) {
@@ -1092,7 +1116,6 @@ public class CotBridge {
                 Log.d(TAG, "injectChatCot: ignored self-origin chat sender uid=" + canonicalUid);
                 return;
             }
-            String displayCallsign = ChatBridge.displayCallsignForContact(trimmed, canonicalUid);
             String chatGrpUid1ForDm = null;
             if (chatRoom != null && chatRoom.startsWith("ANDROID-")) {
                 chatGrpUid1ForDm = cachedLocalDeviceUidForGeoChat;
@@ -1247,6 +1270,12 @@ public class CotBridge {
             } else if (senderUid != null) {
                 callsign = senderUid;
             }
+        }
+
+        if (senderUid != null && ChatBridge.isAprsChatContactUid(senderUid)) {
+            ChatBridge.ensureAprsPluginChatContact(callsign);
+            registerBtechAliases(callsign, senderUid, senderUid, linkUid);
+            return;
         }
 
         String canonical = ChatBridge.resolveCanonicalPeerUid(callsign, senderUid, linkUid);

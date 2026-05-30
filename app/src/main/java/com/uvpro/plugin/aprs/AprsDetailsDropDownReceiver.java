@@ -214,12 +214,11 @@ public class AprsDetailsDropDownReceiver extends DropDownReceiver
                     Toast.LENGTH_LONG).show();
             return;
         }
-        String uid = ChatBridge.ensurePluginChatContact(to, ChatBridge.syntheticAndroidUid(to));
+        String uid = ChatBridge.ensureAprsPluginChatContact(to);
         if (uid.isEmpty()) {
             Toast.makeText(ctx, "Could not create APRS chat contact", Toast.LENGTH_LONG).show();
             return;
         }
-        ChatBridge.markAprsContactUid(uid);
         if (cotBridge != null) {
             cotBridge.registerBtechContactUid(uid);
             cotBridge.registerBtechContactId(to, uid);

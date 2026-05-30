@@ -77,6 +77,10 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 - MeshCore connect-button pulse animation was disabled so auto-connect attempts no longer flash the button.
 - Added persistent agent rule `.cursor/rules/transport-agnostic-routing.mdc` requiring all routing/message/CoT fixes to be transport-agnostic and verified on both UV-PRO and MeshCore paths.
 
+### 2026-05-31 Progress Update (v1.9.53)
+
+- **APRS chat contacts (FCC callsign):** Inbound APRS text messages create a dedicated Contacts row labeled with the sender's **ham FCC call** (not the ATAK tactical callsign). GeoChat opened from **Send APRS Message** routes outbound traffic over **APRS KISS** instead of UV-PRO TYPE_CHAT, so receivers do not merge APRS traffic into existing Wi‑Fi/RF peers (e.g. `SMOKEY_15`). UV-PRO gateway fallback can carry optional `aprsSender` metadata for the same identity on mesh hops.
+
 ### 2026-05-29 Progress Update (v1.9.52)
 
 - **Wi‑Fi contact keepalive (Wi‑Fi only):** Unicast mini-SA keepalives sent via `dispatchToContact()` are tagged in CoT remarks and excluded from RF relay in `CotBridge` PreSend, CommsLogger broadcast fallback, and contact-targeted map relay — so reachability probes stay on Wi‑Fi/TAK and do not go out over UV‑PRO radio.

@@ -45,8 +45,11 @@ import android.widget.Toast;
 import com.atakmap.android.dropdown.DropDown;
 import com.atakmap.android.dropdown.DropDownReceiver;
 import com.atakmap.android.ipc.AtakBroadcast;
+import com.atakmap.android.maps.MapGroup;
+import com.atakmap.android.maps.MapItem;
 import com.atakmap.android.maps.MapView;
 
+import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.beacon.SmartBeacon;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry;
@@ -186,6 +189,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private TextView textAprsStatusMessage;
     private Switch switchAprsDisableAtak;
     private Button btnSendAprsBeacon;
+    private Button btnClearAprsContacts;
     private Button btnEditAprsSettings;
     private TextView teamColorText;
     private Button btnScan;
@@ -626,6 +630,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         textAprsStatusMessage = rootView.findViewById(getId("text_aprs_status_message"));
         switchAprsDisableAtak = rootView.findViewById(getId("switch_aprs_disable_atak"));
         btnSendAprsBeacon = rootView.findViewById(getId("btn_send_aprs_beacon"));
+        btnClearAprsContacts = rootView.findViewById(getId("btn_clear_aprs_contacts"));
         btnEditAprsSettings = rootView.findViewById(getId("btn_edit_aprs_settings"));
         teamColorText = rootView.findViewById(getId("text_team_color"));
         btnScan = rootView.findViewById(getId("btn_scan"));
@@ -4367,10 +4372,70 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnSendAprsBeacon != null) {
             btnSendAprsBeacon.setOnClickListener(v -> sendManualAprsBeacon());
         }
+        if (btnClearAprsContacts != null) {
+            btnClearAprsContacts.setOnClickListener(v -> clearAllAprsContacts());
+        }
         if (btnEditAprsSettings != null) {
             btnEditAprsSettings.setOnClickListener(v -> showSettingsDialog());
         }
         updateAprsSectionUi();
+    }
+
+    private void clearAllAprsContacts() {
+        MapView mv = getMapView();
+        if (mv == null || mv.getRootGroup() == null) {
+            return;
+        }
+        mv.post(() -> {
+            int removedMarkers = removeAprsItemsRecursive(mv.getRootGroup());
+            int removedTracks = removeAprsTracksRecursive(mv.getRootGroup());
+            String msg = "Cleared APRS contacts: " + removedMarkers;
+            if (removedTracks > 0) {
+                msg += " (tracks: " + removedTracks + ")";
+            }
+            appendLog(msg);
+            Toast.makeText(mv.getContext(), msg, Toast.LENGTH_SHORT).show();
+            updateContactCount();
+        });
+    }
+
+    private int removeAprsItemsRecursive(MapGroup group) {
+        if (group == null) {
+            return 0;
+        }
+        int removed = 0;
+        List<MapItem> items = new ArrayList<>(group.getItems());
+        for (MapItem item : items) {
+            if (item == null) {
+                continue;
+            }
+            if (CotBridge.isUvproAprsMarker(item)) {
+                group.removeItem(item);
+                removed++;
+            }
+        }
+        for (MapGroup child : group.getChildGroups()) {
+            removed += removeAprsItemsRecursive(child);
+        }
+        return removed;
+    }
+
+    private int removeAprsTracksRecursive(MapGroup group) {
+        if (group == null) {
+            return 0;
+        }
+        int removed = 0;
+        List<MapItem> items = new ArrayList<>(group.getItems());
+        for (MapItem item : items) {
+            if (item != null && item.getMetaBoolean(AprsTrackManager.META_UVPRO_APRS_TRACK, false)) {
+                group.removeItem(item);
+                removed++;
+            }
+        }
+        for (MapGroup child : group.getChildGroups()) {
+            removed += removeAprsTracksRecursive(child);
+        }
+        return removed;
     }
 
     private void updateAprsSectionUi() {

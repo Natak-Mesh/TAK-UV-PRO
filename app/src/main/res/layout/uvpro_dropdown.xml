@@ -1142,8 +1142,17 @@
                 style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="16dp"
+                android:layout_marginBottom="8dp"
                 android:text="Send APRS Beacon"
+                android:backgroundTint="#FF455A64" />
+
+            <Button
+                android:id="@+id/btn_clear_aprs_contacts"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="Clear all APRS contacts"
                 android:backgroundTint="#FF455A64" />
 
             <Button

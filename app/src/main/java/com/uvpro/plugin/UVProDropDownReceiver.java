@@ -10,6 +10,9 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
@@ -133,6 +136,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     };
     private static final String PREF_AUGMENT_GPS_FROM_MESHCORE =
             "uvpro_augment_gps_from_meshcore";
+    private static final String PREF_ATAK_WIFI_TRANSMIT =
+            "uvpro_atak_wifi_transmit";
 
     private final Context pluginContext;
     private final BtConnectionManager btManager;
@@ -210,6 +215,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private View rowAugmentGpsFromMeshcore;
     private Switch switchMeshTransmit;
     private Switch switchUvProTransmit;
+    private Switch switchWifiTransmit;
     private Switch switchMeshEnableGps;
 
     private TextView favoritesLabel;
@@ -292,6 +298,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private boolean pendingOpenToChannelControl = false;
     private boolean meshConnected = false;
     private boolean meshTransmitEnabled = false;
+    private boolean wifiTransmitEnabled = true;
     private boolean suppressTransportSwitchCallbacks = false;
     private Boolean meshGpsEnabledState = null;
     private boolean meshGpsEnableRequested = false;
@@ -534,6 +541,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 stopMeshConnectButtonPulse(true);
             }
         }
+        wifiTransmitEnabled = isWifiTransmitPreferenceEnabled(getMapView().getContext());
         // Apply connection-priority transmit defaults on open:
         // UV-PRO if connected, otherwise MeshCore when mesh is connected.
         applyPreferredTransmitModeForConnectionState(false);
@@ -644,6 +652,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         switchDigitalEdit = rootView.findViewById(getId("switch_digital_edit"));
         switchMeshTransmit = rootView.findViewById(getId("switch_mesh_transmit"));
         switchUvProTransmit = rootView.findViewById(getId("switch_uvpro_transmit"));
+        switchWifiTransmit = rootView.findViewById(getId("switch_wifi_transmit"));
         switchMeshEnableGps = rootView.findViewById(getId("switch_mesh_enable_gps"));
         switchAugmentGpsFromMeshcore = rootView.findViewById(getId("switch_augment_gps_from_meshcore"));
         rowAugmentGpsFromMeshcore = rootView.findViewById(getId("row_augment_gps_from_meshcore"));
@@ -697,6 +706,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 } else if (switchMeshTransmit != null && !switchMeshTransmit.isChecked()) {
                     setTransmitMode(true);
                 }
+            });
+        }
+        if (switchWifiTransmit != null) {
+            switchWifiTransmit.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (suppressTransportSwitchCallbacks || !buttonView.isPressed()) {
+                    return;
+                }
+                setWifiTransmitEnabled(isChecked, true);
             });
         }
         if (btnUpdateGpsFromRadio != null) {
@@ -1486,6 +1503,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
             if (switchUvProTransmit != null) {
                 switchUvProTransmit.setChecked(!meshTransmitEnabled);
             }
+            if (switchWifiTransmit != null) {
+                switchWifiTransmit.setChecked(wifiTransmitEnabled);
+            }
         } finally {
             suppressTransportSwitchCallbacks = false;
         }
@@ -1498,6 +1518,17 @@ public class UVProDropDownReceiver extends DropDownReceiver
         appendLog(useMesh
                 ? "Transmit mode: ATAK MeshCore"
                 : "Transmit mode: ATAK UV-PRO");
+    }
+
+    private void setWifiTransmitEnabled(boolean enabled, boolean logChange) {
+        wifiTransmitEnabled = enabled;
+        setWifiTransmitPreference(enabled);
+        syncTransmitSwitchesUi();
+        if (logChange) {
+            appendLog(enabled
+                    ? "Transmit mode: ATAK WiFi enabled"
+                    : "Transmit mode: ATAK WiFi disabled");
+        }
     }
 
     /**
@@ -1920,6 +1951,47 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
         prefs.edit().putBoolean(PREF_AUGMENT_GPS_FROM_MESHCORE, enabled).apply();
+    }
+
+    private boolean isWifiTransmitPreferenceEnabled(Context ctx) {
+        if (ctx == null) {
+            return true;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        return prefs.getBoolean(PREF_ATAK_WIFI_TRANSMIT, true);
+    }
+
+    private void setWifiTransmitPreference(boolean enabled) {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        prefs.edit().putBoolean(PREF_ATAK_WIFI_TRANSMIT, enabled).apply();
+    }
+
+    private boolean isWifiConnected() {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return false;
+        }
+        try {
+            ConnectivityManager cm =
+                    (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) {
+                return false;
+            }
+            Network active = cm.getActiveNetwork();
+            if (active == null) {
+                return false;
+            }
+            NetworkCapabilities caps = cm.getNetworkCapabilities(active);
+            return caps != null
+                    && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                    && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private void scheduleMeshGpsAugmentTick() {
@@ -4229,7 +4301,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         BtConnectionManager activeTx = resolveActiveTransmitManager();
         appendLog("Beacon TX route: mode=" + (meshTransmitEnabled ? "mesh" : "uvpro")
                 + " meshConnected=" + (meshBtManager != null && meshBtManager.isConnected())
-                + " uvproConnected=" + (btManager != null && btManager.isConnected()));
+                + " uvproConnected=" + (btManager != null && btManager.isConnected())
+                + " wifiEnabled=" + wifiTransmitEnabled
+                + " wifiConnected=" + isWifiConnected());
         if (cotBridge != null && activeTx != null && activeTx.isConnected()) {
             Context ctx = getMapView().getContext();
             if (SettingsFragment.isAprsDisableAtakTraffic(ctx)) {
@@ -4396,6 +4470,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private void sendPing() {
         BtConnectionManager activeTx = resolveActiveTransmitManager();
+        appendLog("Ping TX route: mode=" + (meshTransmitEnabled ? "mesh" : "uvpro")
+                + " wifiEnabled=" + wifiTransmitEnabled
+                + " wifiConnected=" + isWifiConnected());
         if (cotBridge != null && activeTx != null && activeTx.isConnected()) {
             String callsign = MapView.getMapView().getSelfMarker().getMetaString("callsign","UNKNOWN");
             try {

@@ -33,6 +33,7 @@ public final class AprsSymbolCatalog {
             new Entry('/', 'I', "TCP/IP"),
             new Entry('/', '_', "Weather station"),
             new Entry('/', 'W', "NWS site"),
+            new Entry('M', '>', "MeshCore"),
             new Entry('\\', '>', "Overlay / car"),
             new Entry('\\', 'k', "Overlay / truck"),
             new Entry('\\', 'b', "Overlay / bike"),

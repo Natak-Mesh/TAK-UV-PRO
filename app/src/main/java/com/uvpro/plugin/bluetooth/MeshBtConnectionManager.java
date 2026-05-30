@@ -24,9 +24,11 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.ParcelUuid;
 import android.util.Base64;
 import android.util.Log;
+import android.widget.Toast;
 
 import com.uvpro.plugin.protocol.PacketRouter;
 
@@ -85,6 +87,10 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private static final byte RESP_CHANNEL_DATA_RECV = 0x1B;
     private static final byte RESP_NO_MORE_MSGS = 0x0A;
     private static final byte PUSH_MESSAGES_WAITING = (byte) 0x83;
+    private static final byte PUSH_CODE_ADVERT = (byte) 0x80;
+    private static final byte PUSH_CODE_NEW_ADVERT = (byte) 0x8A;
+    private static final byte RESP_CODE_CONTACT = 0x03;
+    private static final int ADV_TYPE_REPEATER = 0x02;
 
     private static final int MAX_MESH_MESSAGE_LEN = 130;
     private static final int MAX_RAW_AX25_CHUNK = 57;
@@ -123,6 +129,9 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<MeshStateListener> meshStateListeners =
             new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<RepeaterAdvertListener> repeaterAdvertListeners =
+            new CopyOnWriteArrayList<>();
+    private final Map<String, Long> repeaterToastDedupByPubKeyTs = new ConcurrentHashMap<>();
 
     private final Map<Integer, ChunkAccumulator> chunkBuffers = new ConcurrentHashMap<>();
     private final ArrayDeque<byte[]> writeQueue = new ArrayDeque<>();
@@ -193,6 +202,42 @@ public class MeshBtConnectionManager extends BtConnectionManager {
                 return false;
             }
             return !(Math.abs(latitude) < 0.000001 && Math.abs(longitude) < 0.000001);
+        }
+    }
+
+    public interface RepeaterAdvertListener {
+        void onRepeaterAdvert(RepeaterAdvert advert);
+    }
+
+    public static final class RepeaterAdvert {
+        public final String pubKeyHex;
+        public final String name;
+        public final long advertTimestampSec;
+        public final double latitude;
+        public final double longitude;
+        public final boolean hasPosition;
+
+        public RepeaterAdvert(String pubKeyHex,
+                              String name,
+                              long advertTimestampSec,
+                              double latitude,
+                              double longitude,
+                              boolean hasPosition) {
+            this.pubKeyHex = pubKeyHex;
+            this.name = name;
+            this.advertTimestampSec = advertTimestampSec;
+            this.latitude = latitude;
+            this.longitude = longitude;
+            this.hasPosition = hasPosition;
+        }
+
+        public boolean hasValidPosition() {
+            return hasPosition
+                    && !Double.isNaN(latitude)
+                    && !Double.isNaN(longitude)
+                    && latitude >= -90.0 && latitude <= 90.0
+                    && longitude >= -180.0 && longitude <= 180.0
+                    && !(Math.abs(latitude) < 0.000001 && Math.abs(longitude) < 0.000001);
         }
     }
 
@@ -569,6 +614,16 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         meshStateListeners.remove(listener);
     }
 
+    public void addRepeaterAdvertListener(RepeaterAdvertListener listener) {
+        if (listener != null) {
+            repeaterAdvertListeners.addIfAbsent(listener);
+        }
+    }
+
+    public void removeRepeaterAdvertListener(RepeaterAdvertListener listener) {
+        repeaterAdvertListeners.remove(listener);
+    }
+
     public Boolean getMeshGpsEnabled() {
         return meshGpsEnabled;
     }
@@ -646,6 +701,15 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         for (MeshStateListener l : meshStateListeners) {
             try {
                 l.onMeshSelfLocationUpdated(fix);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void notifyRepeaterAdvert(RepeaterAdvert advert) {
+        for (RepeaterAdvertListener l : repeaterAdvertListeners) {
+            try {
+                l.onRepeaterAdvert(advert);
             } catch (Exception ignored) {
             }
         }
@@ -942,6 +1006,18 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             enqueueCommand(buildGetNextMessageCommand());
             return;
         }
+        if (t == PUSH_CODE_NEW_ADVERT || t == PUSH_CODE_ADVERT || t == RESP_CODE_CONTACT) {
+            RepeaterAdvert advert = parseRepeaterAdvert(pkt);
+            if (advert != null) {
+                if (t == PUSH_CODE_NEW_ADVERT) {
+                    maybeToastRepeaterDiscovery(advert);
+                }
+                notifyRepeaterAdvert(advert);
+            }
+            if (t == PUSH_CODE_NEW_ADVERT || t == PUSH_CODE_ADVERT) {
+                return;
+            }
+        }
 
         String message = null;
         if (t == RESP_CHANNEL_MSG) {
@@ -960,6 +1036,77 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             }
             enqueueCommand(buildGetNextMessageCommand());
         }
+    }
+
+    private RepeaterAdvert parseRepeaterAdvert(byte[] pkt) {
+        if (pkt == null || pkt.length < 148) {
+            return null;
+        }
+        try {
+            int type = pkt[33] & 0xFF;
+            if (type != ADV_TYPE_REPEATER) {
+                return null;
+            }
+            String pubKeyHex = bytesToHex(pkt, 1, 32);
+            if (pubKeyHex.isEmpty()) {
+                return null;
+            }
+
+            String rawName = new String(pkt, 100, 32, StandardCharsets.UTF_8);
+            int nul = rawName.indexOf('\0');
+            String name = (nul >= 0 ? rawName.substring(0, nul) : rawName).trim();
+            if (name.isEmpty()) {
+                name = "Mesh Repeater";
+            }
+
+            ByteBuffer bb = ByteBuffer.wrap(pkt).order(ByteOrder.LITTLE_ENDIAN);
+            long tsSec = ((long) bb.getInt(132)) & 0xFFFFFFFFL;
+            int latE6 = bb.getInt(136);
+            int lonE6 = bb.getInt(140);
+            double lat = latE6 / 1_000_000.0;
+            double lon = lonE6 / 1_000_000.0;
+            boolean hasPosition = !(latE6 == 0 && lonE6 == 0);
+            return new RepeaterAdvert(pubKeyHex, name, tsSec, lat, lon, hasPosition);
+        } catch (Exception e) {
+            Log.w(TAG, "Repeater advert parse failed", e);
+            return null;
+        }
+    }
+
+    private void maybeToastRepeaterDiscovery(RepeaterAdvert advert) {
+        if (advert == null || context == null) {
+            return;
+        }
+        String dedupKey = advert.pubKeyHex + ":" + advert.advertTimestampSec;
+        Long previous = repeaterToastDedupByPubKeyTs.putIfAbsent(dedupKey, advert.advertTimestampSec);
+        if (previous != null) {
+            return;
+        }
+        Handler main = new Handler(Looper.getMainLooper());
+        main.post(() -> {
+            try {
+                String text = advert.hasValidPosition()
+                        ? "Repeater discovered: " + advert.name + " (position)"
+                        : "Repeater discovered: " + advert.name;
+                Toast.makeText(context, text, Toast.LENGTH_SHORT).show();
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
+    private static String bytesToHex(byte[] src, int offset, int len) {
+        if (src == null || len <= 0 || offset < 0 || offset + len > src.length) {
+            return "";
+        }
+        char[] hex = "0123456789abcdef".toCharArray();
+        char[] out = new char[len * 2];
+        int j = 0;
+        for (int i = offset; i < offset + len; i++) {
+            int v = src[i] & 0xFF;
+            out[j++] = hex[v >>> 4];
+            out[j++] = hex[v & 0x0F];
+        }
+        return new String(out);
     }
 
     private void logSelfInfo(byte[] pkt) {

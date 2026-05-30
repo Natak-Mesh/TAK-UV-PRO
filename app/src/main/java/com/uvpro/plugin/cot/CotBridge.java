@@ -820,6 +820,18 @@ public class CotBridge {
                 senderTeamFromPeer, null, null, null, null, mapUidOverride);
     }
 
+    /** Position inject with explicit map UID and custom icon symbol mapping. */
+    public void injectPositionCotAtMapUid(String callsign, double lat, double lon,
+                                          double alt, double speed, double course,
+                                          String senderTeamFromPeer,
+                                          Character aprsSymbolTable,
+                                          Character aprsSymbolCode,
+                                          String remarksInner,
+                                          String mapUidOverride) {
+        injectPositionCot(callsign, lat, lon, alt, speed, course,
+                senderTeamFromPeer, null, aprsSymbolTable, aprsSymbolCode, remarksInner, mapUidOverride);
+    }
+
     public void injectPositionCot(String callsign, double lat, double lon,
                                   double alt, double speed, double course,
                                   String senderTeamFromPeer, String cotTypeOverride) {

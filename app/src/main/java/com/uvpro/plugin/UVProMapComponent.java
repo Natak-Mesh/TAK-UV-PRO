@@ -131,6 +131,7 @@ public class UVProMapComponent extends DropDownMapComponent {
     private AprsTrackManager aprsTrackManager;
     private EncryptionManager encryptionManager;
     private UVProRadioControlManager radioControlManager;
+    private MeshBtConnectionManager.RepeaterAdvertListener repeaterAdvertListener;
     private MapEventDispatcher.MapEventDispatchListener mapItemClickListener;
     private Handler beaconHandler;
     private Runnable beaconRunnable;
@@ -263,6 +264,27 @@ try {
         // 5. BtConnectionManager (needs context + PacketRouter)
         btConnectionManager = new BtConnectionManager(context, packetRouter);
         meshBtConnectionManager = new MeshBtConnectionManager(context, packetRouter);
+        repeaterAdvertListener = advert -> {
+            if (advert == null || cotBridge == null || !advert.hasValidPosition()) {
+                return;
+            }
+            String display = sanitizeRepeaterDisplayName(advert.name);
+            String mapUid = "MESHCORE-RPTR-" + sanitizeRepeaterUidSuffix(advert.pubKeyHex);
+            String remarks = "MeshCore repeater advert";
+            cotBridge.injectPositionCotAtMapUid(
+                    display,
+                    advert.latitude,
+                    advert.longitude,
+                    0.0,
+                    -1.0,
+                    -1.0,
+                    "Cyan",
+                    'M',
+                    '>',
+                    remarks,
+                    mapUid);
+        };
+        meshBtConnectionManager.addRepeaterAdvertListener(repeaterAdvertListener);
         radioControlManager = new UVProRadioControlManager(btConnectionManager);
         radioControlManager.start();
 
@@ -542,9 +564,13 @@ try {
             btConnectionManager = null;
         }
         if (meshBtConnectionManager != null) {
+            if (repeaterAdvertListener != null) {
+                meshBtConnectionManager.removeRepeaterAdvertListener(repeaterAdvertListener);
+            }
             meshBtConnectionManager.disconnect();
             meshBtConnectionManager = null;
         }
+        repeaterAdvertListener = null;
         if (radioControlManager != null) {
             radioControlManager.stop();
             radioControlManager = null;
@@ -711,6 +737,27 @@ try {
         if (c == Float.class) return float.class;
         if (c == Double.class) return double.class;
         return null;
+    }
+
+    private static String sanitizeRepeaterDisplayName(String name) {
+        String raw = name != null ? name.trim() : "";
+        if (raw.isEmpty()) {
+            return "MESH_REPEATER";
+        }
+        String upper = raw.toUpperCase(Locale.US);
+        String normalized = upper.replaceAll("[^A-Z0-9_\\- ]", "_").trim();
+        if (normalized.isEmpty()) {
+            return "MESH_REPEATER";
+        }
+        return normalized;
+    }
+
+    private static String sanitizeRepeaterUidSuffix(String pubKeyHex) {
+        String raw = pubKeyHex != null ? pubKeyHex.trim().toUpperCase(Locale.US) : "";
+        if (raw.isEmpty()) {
+            return "UNKNOWN";
+        }
+        return raw.replaceAll("[^A-F0-9]", "");
     }
 
     /** Formal parameter types must accept the given actual argument types (invoke side). */

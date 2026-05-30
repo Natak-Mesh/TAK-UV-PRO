@@ -283,6 +283,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private ValueAnimator scanConnectPulseAnimator;
     private GradientDrawable scanConnectPulseDrawable;
     private final Runnable deferredScanConnectPulseStart = this::startScanConnectButtonPulse;
+    private final Runnable deferredMeshScanPulseStart = this::startMeshScanButtonPulse;
     private ValueAnimator meshConnectPulseAnimator;
     private GradientDrawable meshConnectPulseDrawable;
     private ValueAnimator initialGroupSetupPulseAnimator;
@@ -427,7 +428,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
                 @Override
                 public void onScanComplete() {
-                    getMapView().post(UVProDropDownReceiver.this::showMeshDevicePicker);
+                    getMapView().post(() -> {
+                        stopMeshConnectButtonPulse(true);
+                        showMeshDevicePicker();
+                    });
                 }
             });
             meshBtManager.addMeshStateListener(new MeshBtConnectionManager.MeshStateListener() {
@@ -1102,6 +1106,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         refreshFavoriteStrip();
         updateMeshScanButtonText();
         appendLog("Scanning for MeshCore devices...");
+        requestMeshScanButtonPulse();
         meshBtManager.startScan();
     }
 
@@ -4041,6 +4046,44 @@ public class UVProDropDownReceiver extends DropDownReceiver
         stopMeshConnectButtonPulse(true);
     }
 
+    private void requestMeshScanButtonPulse() {
+        if (getMapView() == null) {
+            startMeshScanButtonPulse();
+            return;
+        }
+        // Start after press-state is released so pulse persists until device picker appears.
+        getMapView().removeCallbacks(deferredMeshScanPulseStart);
+        getMapView().postDelayed(deferredMeshScanPulseStart, 60L);
+    }
+
+    private void startMeshScanButtonPulse() {
+        if (btnMeshScan == null) {
+            return;
+        }
+        stopMeshConnectButtonPulse(false);
+        btnMeshScan.setBackgroundTintList(null);
+        meshConnectPulseDrawable = buildVfoButtonBackground(
+                COLOR_PILL_BUTTON_PRIMARY, 0x00FFEB3B, EDIT_SELECTION_STROKE_DP);
+        btnMeshScan.setBackground(meshConnectPulseDrawable);
+        meshConnectPulseAnimator = ValueAnimator.ofObject(
+                new ArgbEvaluator(),
+                0x11FFEB3B,
+                0xFFFFEB3B);
+        meshConnectPulseAnimator.setDuration(260L);
+        meshConnectPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        meshConnectPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
+        meshConnectPulseAnimator.addUpdateListener(animation -> {
+            if (meshConnectPulseDrawable == null || btnMeshScan == null) {
+                return;
+            }
+            int color = (Integer) animation.getAnimatedValue();
+            meshConnectPulseDrawable.setStroke(
+                    dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
+            btnMeshScan.invalidate();
+        });
+        meshConnectPulseAnimator.start();
+    }
+
     private void startScanConnectButtonPulse() {
         if (btnScan == null) {
             return;
@@ -4085,6 +4128,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void stopMeshConnectButtonPulse(boolean restoreBackground) {
+        if (getMapView() != null) {
+            getMapView().removeCallbacks(deferredMeshScanPulseStart);
+        }
         ValueAnimator animator = meshConnectPulseAnimator;
         meshConnectPulseAnimator = null;
         if (animator != null) {

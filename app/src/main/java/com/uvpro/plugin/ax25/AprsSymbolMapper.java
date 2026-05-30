@@ -7,7 +7,7 @@ import java.util.Locale;
  */
 public final class AprsSymbolMapper {
 
-    public static final String ICONSET_UID = "b3e4a5c6-d7e8-4f90-a1b2-c3d4e5f6a7b8";
+    public static final String ICONSET_UID = "c4a2b9d1-3e77-4e94-8a5f-2dd1e0a7c6ab";
 
     private static final String OVERLAY_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -17,6 +17,10 @@ public final class AprsSymbolMapper {
     public static String iconsetPath(char symbolTable, char symbolCode) {
         if (symbolCode < '!' || symbolCode > '~') {
             return null;
+        }
+        // Custom meshcore entry for plugin-specific icon selection.
+        if (symbolTable == 'M' && symbolCode == '>') {
+            return ICONSET_UID + "/meshcore.png";
         }
         String codeHex = String.format(Locale.US, "%02x", (int) symbolCode);
 

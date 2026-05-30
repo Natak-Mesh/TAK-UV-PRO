@@ -77,6 +77,10 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 - MeshCore connect-button pulse animation was disabled so auto-connect attempts no longer flash the button.
 - Added persistent agent rule `.cursor/rules/transport-agnostic-routing.mdc` requiring all routing/message/CoT fixes to be transport-agnostic and verified on both UV-PRO and MeshCore paths.
 
+### 2026-05-29 Progress Update (v1.9.52)
+
+- **Wi‑Fi contact keepalive (Wi‑Fi only):** Unicast mini-SA keepalives sent via `dispatchToContact()` are tagged in CoT remarks and excluded from RF relay in `CotBridge` PreSend, CommsLogger broadcast fallback, and contact-targeted map relay — so reachability probes stay on Wi‑Fi/TAK and do not go out over UV‑PRO radio.
+
 ### 2026-05-29 Progress Update (v1.9.51)
 
 - **Multi-transport contacts (Wi‑Fi + RF):** When a peer is reachable on both TAK network and radio, the plugin keeps **one** ATAK contact per operator. Wi‑Fi/TAK contacts use native `ANDROID-*` hash UIDs; RF may introduce compressed wire callsigns or synthetic `ANDROID-<CALLSIGN>` UIDs. On startup and radio connect, `collapseAllCallsignAliasDuplicates()` merges aliases (`JESTER_25` / `JSTR25`, `SMOKEY_15` / `SMKY15`) and prefers the native Wi‑Fi contact when present so chat, map markers, and send actions stay unified.

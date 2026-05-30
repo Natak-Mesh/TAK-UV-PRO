@@ -41,6 +41,9 @@ public class CotBuilder {
 
     private static final String TAG = "UVPro.CotBuilder";
 
+    /** {@link com.uvpro.plugin.network.WifiContactKeepalive} marks remarks with this source. */
+    public static final String WIFI_KEEPALIVE_REMARKS_SOURCE = "UV-PRO WiFi keepalive";
+
     /** Stale interval for radio contacts: 5 minutes */
     private static final long STALE_MILLIS = 5 * 60 * 1000L;
 
@@ -650,11 +653,27 @@ public class CotBuilder {
 
         CotDetail remarks = detail.getFirstChildByName(0, "remarks");
         if (remarks != null) {
-            remarks.setAttribute("source", "UV-PRO WiFi keepalive");
+            remarks.setAttribute("source", WIFI_KEEPALIVE_REMARKS_SOURCE);
             remarks.setInnerText("");
         }
 
         return event;
+    }
+
+    /** True for unicast Wi‑Fi keepalive mini-SA — must never be relayed over RF. */
+    public static boolean isWifiKeepaliveCot(CotEvent event) {
+        if (event == null || event.getDetail() == null) {
+            return false;
+        }
+        try {
+            CotDetail remarks = event.getDetail().getFirstChildByName(0, "remarks");
+            if (remarks == null) {
+                return false;
+            }
+            return WIFI_KEEPALIVE_REMARKS_SOURCE.equals(remarks.getAttribute("source"));
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     /**

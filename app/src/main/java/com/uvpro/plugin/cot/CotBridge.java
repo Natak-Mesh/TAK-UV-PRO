@@ -1856,6 +1856,10 @@ public class CotBridge {
             if ("b-t-f-r".equals(type) || "b-t-f-d".equals(type)) {
                 return;
             }
+            // Wi‑Fi unicast keepalive SA is Wi‑Fi-only (dispatchToContact); never RF-relay.
+            if (CotBuilder.isWifiKeepaliveCot(event)) {
+                return;
+            }
             boolean btConnected = btManager != null && btManager.isConnected();
 
             // Log GeoChat BEFORE BT gate — previous bug: early return hid whether PreSend
@@ -1938,6 +1942,9 @@ public class CotBridge {
             }
 
             if (isRelayableMapCotType(type) && shouldRelayMapCotToContactUids(toUIDs)) {
+                if (isSelfPliBeacon(event)) {
+                    return;
+                }
                 Log.d(TAG, "Relaying contact-targeted map CoT to radio: type=" + type
                         + " uid=" + event.getUID()
                         + " toUIDs=" + java.util.Arrays.toString(toUIDs));
@@ -2237,7 +2244,8 @@ public class CotBridge {
      */
     private void maybeRelayMapCotFromCommsLogger(CotEvent event, String dest) {
         if (btManager == null || !btManager.isConnected()) return;
-        if (event == null || dest == null || !"broadcast".equalsIgnoreCase(dest.trim())) return;
+        if (event == null || CotBuilder.isWifiKeepaliveCot(event)) return;
+        if (dest == null || !"broadcast".equalsIgnoreCase(dest.trim())) return;
         if (!shouldRelayBroadcastMapCot(event, null)) return;
         String uid = event.getUID();
         if (uid != null && shouldSkipOutboundRelayWasInboundInject(uid)) return;

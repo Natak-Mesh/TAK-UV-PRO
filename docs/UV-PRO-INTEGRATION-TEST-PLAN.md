@@ -1,8 +1,8 @@
-# UV-PRO v1.9.51 — Integration & Field Test Plan
+# UV-PRO v1.9.52 — Integration & Field Test Plan
 
 > **Purpose:** Single reference for multi-transport integration work (WiFi, UV-PRO RF, MeshCore).  
-> **Last updated:** 2026-05-30  
-> **Plugin:** UV-PRO **1.9.51** · ATAK CIV **5.5.1.8** · serverless multicast/P2P (no TAK server)  
+> **Last updated:** 2026-05-30 (dual-transport code review + contact/ACK audit)  
+> **Plugin:** UV-PRO **1.9.52** · ATAK CIV **5.5.1.8** · serverless multicast/P2P (no TAK server)  
 > **Repo:** `/home/paul/Documents/ATAK/Plugins/Darksteal/`  
 > **Rule:** Transport-agnostic fixes — validate on **both** UV-PRO and MeshCore (`.cursor/rules/transport-agnostic-routing.mdc`).
 
@@ -25,7 +25,9 @@ Update this file as phases complete. Agents: **edit checkboxes here** instead of
 
 ## Current status (2026-05-30)
 
-**Committed baseline:** post-`bc0cc3a` bridge/uplink/merge work + **GeoChat reachability UI removed**.
+**Committed baseline (Darksteal `main`, pushed):** `70a39ea` map broadcast relay · `6c7cba4` ping toasts · `15b108e` RF chat ACK 5s delay · prior `bc0cc3a` bridge/uplink/merge · GeoChat reachability UI removed.
+
+**MeshCore standalone (`TAK-MESHCORE` v1.3.1 `eec5a9e`):** same mesh fixes ported + Send Ping button.
 
 | Area | Status | Notes |
 |------|--------|-------|
@@ -37,10 +39,18 @@ Update this file as phases complete. Agents: **edit checkboxes here** instead of
 | GeoChat reachability UI (red X) | 🚫 | **Removed 2026-05-30** — all contacts use native chat bubble; delivery not guaranteed cross-transport |
 | Reachability backend (SA relay filter) | 🔧 | `ContactReachability.shouldSaRelayNetworkSa()` still active |
 | WiFi contact keepalive | 🔧 | 60s unicast SA — not log-verified |
-| MeshCore parity | 🔧 | Transport up; reachability hook rolled back with UI |
-| Outbound exclusive routing (P1) | ⬜ | Not started |
+| **Map broadcast relay (mesh-only)** | ✅ | `70a39ea` — broad 2525 types (`a-u-G`, etc.), `ITEM_PERSIST`/`ITEM_SHARED`, CommsLogger fallback, `sendable` refresh on connect |
+| **Transit DM ACK gating (bridge)** | ✅ | J25 skips DELIVERED for non-local DMs; log-verified SMOKEY→J15 |
+| **RF GeoChat ACK (delivered + read)** | ✅ | 5s TX delay `15b108e`; SMOKEY↔J15 both ticks after retest |
+| **Ping discovery toasts** | 🔧 | Send/receive/reply toasts in code; slotted reply window — retest on 3-node mesh |
+| MeshCore transport (UV-PRO plugin) | 🔧 | Mesh path active in mesh-only fleet tests; toggle matrix not re-run |
+| MeshCore standalone plugin | ✅ | v1.3.1 parity commit pushed to `TAK-MESHCORE` |
+| **Dual transport (UV-PRO + Mesh)** | ⚠️ | Shared `PacketRouter`; TX via one `btManager` — **known races** (see Phase 8) |
+| Outbound exclusive routing (P1) | 🔧 | Toggle UI exists; beacon timer can override user TX choice |
 
-**Bridge settings (J25 only, for SMKY ↔ J15 path):** SA Relay **ON**, RF → TAK Uplink **ON**.
+**Target operating mode (next field phase):** UV-PRO **and** MeshCore **both connected**, toggling active TX path for redundancy — WiFi secondary.
+
+**Bridge settings (J25 only, for SMKY ↔ J15 path):** SA Relay **ON**, RF → TAK Uplink **ON** *(not exercised during mesh-only session)*.
 
 **Operator policy:** `adb install -r` to reload plugin; restart ATAK only when explicitly requested.
 
@@ -54,7 +64,7 @@ Update this file as phases complete. Agents: **edit checkboxes here** instead of
 | **SMOKEY_15** | `ZT4229JR78` | RF-only (WiFi off) |
 | **JESTER_15** | `ZA223DT6J9` | WiFi-only (radio off) |
 
-**Deploy:** `adb -s <serial> install -r app/build/outputs/apk/civ/debug/ATAK-Plugin-UVPro-1.9.51-*-civ-debug.apk`  
+**Deploy:** `adb -s <serial> install -r app/build/outputs/apk/civ/debug/ATAK-Plugin-UVPro-1.9.52-*-civ-debug.apk`  
 **Restart ATAK:** `adb shell am force-stop com.atakmap.app.civ && adb shell monkey -p com.atakmap.app.civ -c android.intent.category.LAUNCHER 1`
 
 **Log capture (example):**
@@ -89,13 +99,15 @@ adb -s ZA223F72K9 logcat -v threadtime | grep -iE 'UVPro\.(ChatBridge|CotBridge|
 | **1** | P0 contact merge + single map marker | ✅ | ⚠️ partial |
 | **2** | WiFi baseline (3-device, radios off) | — | ⚠️ partial |
 | **3** | SA Relay + RF→TAK bridge | 🔧 | 🧪 **next** |
-| **4** | Ghost contacts + transit DM fixes | 🔧 | 🧪 |
+| **4** | Ghost contacts + transit DM fixes | 🔧 | ⚠️ partial (4.1 ACK gating verified) |
 | **5** | Reachability UI (WiFi / RF / Mesh) | 🚫 | 🚫 shelved |
 | **5b** | Reachability backend (SA relay only) | 🔧 | 🧪 |
 | **6** | WiFi contact keepalive (60s unicast SA) | 🔧 | ⬜ |
-| **7** | MeshCore transport parity | 🔧 | ⬜ |
-| **8** | P1 outbound routing (toggle-driven send path) | ⬜ | ⬜ |
-| **9** | P2 polish (split mesh/UV-PRO registry, SA relay→mesh) | ⬜ | ⬜ |
+| **7** | MeshCore transport parity | 🔧 | ⚠️ partial (mesh-only) |
+| **7b** | Mesh-only RF reliability (broadcast, ACK, ping) | ✅ | ⚠️ partial |
+| **8** | Dual transport: UV-PRO + Mesh redundancy | 🔧 | 🧪 **next priority** |
+| **9** | P1 outbound routing polish + ACK/contact fixes | 🔧 | ⬜ |
+| **10** | P2 hardening (transport tags, dead code, registry split) | ⬜ | ⬜ |
 
 ---
 
@@ -192,7 +204,8 @@ adb -s ZA223F72K9 logcat -v threadtime | grep -iE 'UVPro\.(ChatBridge|CotBridge|
 
 ### Field verification
 
-- [ ] **4.1** SMKY→J15 DM via J25 bridge: J25 does **not** spawn `SMKY15` ghost
+- [x] **4.1** SMKY→J15 DM with J25 on mesh: J25 logs `Inbound DM ignored` + `Skipping DELIVERED ACK` — **no spurious bridge ACK** *(2026-05-30)*
+- [ ] **4.1b** J25 does **not** spawn `SMKY15` / abbreviated ghost contact row for transit DM
 - [ ] **4.2** J15→SMKY WiFi DM: J25 does **not** show/plugin-ingest conversation
 - [ ] **4.3** J15↔J25 RF DMs still work when intended
 - [ ] **4.4** After restart: orphan synthetics cleaned from contact list
@@ -267,47 +280,207 @@ adb -s ZA223F72K9 logcat -v threadtime | grep -iE 'UVPro\.(ChatBridge|CotBridge|
 
 ### Field verification
 
-- [ ] **7.1** Two devices MeshCore connected (WiFi/UV-PRO off to peer): chat + SA work
-- [ ] **7.2** Mesh disconnect → chat may fail silently (no reachability UI)
-- [ ] **7.3** Mesh reconnect → chat works after mesh SA/chat received
-- [ ] **7.4** DM, All Chat Rooms, contact-targeted CoT, broadcast CoT on Mesh
+- [x] **7.1** Three devices MeshCore connected, WiFi off: chat works SMKY↔J15 *(2026-05-30)*
+- [ ] **7.2** Mesh disconnect → chat fails visibly (toast / retry / failed state)
+- [ ] **7.3** Mesh reconnect → chat + ACK state recovers without restart
+- [ ] **7.4** DM, All Chat Rooms, contact-targeted CoT, broadcast CoT on Mesh *(DM ✅; broadcast CoT ✅ code path; All Chat Rooms / contact-targeted CoT not re-run)*
 - [ ] **7.5** UV-PRO + Mesh both connected: transmit toggle selects active manager
 
 ---
 
-## Phase 8 — P1: Outbound transport routing ⬜
+## Phase 7b — Mesh-only RF reliability ✅ / 🧪
 
-**Goal:** Send path follows connection toggles; no duplicate WiFi+RF sends.
+**Goal:** Reliable map-item broadcast, GeoChat ACKs, and ping feedback on lossy mesh (WiFi off, all nodes on MeshCore).
 
-- [ ] Wire **ATAK WiFi Transmit** toggle into outbound block/allow
-- [ ] Exclusive routing: WiFi **or** UV-PRO/Mesh per message when multiple paths up
-- [ ] Visible failure when no path (toast / failed send state)
-- [ ] Field matrix: all toggle combinations × {DM, All Chat Rooms, point CoT, broadcast CoT}
-- [ ] MeshCore parity for every routing change
+**Session setup:** J15, J25, SMOKEY — MeshCore connected, WiFi off.
+
+### Implementation (Darksteal `main`)
+
+- [x] Map broadcast relay — `isRelayableMapCotType()` (`a-u-`, `a-h-`, `a-n-`, …), PreSend + CommsLogger + `ITEM_PERSIST`/`ITEM_SHARED` (`70a39ea`)
+- [x] `markMapItemSendable()` / `refreshSendableMapItems()` on mesh connect
+- [x] Transit DM: `injectRadioMessage()` returns false when RF dest ≠ local; `PacketRouter` gates DELIVERED ACK
+- [x] RF chat ACK 5s delay (delivered + read) before TX — `ChatBridge.sendRadioChatAck()` (`15b108e`)
+- [x] Ping toasts — `PingReplyNotifier` + dropdown Send Ping (`6c7cba4`)
+- [x] Standalone **MeshCore ATAK plugin** v1.3.1 — same fixes + Send Ping (`TAK-MESHCORE` `eec5a9e`)
+
+### Field verification — done
+
+- [x] **7b.1** Drop point (e.g. `a-u-G`) → Broadcast reaches mesh peers when WiFi/TAK path is dead *(logs: `Relaying broadcast map CoT` after type fix)*
+- [x] **7b.2** SMOKEY→J15 DM: J15 injects message; J25 does **not** send spurious DELIVERED ACK
+- [x] **7b.3** SMOKEY→J15 DM: delivered + read ticks on sender after 5s ACK delay *(operator confirmed “perfect” post-restart)*
+
+### Field verification — still needed
+
+- [ ] **7b.4** All Chat Rooms over mesh (compact + full CoT if group sync)
+- [ ] **7b.5** Contact-targeted map CoT (point/route send-to-contact) over mesh
+- [ ] **7b.6** Ping: Send Ping toast → receive toast on peers → slotted reply toast on sender (3-node, full slot window)
+- [ ] **7b.7** Outbound DM retry watchdog — no DELIVERED within retry interval retransmits (log: `Retry watchdog` / `retransmitting`)
+- [ ] **7b.8** READ ACK only after opening conversation (not on notification alone)
+- [ ] **7b.9** Encrypted mesh chat + ACK path (if encryption enabled in settings)
+- [ ] **7b.10** Repeat 7b.2–7b.3 on **standalone MeshCore plugin** APK (not UV-PRO) — confirm parity
+
+**Logs to watch:** `UVPro.ChatBridge` — `Scheduling radio chat ACK`, `RF chat ACK apply`, `Skipping DELIVERED ACK`, `Inbound DM ignored`; `UVPro.CotBridge` — `Relaying broadcast map CoT`, `Shared map item broadcast relay`; `UVPro.PingReply` — ping sent/reply toasts.
+
+**Captured logs:** `test-logs/dm-ack-test-20260530-025853/` (pre-delay); post-fix retest logs not archived — capture on next run.
 
 ---
 
-## Phase 9 — P2: Polish & hardening ⬜
+## Code audit — contact, mapping, ACK (2026-05-30)
+
+Review focus: contacts + GeoChat receipts with **UV-PRO and Mesh both up**, toggling TX, WiFi secondary.
+
+### Architecture (as implemented)
+
+| Layer | Behavior |
+|-------|----------|
+| **RX** | One shared `PacketRouter` — both `BtConnectionManager` (UV-PRO) and `MeshBtConnectionManager` call `routeIncoming()` with **no transport tag** |
+| **TX** | One active manager on `CotBridge` / `ChatBridge` via `setBtManager()` — selected by dropdown `resolveActiveTransmitManager()` (`meshTransmitEnabled` + connection fallback) |
+| **Contacts** | One row per callsign goal via `collapseDuplicateContactsForCallsign`; RF registry in `btechContactUids` / `btechIdToUid` |
+| **ACK map** | `outboundWireMidToLocalLineUid`: wire `messageId` → sender GeoChat line UID for RF `TYPE_ACK` → `injectGeoChatReceipt` |
+
+### Confirmed bug / risk hypotheses (prioritize fixes in Phase 9)
+
+| ID | Severity | Area | Symptom | Code evidence |
+|----|----------|------|---------|---------------|
+| **DT-1** | **High** | Dual TX | User selects Mesh TX; periodic beacon or mesh connect handler resets bridges to **UV-PRO** | `UVProMapComponent.sendBeaconIfConnected` ~1881–1883; mesh connect ~311–316 uses `resolveBeaconTransportManager()` (UV wins when both up) |
+| **DT-2** | **High** | Dual TX | Manual **Send Beacon** may use stale `CotBridge.btManager` vs `resolveActiveTransmitManager()` | `sendManualBeacon` uses bridge manager; `sendPing` uses `activeTx` directly |
+| **DT-3** | **Med** | Dual RX | Same CoT/chat frame on **both** transports → possible double inject (fragment reassembly has no cross-transport dedupe after complete) | `PacketRouter` single reassembler; no `routeIncoming(..., transport)` |
+| **DT-4** | **Med** | ACK TX path | DELIVERED/READ ACK always leaves **active TX** manager, not the path that received the message | `sendRadioChatAck` → `ChatBridge.btManager`; peer may have sent on other link |
+| **ACK-1** | **Med** | ACK map | `outboundWireMidToLocalLineUid` **not removed** on successful DELIVERED/READ; only on retry exhaustion / dispose | `handleIncomingRadioChatAck` applies receipt but keeps map entry |
+| **ACK-2** | **Med** | ACK map | `normalizeLineUidForAck` may build line UID from **6-char wire room** (`SMKY15`) not peer `ANDROID-*` → ticks on wrong line | `sendChatOverRadio` passes `wireRoom` as room hint |
+| **ACK-3** | **Med** | READ ACK | **Duplicate READ** possible: `drainAndSendReadAcks` + `markmessageread` both call `sendRadioChatAck(READ)` | `ChatBridge` ~1898, ~2097 |
+| **ACK-4** | **Low** | READ ACK | READ not sent when conversation UID is **native WiFi keeper** not in `btechContactUids` | `drainAndSendReadAcks` requires `isBtechContactUid` |
+| **ACK-5** | **Low** | ACK defer | Heavy RF traffic → `shouldDeferRfChatAck` drops ACK after 24×400ms | log: `Chat ACK deferred too long; dropping` |
+| **CNT-1** | **Med** | Merge | `collapseDuplicateContactsForCallsign(from, syntheticUid)` +200 hint may prefer **abbreviated RF row** over native during inject | inject path ~347 |
+| **CNT-2** | **Med** | Merge | After merge, **RF relay / READ drain** may not see native keeper UID in `btechContactUids` | `registerMergedContact` skips opaque WiFi UIDs |
+| **OUT-1** | **Med** | Outbound | Same user send can hit **SEND_MESSAGE + PreSend + CommsLogger** → multiple wire mids / retries for one line | `handleOutgoingChat` vs PreSend; dedupe only 3s on `GeoChat.*` in compact relay |
+| **OUT-2** | **Med** | Dual path | Sender RF pending not cancelled when peer got message on **other transport** (WiFi or alternate RF) | `noteInboundGeoChatDelivered(wireMid=0)` on network path |
+| **GW-1** | **Med** | Gateway | `SEND_MESSAGE` gateway path may put full `ANDROID-*` in 6-byte wire room | `wrapGatewayMessage` + `rfRoom = toUid` in gateway branch |
+
+### Design intent vs gaps (UV-PRO + Mesh as redundant pair)
+
+**What works today:**
+
+- Shared bridges (`ChatBridge`, `CotBridge`, `PacketRouter`) — same code path regardless of active transport (`.cursor/rules/transport-agnostic-routing.mdc`)
+- Dropdown **Mesh transmit** / **UV-PRO transmit** toggles with fallback if preferred link down
+- Inbound chat dedupe (`isDuplicateInboundChatDelivery`) helps when same line arrives WiFi + RF
+- Transit DM gate prevents bridge ghost contacts / spurious DELIVERED ACK *(field verified mesh-only)*
+
+**Gaps for redundancy:**
+
+1. **No “send on both” or automatic failover TX** — exactly one active manager; no resend on alternate link if first fails
+2. **Beacon / connect handlers fight user TX choice** (DT-1)
+3. **No inbound transport tag** — cannot ACK on receive path or dedupe dual-RX intelligently
+4. **Retry watchdog is RF-only** — does not know peer got message via mesh while UV-PRO send pending (OUT-2)
+5. **`wifiTransmitEnabled` toggle is UI-only** — not wired to outbound block/allow
+
+### Suggested redundancy model (operator + future code)
+
+| Pattern | Operator action today | Ideal behavior (Phase 9+) |
+|---------|----------------------|---------------------------|
+| **Primary / backup** | Keep both connected; toggle TX to healthy link | Auto-failover TX on send failure; don’t reset TX on beacon tick |
+| **Split roles** | UV-PRO for voice/APRS/beacon; Mesh for chat/CoT | Role-based TX routing (chat→mesh, beacon→UV-PRO) |
+| **Dual hear, single speak** | Both RX on — acceptable duplicate hear if dedupe holds | Tag RX transport; suppress duplicate inject; ACK on **receive** transport |
+| **Confirmation** | Wait for delivered tick + logs | Correlate ACK map with line UID from `COT_PLACED`; clear map on success |
+| **Contact truth** | One callsign, one row | Merge keeper = chat thread UID; always register keeper in `btechContactUids` for RF READ/relay |
+
+---
+
+## Phase 8 — Dual transport: UV-PRO + Mesh redundancy 🧪 **NEXT PRIORITY**
+
+**Goal:** Validate and harden operating with **both** transports connected, toggling TX, using one as backup for the other. WiFi may be on but is not the focus.
+
+**Setup:** All three devices — UV-PRO radio connected **and** MeshCore BLE connected. WiFi optional.
+
+### Field verification — transport selection
+
+- [ ] **8.1** Both connected, default on open: UV-PRO TX selected (connection priority)
+- [ ] **8.2** User toggles **Mesh transmit** while UV-PRO still connected → chat/CoT/ping use mesh (log active manager / `sendKissFrame` path)
+- [ ] **8.3** Toggle back to UV-PRO TX → outbound uses UV-PRO without ATAK restart
+- [ ] **8.4** **Regression DT-1:** After 8.2, wait for periodic beacon (~smart beacon interval) — confirm TX manager **stays on mesh** (currently expected **FAIL** → documents bug)
+- [ ] **8.5** Disconnect mesh only → TX falls back to UV-PRO automatically
+- [ ] **8.6** Disconnect UV-PRO only → TX falls back to mesh automatically
+- [ ] **8.7** Manual Send Ping vs Send Beacon use **same** active transport (currently ping=activeTx, beacon=bridge — may **FAIL** DT-2)
+
+### Field verification — redundancy scenarios
+
+- [ ] **8.8** Send DM on UV-PRO TX; peer hears on UV-PRO → delivered tick on sender
+- [ ] **8.9** Send DM on Mesh TX; peer hears on mesh → delivered tick on sender
+- [ ] **8.10** Sender on mesh TX, peer only receiving on UV-PRO (or vice versa) — document delivery / tick behavior *(likely fail or one-way)*
+- [ ] **8.11** Toggle TX mid-conversation — new messages use new path; no duplicate contact rows
+- [ ] **8.12** Same DM not duplicated in UI when both links hear the frame *(dedupe)*
+
+### Field verification — contacts + ACK under dual transport
+
+- [ ] **8.13** One contact row per callsign with both transports up
+- [ ] **8.14** Delivered + read ticks after send on **each** TX path separately
+- [ ] **8.15** READ ACK not doubled on open chat *(watch for duplicate `Scheduling radio chat ACK kind=2`)*
+- [ ] **8.16** No “Message Not Delivered” when message actually arrived on alternate transport *(OUT-2)*
+
+**Logs:** `UVPro.UI` (TX route), `UVPro.ChatBridge` (ACK map, retry), `UVPro.CotBridge` (PreSend), `UVPro.Router` (chat mid), `UVPro.MeshBLE` + UV-PRO BT tags.
+
+---
+
+## Phase 9 — P1 fixes: routing, ACK, contacts ⬜
+
+**Goal:** Close audit items needed for reliable UV-PRO ↔ Mesh marriage.
+
+### Code fixes (proposed — not yet implemented)
+
+- [ ] **9.1** DT-1: Beacon timer + mesh connect use `resolveActiveTransmitManager()`, not `resolveBeaconTransportManager()`, for `setBtManager`
+- [ ] **9.2** DT-2: Align `sendManualBeacon` with `resolveActiveTransmitManager()` (match `sendPing`)
+- [ ] **9.3** DT-4: Remember inbound transport per wire mid; send ACK on receive manager (or both if redundant ACK desired)
+- [ ] **9.4** ACK-1: Remove `outboundWireMidToLocalLineUid` entry after successful receipt apply
+- [ ] **9.5** ACK-2: Prefer `COT_PLACED` / full GeoChat line UID for ACK map; avoid wire-room-only normalization
+- [ ] **9.6** ACK-3: Dedupe READ ACK scheduling (single path per mid)
+- [ ] **9.7** CNT-2: Register merged **keeper** UID in `btechContactUids` for READ drain + relay
+- [ ] **9.8** OUT-1: Extend outbound dedupe to `SEND_MESSAGE` path; widen beyond `GeoChat.*` prefix
+- [ ] **9.9** OUT-2: Cancel `pendingOutboundChats` when inbound dedupe proves peer already has line (any transport)
+- [ ] **9.10** Optional: auto-retry failed send on **alternate** connected transport once
+
+### Field verification (after fixes)
+
+- [ ] Re-run Phase 8 matrix
+- [ ] Re-run Phase 7b ACK tests on dual-transport setup
+
+---
+
+## Phase 10 — P2: Polish & hardening ⬜
 
 - [ ] Remove dead reachability UI code (`PositionOnlyConnector`, icons, prefs)
-- [ ] Split `meshContactUids` vs `uvProContactUids`
-- [ ] SA Relay → Mesh path policy
-- [ ] Faster bridge discovery (shorter keepalive interval, bootstrap on connect)
+- [ ] Split `meshContactUids` vs `uvProContactUids` (optional — only if transport-specific policy needed)
+- [ ] Inbound transport tagging on `PacketRouter.routeIncoming(..., Transport)`
+- [ ] Dual-RX dedupe after fragment reassembly complete
+- [ ] Wire `wifiTransmitEnabled` into outbound policy (when WiFi phase resumes)
+- [ ] SA Relay → Mesh path policy when mesh is primary TX
 - [ ] Regression suite documented after each release
+
+---
+
+## Phase 8 (legacy P1 label retired)
+
+*Former “Phase 8 — P1 outbound routing” merged into Phase 8 (dual transport test) + Phase 9 (fixes) above.*
+
+---
+
+## Phase 9 (legacy P2 label retired)
+
+*Former “Phase 9 — P2 polish” → **Phase 10** above.*
 
 ---
 
 ## Recommended test order (2026-05-30)
 
-1. **Deploy** latest debug APK → restart ATAK on all three  
-2. **Phase 3** SA Relay + RF→TAK uplink (J25 bridge settings ON) — **priority**  
-3. **Phase 5b** confirm WiFi-only SA not relayed to RF  
-4. **Phase 4** transit DM / ghost regression  
-5. **Phase 2** WiFi baseline smoke (J25+J15)  
-6. **Phase 1** merge spot-checks if duplicate markers seen  
-7. **Phase 6** keepalive log verification  
-8. **Phase 7** when Mesh hardware available  
-9. **Phase 8–9** after P1 implementation  
+**Completed (mesh-only):** Phase 7b.1–7b.3 ✅
+
+**Next priority — dual transport (UV-PRO + Mesh):**
+
+1. **Deploy** latest `main` (`15b108e`+) → restart ATAK; connect **both** UV-PRO and Mesh on all devices  
+2. **Phase 8** full matrix (transport toggles, redundancy, ACK/contacts) — **documents known DT-1/DT-2 failures**  
+3. **Phase 7b** remainder (7b.4–7b.10) on dual-transport setup  
+4. **Phase 9** implement + verify audit fixes  
+5. **Phase 3** SA Relay + RF→TAK when WiFi bridge testing resumes  
+6. **Phase 4–6, 5b, 10** as before  
 
 ---
 
@@ -320,7 +493,12 @@ adb -s ZA223F72K9 logcat -v threadtime | grep -iE 'UVPro\.(ChatBridge|CotBridge|
 | Chat / merge | `chat/ChatBridge.java`, `chat/GeoChatContactListHelper.java` |
 | CoT / SA Relay | `cot/CotBridge.java`, `cot/CotBuilder.java` |
 | Routing | `protocol/PacketRouter.java` |
-| Mesh | `bluetooth/MeshBtConnectionManager.java` |
+| Dual transport TX | `UVProDropDownReceiver.java` — `resolveActiveTransmitManager`, `applyActiveTransmitTransport` |
+| Beacon TX override | `UVProMapComponent.java` — `sendBeaconIfConnected`, `resolveBeaconTransportManager` |
+| Mesh | `bluetooth/MeshBtConnectionManager.java`, `bluetooth/BtConnectionManager.java` |
+| Map broadcast / mesh relay | `cot/CotBridge.java` (`isRelayableMapCotType`, `maybeRelaySharedMapItem`) |
+| RF chat ACK / DM gate | `chat/ChatBridge.java`, `protocol/PacketRouter.java` |
+| Ping toasts | `protocol/PingReplyNotifier.java`, `UVProDropDownReceiver.java` |
 | WiFi keepalive | `network/WifiContactKeepalive.java` |
 | Lifecycle | `UVProMapComponent.java`, `UVProDropDownReceiver.java` |
 | Contact tap | `UVProContactHandler.java` |
@@ -336,6 +514,13 @@ adb -s ZA223F72K9 logcat -v threadtime | grep -iE 'UVPro\.(ChatBridge|CotBridge|
 | 2026-05-30 | RF→TAK uplink keepalive + `dispatchToBroadcast` fix; `ensureInboundNetworkSaContact` |
 | 2026-05-30 | Reachability red-X UI **removed** per operator; native chat for all contacts |
 | 2026-05-30 | Committed bridge/uplink/merge session work; Phase 3 field test is next |
+| 2026-05-30 | **`70a39ea`** map broadcast relay (incl. `a-u-G`); mesh-only broadcast test passed |
+| 2026-05-30 | **`6c7cba4`** ping toasts; **`15b108e`** 5s RF chat ACK delay — DM delivered+read verified SMKY↔J15 |
+| 2026-05-30 | DM ACK test: J25 correctly skips transit DELIVERED; pre-delay ACK drops on mesh (RF contention) |
+| 2026-05-30 | MeshCore standalone **v1.3.1** pushed (`TAK-MESHCORE`) with UV-PRO mesh parity + Send Ping |
+| 2026-05-30 | Fleet paused on **mesh-only** (WiFi off); Phase 3 bridge tests deferred until mixed transport |
+| 2026-05-30 | **Code audit:** dual-transport races (DT-1/2), ACK map/READ dupes, merge vs `btechContactUids` — see Phase 8–9 |
+| 2026-05-30 | **Next field focus:** Phase 8 UV-PRO + Mesh both connected, redundancy toggling |
 
 ---
 

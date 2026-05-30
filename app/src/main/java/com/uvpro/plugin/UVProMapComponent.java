@@ -281,6 +281,7 @@ try {
                     ChatBridge.collapseAllCallsignAliasDuplicates();
                     com.uvpro.plugin.contacts.ContactReachability.applyAllContactCommsPolicies(
                             cotBridge);
+                    cotBridge.refreshSendableMapItems();
                     if (rfTakUplinkKeepalive != null) {
                         rfTakUplinkKeepalive.kick();
                     }
@@ -307,10 +308,19 @@ try {
                 // Keep periodic beacon behavior consistent with UV-PRO transport:
                 // first beacon 30s after a successful mesh connection.
                 startBeaconTimer();
+                BtConnectionManager active = resolveBeaconTransportManager();
+                if (active != null) {
+                    cotBridge.setBtManager(active);
+                    if (chatBridge != null) {
+                        chatBridge.setBtManager(active);
+                    }
+                    cotBridge.refreshSendableMapItems();
+                }
                 view.post(() -> {
                     ChatBridge.collapseAllCallsignAliasDuplicates();
                     com.uvpro.plugin.contacts.ContactReachability.applyAllContactCommsPolicies(
                             cotBridge);
+                    cotBridge.refreshSendableMapItems();
                     if (rfTakUplinkKeepalive != null) {
                         rfTakUplinkKeepalive.kick();
                     }

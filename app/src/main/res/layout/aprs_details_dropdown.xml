@@ -47,7 +47,16 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="10dp"
+        android:layout_marginBottom="8dp"
         android:text="Send APRS Message"
         android:textColor="#FFFFFF"
         android:backgroundTint="#FF1976D2" />
+
+    <Button
+        android:id="@+id/aprs_details_delete_contact"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Delete Contact"
+        android:textColor="#FFFFFF"
+        android:backgroundTint="#FFD32F2F" />
 </LinearLayout>

@@ -11,9 +11,11 @@ import android.widget.Toast;
 
 import com.atakmap.android.dropdown.DropDown;
 import com.atakmap.android.dropdown.DropDownReceiver;
+import com.atakmap.android.maps.MapGroup;
 import com.atakmap.android.maps.MapItem;
 import com.atakmap.android.maps.MapView;
 import android.util.Log;
+import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.chat.ChatBridge;
 import com.uvpro.plugin.contacts.ContactTracker;
 import com.uvpro.plugin.contacts.RadioContact;
@@ -44,6 +46,7 @@ public class AprsDetailsDropDownReceiver extends DropDownReceiver
     private TextView titleView;
     private TextView bodyView;
     private Button sendMessageButton;
+    private Button deleteContactButton;
     private String openUid;
     private boolean dropDownVisible;
 
@@ -91,6 +94,7 @@ public class AprsDetailsDropDownReceiver extends DropDownReceiver
         titleView.setText(callsign);
         refreshBody(uid);
         wireSendMessageButton(callsign);
+        wireDeleteContactButton(uid, callsign);
 
         try {
             setSelected(item, "asset:/icons/outline.png");
@@ -152,6 +156,8 @@ public class AprsDetailsDropDownReceiver extends DropDownReceiver
                 .getIdentifier("aprs_details_body", "id", pluginContext.getPackageName()));
         sendMessageButton = panelView.findViewById(pluginContext.getResources()
                 .getIdentifier("aprs_details_send_message", "id", pluginContext.getPackageName()));
+        deleteContactButton = panelView.findViewById(pluginContext.getResources()
+                .getIdentifier("aprs_details_delete_contact", "id", pluginContext.getPackageName()));
         if (bodyView != null) {
             bodyView.setMovementMethod(new ScrollingMovementMethod());
         }
@@ -162,6 +168,34 @@ public class AprsDetailsDropDownReceiver extends DropDownReceiver
             return;
         }
         sendMessageButton.setOnClickListener(v -> openNativeAprsChat(targetCallsign));
+    }
+
+    private void wireDeleteContactButton(String markerUid, String callsign) {
+        if (deleteContactButton == null) {
+            return;
+        }
+        deleteContactButton.setOnClickListener(v -> deleteAprsContact(markerUid, callsign));
+    }
+
+    private void deleteAprsContact(String markerUid, String callsign) {
+        MapView mv = getMapView();
+        Context ctx = mv != null ? mv.getContext() : pluginContext;
+        if (mv == null || mv.getRootGroup() == null || markerUid == null || markerUid.isEmpty()) {
+            return;
+        }
+        MapGroup root = mv.getRootGroup();
+        MapItem marker = root.deepFindUID(markerUid);
+        if (marker != null && marker.getGroup() != null && CotBridge.isUvproAprsMarker(marker)) {
+            marker.getGroup().removeItem(marker);
+        }
+        String trackUid = "uvpro-aprs-track-" + markerUid;
+        MapItem track = root.deepFindUID(trackUid);
+        if (track != null && track.getGroup() != null
+                && track.getMetaBoolean(AprsTrackManager.META_UVPRO_APRS_TRACK, false)) {
+            track.getGroup().removeItem(track);
+        }
+        Toast.makeText(ctx, "Deleted APRS contact " + callsign, Toast.LENGTH_SHORT).show();
+        closeDropDown();
     }
 
     private void openNativeAprsChat(String targetCallsign) {
@@ -221,5 +255,6 @@ public class AprsDetailsDropDownReceiver extends DropDownReceiver
         titleView = null;
         bodyView = null;
         sendMessageButton = null;
+        deleteContactButton = null;
     }
 }

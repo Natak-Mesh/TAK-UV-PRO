@@ -91,7 +91,7 @@ Use when a **signed** `ATAK-Plugin-UVPro-*-tpc-5.5.1-civ-release.apk` exists.
 | Field | Value |
 |--------|--------|
 | **Plugin** | UV-PRO ATAK Plugin (BTECH UV-PRO radio ↔ ATAK bridge) |
-| **Current version** | **1.9.7** (`ext.PLUGIN_VERSION` in root `build.gradle`) |
+| **Current version** | **1.9.51** (`ext.PLUGIN_VERSION` in root `build.gradle`) |
 | **ATAK target** | **5.5.1** (CIV) |
 | **Example versionCode** | `1.9.7` → **10907** (formula: major×10000 + minor×100 + patch) |
 | **GitHub** | `https://github.com/atakmaps/TAK-UV-PRO` |
@@ -350,7 +350,7 @@ When a **new chat/agent** starts with no memory:
 
 **Update this document when:** you change the update-server trust strategy, PKCS#12 generation, TPC packaging rules, or VPS paths — so the **next** agent does not rely on chat history.
 
-**Current plugin-repo HEAD (handoff time):** **`8074363`** on **`main`** — **v1.9.50** (pre-`v1.9.51` commit). Update this line after new commits that change trust, TPC, packaging, or transport behavior.
+**Current plugin-repo HEAD:** **`main`** — **v1.9.51** multi-transport contact merge, RF gateway callsign routing, Wi‑Fi/RF chat dedupe. Prior baseline: **`858c515`** (v1.9.51 DM routing), **`8074363`** (v1.9.50).
 
 **SQLite handoff:** append rows to **`Plugins/Handoff Docs/handoff.db`** (`uvpro_handoff`) when you learn something new — keeps agents off stale chat-only context.
 
@@ -392,6 +392,53 @@ When a **new chat/agent** starts with no memory:
 - ACK correlation hardening:
   - wire chat message IDs now start from a time-based seed per app launch to reduce stale ACK collisions,
   - outbound ACK mapping accepts full GeoChat IDs and UUID-only line IDs from ATAK paths; UUID-only values are normalized to an internal GeoChat-shaped key for stable receipt mapping.
+
+## 13.5 2026-05-29 Multi-transport contacts + RF gateway (v1.9.51)
+
+When **Wi‑Fi/TAK and UV‑PRO radio** are both connected, the same operator can exist under multiple ATAK identities (native opaque `ANDROID-*` UID vs synthetic `ANDROID-<CALLSIGN>` vs 6-char wire form). v1.9.51 unifies them:
+
+### Callsign layers
+
+| Layer | Example | Used for |
+|-------|---------|----------|
+| Full ATAK callsign | `SMOKEY_15` | Contacts pane, GeoChat titles, user settings |
+| Alphanumeric key | `SMOKEY15` | Variant matching (underscore-insensitive) |
+| AX.25 wire (6 char) | `SMKY15` | TYPE_CHAT room bytes, gateway `wireDest` only — **never shown in UI** |
+
+Do **not** route RF through Wi‑Fi opaque UUIDs (`ANDROID-b726a98286ca1d08`).
+
+### Gateway envelope (RF DMs)
+
+```
+__UVGW__|wireDest|displayCallsign|lineUid|message
+         SMKY15   SMOKEY_15       <uid>   hello
+```
+
+- **`wireDest`**: 6-char AX.25 destination for “is this packet for me?” (`rfDestinationLooksLikeSelf` + variant keys).
+- **`displayCallsign`**: full ATAK name for GeoChat room / threading / labels.
+- **`lineUid`**: reused on RF inject so Wi‑Fi + RF duplicate delivery dedupes.
+
+### Contact merge algorithm
+
+1. **`buildCallsignVariants()` / `radioCallsignKey()` / `callsignAlphanumericKey()`** — link `JESTER_25`, `JESTER25`, `JSTR25`.
+2. **`collapseDuplicateContactsForCallsign()`** — scan all `IndividualContact` entries; score with `scorePreferredNativeContact()` (native Wi‑Fi/stcp wins over plugin UID); remove losers via `removeDuplicateUidContact()`.
+3. **`collapseAllCallsignAliasDuplicates()`** — full contact-list sweep; called from `UVProMapComponent` on init and ~5 s after radio connect.
+4. **`ensurePluginChatContact()`** — before creating `ANDROID-<CALLSIGN>`, reuse existing Wi‑Fi contact if variant match found.
+
+### Duplicate chat (Wi‑Fi then RF)
+
+1. Wi‑Fi GeoChat delivered → `CommsLogger.logReceive` → `CotBridge.maybeNoteInboundNetworkGeoChat()` → `ChatBridge.noteInboundGeoChatDelivered(lineUid, …)`.
+2. RF copy arrives with same `lineUid` in gateway → `isDuplicateInboundChatDelivery()` → skip inject (`Skip duplicate inbound chat`).
+
+### Key files
+
+- `ChatBridge.java` — gateway wrap/parse, collapse, dedupe, inbound DM accept
+- `CotBridge.java` — network-side dedupe hook, `injectChatCot` with existing line UID
+- `CotBuilder.java` — `buildChatCotWithExistingLineUid`
+- `PacketRouter.java` — GPS contact link + collapse after position inject
+- `UVProMapComponent.java` — startup/connect collapse sweep
+
+See also **`README.md`** § “Multi-transport contacts” and local **`HANDOFF.md`** § “Multi-transport contacts (Wi‑Fi + RF simultaneously)”.
 
 ---
 

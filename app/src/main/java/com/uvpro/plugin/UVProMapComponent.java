@@ -273,6 +273,7 @@ try {
                 // Anchor first periodic beacon to connection time.
                 startBeaconTimer();
                 triggerOneTimeStartupRadioGpsUpdate();
+                view.post(() -> ChatBridge.collapseAllCallsignAliasDuplicates());
             }
             @Override
             public void onDisconnected(String reason) {
@@ -366,6 +367,8 @@ try {
                 new AtakBroadcast.DocumentedIntentFilter();
         terminalFilter.addAction(PacketTerminalDropDownReceiver.SHOW_PACKET_TERMINAL);
         registerDropDownReceiver(packetTerminalDropDownReceiver, terminalFilter);
+
+        view.postDelayed(() -> ChatBridge.collapseAllCallsignAliasDuplicates(), 5000L);
 
         // Repeater selection + APRS marker tap → APRS metadata panel.
         mapItemClickListener = event -> {

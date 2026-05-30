@@ -79,12 +79,33 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 
 ### 2026-05-29 Progress Update (v1.9.51)
 
-- Direct-message RF routing now preserves explicit destination identity end-to-end (gateway destination UID + stricter inbound destination checks), preventing non-addressed peers from injecting/acking DMs.
-- Delivered ACK emission is now gated by local message acceptance, so non-target radios no longer emit delivered receipts for packets that were ignored.
-- Inbound DM self-match now handles callsign variants from gateway destination values (including `ANDROID-<callsign>` suffix handling), restoring intended-recipient delivery in mixed UID/callsign environments.
-- Sender display on inbound GeoChat now prefers mapped contact names when available, reducing compressed callsign presentation (`JSTR25`) where full callsign mappings exist.
-- Bluetooth `Scan & Connect` pairing flow now filters for pairable radios in scan mode (excluding bonded radios) while preserving multi-candidate picker selection when multiple unpaired radios are available.
-- Wire chat message IDs now seed from a time-based value each launch to reduce stale ACK collisions across long test sessions and restart boundaries.
+- **Multi-transport contacts (Wi‑Fi + RF):** When a peer is reachable on both TAK network and radio, the plugin keeps **one** ATAK contact per operator. Wi‑Fi/TAK contacts use native `ANDROID-*` hash UIDs; RF may introduce compressed wire callsigns or synthetic `ANDROID-<CALLSIGN>` UIDs. On startup and radio connect, `collapseAllCallsignAliasDuplicates()` merges aliases (`JESTER_25` / `JSTR25`, `SMOKEY_15` / `SMKY15`) and prefers the native Wi‑Fi contact when present so chat, map markers, and send actions stay unified.
+- **AX.25 wire vs UI callsign:** The 6-character radio address (`SMKY15`, `JSTR15`) is an **AX.25 / TYPE_CHAT room limit only** — it is never shown in Contacts or GeoChat. The UI always displays the full ATAK callsign (`SMOKEY_15`, `JESTER_15`) entered in settings.
+- **RF gateway envelope:** Direct messages over RF wrap metadata as `__UVGW__|wireDest|displayCallsign|lineUid|message` where `wireDest` is the 6-char AX.25 destination and `displayCallsign` is the full ATAK name for threading and labels. Wi‑Fi opaque device UUIDs are **not** placed in RF gateway routing.
+- **Duplicate message suppression:** When Wi‑Fi and radio are both connected, the first delivery (usually network GeoChat) is recorded by line UID; a redundant RF copy is skipped (`Skip duplicate inbound chat`).
+- **Direct-message RF routing:** Inbound DMs accept only when the wire destination matches this operator (full/radio/alphanumeric callsign variants). Non-target peers ignore the packet and do not emit delivered ACKs.
+- **Sender display:** Inbound GeoChat prefers mapped contact names over compressed wire callsigns when a UID mapping exists.
+- **Bluetooth Scan & Connect:** Pairing flow filters for pairable unpaired radios while preserving multi-candidate picker selection.
+- **ACK correlation:** Wire chat message IDs seed from a time-based value each launch; outbound ACK mapping accepts full GeoChat IDs and UUID-only line IDs.
+
+### Multi-transport contacts (Wi‑Fi + radio at the same time)
+
+When multiple transports are active, ATAK can show the same operator under different identities:
+
+| Source | Typical UID | Display name |
+|--------|-------------|--------------|
+| TAK / Wi‑Fi | `ANDROID-b726a98286ca1d08` (opaque hash) | `SMOKEY_15` |
+| RF GPS / chat | `ANDROID-SMOKEY_15` or wire `SMKY15` | full or compressed callsign |
+
+The plugin treats these as **one person**, not two contacts:
+
+1. **Variant matching** — `radioCallsignKey()`, alphanumeric keys, and `CallsignUtil.toRadioCallsign()` link `SMOKEY_15`, `SMOKEY15`, and `SMKY15`.
+2. **Canonical contact selection** — `ensurePluginChatContact()` and `collapseDuplicateContactsForCallsign()` prefer an existing native Wi‑Fi `IndividualContact` (TCP/stcp connector) over a plugin-synthesized RF UID; duplicate UIDs are removed from the contact list.
+3. **Startup / connect sweep** — `UVProMapComponent` calls `collapseAllCallsignAliasDuplicates()` after plugin init and again ~5 s after radio connect.
+4. **Outbound chat** — sending to a merged contact routes over the active transmit path (UV‑PRO, MeshCore, or Wi‑Fi toggles). RF DMs use `wireDest` (6-char) on the air and `displayCallsign` (full name) in the gateway envelope for the receiver’s UI.
+5. **Inbound chat** — Wi‑Fi delivery is noted by GeoChat line UID; RF copies with the same line UID are dropped. RF-only peers still create/update plugin contacts and map markers as before.
+
+**Rule of thumb:** 6-character strings exist only on the RF wire; everything the operator sees in ATAK uses the full callsign.
 
 ## How It Works
 

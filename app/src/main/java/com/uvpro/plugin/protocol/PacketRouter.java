@@ -8,6 +8,7 @@ import com.atakmap.android.contact.IndividualContact;
 import com.atakmap.android.contact.IpConnector;
 import com.atakmap.android.maps.MapItem;
 import com.atakmap.android.maps.MapView;
+import com.atakmap.comms.NetConnectString;
 
 import com.uvpro.plugin.aprs.AprsInfoFormatter;
 import com.uvpro.plugin.aprs.AprsTrackManager;
@@ -202,7 +203,12 @@ public class PacketRouter {
                             gps.course, gps.battery);
 
                     final String normalized = gps.callsign.trim().toUpperCase();
-                    final String uid = "ANDROID-" + normalized;
+                    final String syntheticUid = "ANDROID-" + normalized;
+                    final String resolvedUid = ChatBridge.resolveCanonicalPeerUid(
+                            normalized, syntheticUid);
+                    final String uid = (resolvedUid != null && !resolvedUid.trim().isEmpty())
+                            ? resolvedUid.trim()
+                            : syntheticUid;
 
                     // Position CoT first so map marker + __group (sender team) exist before we
                     // register/link the IndividualContact (contacts list color follows MapItem).
@@ -575,29 +581,32 @@ public class PacketRouter {
                 return;
             }
             MapItem item = mv.getRootGroup().deepFindUID(uid);
+            String syntheticUid = "ANDROID-" + normalized;
 
             Contacts contacts = Contacts.getInstance();
             Contact existing = contacts.getContactByUuid(uid);
+            if (!(existing instanceof IndividualContact)) {
+                String canonicalUid = ChatBridge.resolveCanonicalPeerUid(normalized, uid);
+                if (canonicalUid != null && !canonicalUid.trim().isEmpty()) {
+                    Contact byCanonical = contacts.getContactByUuid(canonicalUid.trim());
+                    if (byCanonical instanceof IndividualContact) {
+                        existing = byCanonical;
+                    }
+                }
+            }
 
             if (existing instanceof IndividualContact) {
                 IndividualContact ic = (IndividualContact) existing;
-                if (ic.getConnector(com.atakmap.android.contact.PluginConnector.CONNECTOR_TYPE)
-                        == null) {
-                    ic.addConnector(new com.atakmap.android.contact.PluginConnector(
-                            ChatBridge.ACTION_PLUGIN_CONTACT_GEOCHAT_SEND));
-                }
-                if (ic.getConnector(IpConnector.CONNECTOR_TYPE) == null) {
-                    ic.addConnector(new IpConnector((String) null));
-                }
-                com.atakmap.android.preference.AtakPreferences prefs =
-                        new com.atakmap.android.preference.AtakPreferences(mv.getContext());
-                prefs.set("contact.connector.default." + ic.getUID(),
-                        com.atakmap.android.contact.PluginConnector.CONNECTOR_TYPE);
+                // Preserve existing ATAK/Wi-Fi contact icon/action behavior on existing contacts.
+                // We only bind map item metadata and keep this contact as the canonical route target.
+                ChatBridge.preferNativeContactAction(ic);
                 if (item != null) {
                     item.setMetaBoolean("sendable", true);
                     item.setMetaString("endpoint", ChatBridge.ACTION_PLUGIN_CONTACT_GEOCHAT_SEND);
                     ic.setMapItem(item);
                     ic.dispatchChangeEvent();
+                    removeDuplicateSyntheticContact(contacts, syntheticUid, ic.getUID());
+                    ChatBridge.collapseDuplicateContactsForCallsign(normalized, ic.getUID());
                     return;
                 }
                 if (attempt < 12) {
@@ -606,6 +615,8 @@ public class PacketRouter {
                     return;
                 }
                 ic.dispatchChangeEvent();
+                removeDuplicateSyntheticContact(contacts, syntheticUid, ic.getUID());
+                ChatBridge.collapseDuplicateContactsForCallsign(normalized, ic.getUID());
                 return;
             }
 
@@ -618,29 +629,43 @@ public class PacketRouter {
             IndividualContact c = new IndividualContact(
                     normalized,
                     uid,
-                    item instanceof MapItem ? item : null);
-
-            c.addConnector(new com.atakmap.android.contact.PluginConnector(
-                    ChatBridge.ACTION_PLUGIN_CONTACT_GEOCHAT_SEND));
-
-            // IpConnector with null sendIntent: makes contact visible in the SEND_LIST
-            // (ContactListAdapter hard-filters on IpConnector presence) without hijacking
-            // the CoT send path (isEmpty(null) → true → uniqueSelected preserved → sendCot fires).
-            c.addConnector(new IpConnector((String) null));
-
-            com.atakmap.android.preference.AtakPreferences prefs =
-                    new com.atakmap.android.preference.AtakPreferences(mv.getContext());
-            prefs.set("contact.connector.default." + c.getUID(),
-                    com.atakmap.android.contact.PluginConnector.CONNECTOR_TYPE);
+                    item instanceof MapItem ? item : null,
+                    buildNativeConnectorSeed(normalized));
 
             contacts.addContact(c);
+            ChatBridge.preferNativeContactAction(c);
             if (item != null) {
                 item.setMetaBoolean("sendable", true);
                 item.setMetaString("endpoint", ChatBridge.ACTION_PLUGIN_CONTACT_GEOCHAT_SEND);
             }
+            ChatBridge.collapseDuplicateContactsForCallsign(normalized, uid);
         } catch (Exception e) {
             Log.e(TAG, "linkRadioIndividualContactToMapMarker failed uid=" + uid, e);
         }
+    }
+
+    private void removeDuplicateSyntheticContact(Contacts contacts, String syntheticUid, String keepUid) {
+        if (contacts == null || syntheticUid == null || syntheticUid.isEmpty()) {
+            return;
+        }
+        try {
+            if (keepUid != null && syntheticUid.equalsIgnoreCase(keepUid)) {
+                return;
+            }
+            Contact dup = contacts.getContactByUuid(syntheticUid);
+            if (dup != null && (keepUid == null || !dup.getUID().equalsIgnoreCase(keepUid))) {
+                contacts.removeContact(dup);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static NetConnectString buildNativeConnectorSeed(String callsign) {
+        NetConnectString ncs = new NetConnectString("stcp", "*", -1);
+        if (callsign != null && !callsign.trim().isEmpty()) {
+            ncs.setCallsign(callsign.trim().toUpperCase(Locale.US));
+        }
+        return ncs;
     }
 
     private void schedulePingReply() {

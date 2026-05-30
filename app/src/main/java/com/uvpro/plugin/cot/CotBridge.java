@@ -734,9 +734,11 @@ public class CotBridge {
      */
     /**
      * @param radioPacketMessageId UV-PRO wire id ({@literal >} 0 distinguishes duplicate ATAK merges); 0 = unknown
+     * @param originatingLineUidOrNull When set (from RF gateway envelope), reuse the sender's GeoChat line UID
      */
     public void injectChatCot(String senderCallsign, String message,
-                              String chatRoom, int radioPacketMessageId) {
+                              String chatRoom, int radioPacketMessageId,
+                              String originatingLineUidOrNull) {
         try {
             String trimmed = senderCallsign != null ? senderCallsign.trim() : "";
             // Align with GPS-registered contacts: AX.25 truncates sender (e.g. JUNIOR → JNR).
@@ -770,21 +772,6 @@ public class CotBridge {
             String displayCallsign = canonicalUid.startsWith(ANDROID_UID_PREFIX)
                     ? canonicalUid.substring(ANDROID_UID_PREFIX.length())
                     : trimmed.toUpperCase();
-            // GeoChat dedupes/threads by messageId (Cot UID). If we use only wire mid (1,2,3...),
-            // restarting ATAK (or receiver) with existing chat history causes collisions and the
-            // UI "updates" an old row instead of inserting the new message. Make the UID globally
-            // unique while still embedding the wire mid for debugging.
-            long uniq;
-            if (radioPacketMessageId != 0) {
-                long mid = ((long) radioPacketMessageId) & 0xffffffffL;
-                long t = System.currentTimeMillis() & 0xffffffffL;
-                uniq = (mid << 32) | t;
-            } else {
-                uniq = System.nanoTime();
-            }
-            // Peer ANDROID-* DM: GeoChat expects chatgrp uid0=peer, uid1=local self. Radio RX runs on
-            // BT thread; MapView.getDeviceUid() is often NULL there — omitting uid1 caused
-            // GeoChat.ANDROID-VETTE.ANDROID-VETTE and broken UI / ACK path.
             String chatGrpUid1ForDm = null;
             if (chatRoom != null && chatRoom.startsWith("ANDROID-")) {
                 chatGrpUid1ForDm = cachedLocalDeviceUidForGeoChat;
@@ -793,9 +780,26 @@ public class CotBridge {
                 }
             }
 
-            CotEvent event = CotBuilder.buildChatCot(
-                    canonicalUid, displayCallsign, message, chatRoom, uniq,
-                    chatGrpUid1ForDm);
+            CotEvent event;
+            String existingLineUid = originatingLineUidOrNull != null
+                    ? originatingLineUidOrNull.trim() : "";
+            if (ChatBridge.isLikelyGeoChatLineUid(existingLineUid)) {
+                event = CotBuilder.buildChatCotWithExistingLineUid(
+                        existingLineUid, canonicalUid, displayCallsign, message, chatRoom,
+                        chatGrpUid1ForDm);
+            } else {
+                long uniq;
+                if (radioPacketMessageId != 0) {
+                    long mid = ((long) radioPacketMessageId) & 0xffffffffL;
+                    long t = System.currentTimeMillis() & 0xffffffffL;
+                    uniq = (mid << 32) | t;
+                } else {
+                    uniq = System.nanoTime();
+                }
+                event = CotBuilder.buildChatCot(
+                        canonicalUid, displayCallsign, message, chatRoom, uniq,
+                        chatGrpUid1ForDm);
+            }
 
             if (event != null && event.isValid()) {
                 if (chatGrpUid1ForDm != null && chatRoom != null
@@ -805,7 +809,8 @@ public class CotBridge {
                             + " peerTHREAD=" + chatRoom + " sender=" + canonicalUid);
                 }
                 Log.d(TAG, "Injecting chat CoT from " + displayCallsign
-                        + " (uid=" + canonicalUid + " midpkt=" + radioPacketMessageId + ")");
+                        + " (uid=" + canonicalUid + " midpkt=" + radioPacketMessageId
+                        + (existingLineUid.isEmpty() ? "" : " lineUid=" + existingLineUid) + ")");
                 markInboundInjectSkipOutboundRelay(event.getUID());
                 deliverInboundGeoChatToAtak(event);
                 maybeRelayInboundRadioCotToTak(event);
@@ -813,6 +818,12 @@ public class CotBridge {
         } catch (Exception e) {
             Log.e(TAG, "Error injecting chat CoT", e);
         }
+    }
+
+    /** Backward-compatible overload without originating line UID. */
+    public void injectChatCot(String senderCallsign, String message,
+                              String chatRoom, int radioPacketMessageId) {
+        injectChatCot(senderCallsign, message, chatRoom, radioPacketMessageId, null);
     }
 
     private static boolean isGeoChatCotType(String type) {
@@ -1008,6 +1019,19 @@ public class CotBridge {
         try {
             Contacts contacts = Contacts.getInstance();
             String uid = senderUid.trim();
+            String canonicalUid = ChatBridge.resolveCanonicalPeerUid(callsign, uid);
+            if (canonicalUid != null && !canonicalUid.isEmpty()) {
+                if (!uid.equalsIgnoreCase(canonicalUid)) {
+                    Contact dup = contacts.getContactByUuid(uid);
+                    if (dup != null) {
+                        contacts.removeContact(dup);
+                    }
+                }
+                Contact existingCanonical = contacts.getContactByUuid(canonicalUid);
+                if (existingCanonical != null) {
+                    return;
+                }
+            }
             Contact existing = contacts.getContactByUuid(uid);
             if (existing == null) {
                 existing = contacts.getContactByUuid(uid.toUpperCase(Locale.US));
@@ -1404,6 +1428,26 @@ public class CotBridge {
         }
     }
 
+    private void maybeNoteInboundNetworkGeoChat(CotEvent event) {
+        if (chatBridge == null || event == null) {
+            return;
+        }
+        if (!"b-t-f".equals(event.getType())) {
+            return;
+        }
+        String lineUid = ChatBridge.resolveGeoChatLineUid(event);
+        if (lineUid == null) {
+            lineUid = event.getUID();
+        }
+        String senderUid = GeoChatContactListHelper.extractChatSenderUid(event);
+        String message = extractGeoChatRemarks(event);
+        chatBridge.noteInboundGeoChatDelivered(lineUid, senderUid, message, 0);
+        String eventUid = event.getUID();
+        if (eventUid != null && lineUid != null && !eventUid.equalsIgnoreCase(lineUid)) {
+            chatBridge.noteInboundGeoChatDelivered(eventUid, senderUid, message, 0);
+        }
+    }
+
     /**
      * Start listening for outgoing CoT events to relay to radio.
      * Uses ATAK's PreSendProcessor to intercept all outgoing CoT.
@@ -1429,6 +1473,7 @@ public class CotBridge {
 
             @Override
             public void logReceive(CotEvent event, String src, String dest) {
+                maybeNoteInboundNetworkGeoChat(event);
                 maybeSaRelayInboundNetworkCot(event);
             }
         };

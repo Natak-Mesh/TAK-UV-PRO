@@ -309,6 +309,93 @@ public class CotBuilder {
     }
 
     /**
+     * Build inbound GeoChat using the sender's original line UID so Wi‑Fi and RF paths dedupe.
+     */
+    public static CotEvent buildChatCotWithExistingLineUid(String existingLineUid,
+                                                           String senderUid, String senderCall,
+                                                           String message, String dmPeerConversationUid,
+                                                           String localDeviceUidIfDm) {
+        if (existingLineUid == null || existingLineUid.trim().isEmpty()) {
+            return null;
+        }
+        String lineUid = existingLineUid.trim();
+        if (!lineUid.startsWith("GeoChat.")) {
+            String chatroomAttr = dmPeerConversationUid;
+            String idAttr = dmPeerConversationUid;
+            if (localDeviceUidIfDm != null && !localDeviceUidIfDm.isEmpty()
+                    && dmPeerConversationUid != null
+                    && dmPeerConversationUid.startsWith("ANDROID-")) {
+                idAttr = localDeviceUidIfDm.trim();
+            }
+            lineUid = "GeoChat." + senderUid + "." + idAttr + "." + lineUid;
+        }
+
+        CotEvent event = new CotEvent();
+        event.setUID(lineUid);
+        event.setType("b-t-f");
+        event.setHow("h-g-i-g-o");
+
+        long now = System.currentTimeMillis();
+        event.setTime(new com.atakmap.coremap.maps.time.CoordinatedTime(now));
+        event.setStart(new com.atakmap.coremap.maps.time.CoordinatedTime(now));
+        event.setStale(new com.atakmap.coremap.maps.time.CoordinatedTime(
+                now + STALE_MILLIS));
+
+        event.setPoint(new CotPoint(0, 0, CotPoint.UNKNOWN,
+                CotPoint.UNKNOWN, CotPoint.UNKNOWN));
+
+        String chatroomAttr = dmPeerConversationUid;
+        String idAttr = dmPeerConversationUid;
+        if (localDeviceUidIfDm != null && !localDeviceUidIfDm.isEmpty()
+                && dmPeerConversationUid != null && dmPeerConversationUid.startsWith("ANDROID-")) {
+            idAttr = localDeviceUidIfDm.trim();
+            chatroomAttr = senderCall != null ? senderCall.trim() : dmPeerConversationUid;
+        }
+
+        CotDetail detail = new CotDetail("detail");
+
+        CotDetail chat = new CotDetail("__chat");
+        chat.setAttribute("parent", "RootContactGroup");
+        chat.setAttribute("groupOwner", "false");
+        chat.setAttribute("messageId", lineUid);
+        chat.setAttribute("chatroom", chatroomAttr);
+        chat.setAttribute("id", idAttr);
+        chat.setAttribute("senderCallsign", senderCall);
+
+        CotDetail chatgrp = new CotDetail("chatgrp");
+        chatgrp.setAttribute("uid0", senderUid);
+        String uid1 = idAttr;
+        if (localDeviceUidIfDm != null && !localDeviceUidIfDm.isEmpty()
+                && dmPeerConversationUid != null && dmPeerConversationUid.startsWith("ANDROID-")) {
+            uid1 = localDeviceUidIfDm.trim();
+        }
+        chatgrp.setAttribute("uid1", uid1);
+        chatgrp.setAttribute("id", dmPeerConversationUid != null ? dmPeerConversationUid : idAttr);
+        chat.addChild(chatgrp);
+
+        detail.addChild(chat);
+
+        CotDetail link = new CotDetail("link");
+        link.setAttribute("uid", senderUid);
+        link.setAttribute("type", "a-f-G-U-C");
+        link.setAttribute("relation", "p-p");
+        detail.addChild(link);
+
+        CotDetail remarks = new CotDetail("remarks");
+        remarks.setAttribute("source", "BAO.F.ATAK." + senderUid);
+        remarks.setAttribute("to",
+                (dmPeerConversationUid != null && !dmPeerConversationUid.isEmpty())
+                        ? dmPeerConversationUid : chatroomAttr);
+        remarks.setAttribute("time", formatCotTime(now));
+        remarks.setInnerText(message);
+        detail.addChild(remarks);
+
+        event.setDetail(detail);
+
+        return event;
+    }
+
+    /**
      * GeoChat delivered/read receipt CoT ({@code b-t-f-d} / {@code b-t-f-r}) referencing an
      * existing chat line by {@code __chat messageId} (the original GeoChat event UID).
      *

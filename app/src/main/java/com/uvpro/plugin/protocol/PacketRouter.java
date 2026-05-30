@@ -198,6 +198,11 @@ public class PacketRouter {
                 if (gps != null) {
                     Log.d(TAG, "GPS from " + gps.callsign +
                             ": " + gps.latitude + ", " + gps.longitude);
+                    MapView gpsMv = MapView.getMapView();
+                    if (gpsMv != null) {
+                        PingReplyNotifier.maybeNotifyPingReply(
+                                gpsMv.getContext(), gps.callsign);
+                    }
                     contactTracker.updateContact(gps.callsign, gps.latitude,
                             gps.longitude, gps.altitude, gps.speed,
                             gps.course, gps.battery);
@@ -250,6 +255,10 @@ public class PacketRouter {
                 String pingCall = new String(pingBytes, java.nio.charset.StandardCharsets.US_ASCII).trim();
                 java.util.Arrays.fill(pingBytes, (byte) 0);
                 Log.d(TAG, "Ping from: " + pingCall);
+                MapView pingMv = MapView.getMapView();
+                if (pingMv != null) {
+                    PingReplyNotifier.notifyPingReceived(pingMv.getContext(), pingCall);
+                }
                 contactTracker.handlePing(pingCall);
                 chatBridge.onPeerActivity(callsign);
                 if (!callsign.equalsIgnoreCase(pingCall)) {

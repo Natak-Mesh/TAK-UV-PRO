@@ -41,6 +41,7 @@ import com.uvpro.plugin.chat.GeoChatContactListHelper;
 import com.uvpro.plugin.chat.InboundGroupSyncApplier;
 import com.uvpro.plugin.protocol.RfSlottedCoTScheduler;
 import com.uvpro.plugin.protocol.RfTxArbitrator;
+import com.uvpro.plugin.protocol.PingReplyNotifier;
 import com.uvpro.plugin.protocol.UVProPacket;
 import com.uvpro.plugin.protocol.PacketFragmenter;
 import com.uvpro.plugin.ui.SettingsFragment;
@@ -889,6 +890,10 @@ public class CotBridge {
                 markInboundInjectSkipOutboundRelay(event.getUID());
                 dispatchCotEvent(event);
                 maybeRelayInboundRadioCotToTak(event);
+                MapView pingMv = MapView.getMapView();
+                if (pingMv != null) {
+                    PingReplyNotifier.maybeNotifyPingReply(pingMv.getContext(), callsign);
+                }
                 if (!mapUid.equalsIgnoreCase(syntheticUid)) {
                     removeOrphanRfMapMarkerForCallsign(normalizedCall, mapUid);
                 }
@@ -999,6 +1004,11 @@ public class CotBridge {
                     dispatchCotEvent(event);
                 }
                 maybeRelayInboundRadioCotToTak(event);
+                MapView pingMv = MapView.getMapView();
+                if (pingMv != null) {
+                    PingReplyNotifier.maybeNotifyPingReplyFromCot(
+                            pingMv.getContext(), event);
+                }
             }
         } catch (Exception e) {
             Log.e(TAG, "Error injecting compressed CoT", e);

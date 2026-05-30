@@ -62,6 +62,7 @@ import com.uvpro.plugin.contacts.RadioContact;
 import com.uvpro.plugin.cot.CotBridge;
 import com.uvpro.plugin.crypto.EncryptionManager;
 import com.uvpro.plugin.protocol.PacketRouter;
+import com.uvpro.plugin.protocol.PingReplyNotifier;
 import com.uvpro.plugin.radio.UVProRadioControlManager;
 import com.uvpro.plugin.terminal.PacketTerminalDropDownReceiver;
 import com.uvpro.plugin.ui.MeshStatusOverlay;
@@ -4493,6 +4494,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                                 .createUVProFrame(callsign, 0, packetBytes);
                 byte[] ax25 = frame.encode();
                 activeTx.sendKissFrame(ax25);
+                PingReplyNotifier.notePingSent(getMapView().getContext());
                 appendLog("Ping sent over " + (activeTx == meshBtManager ? "MeshCore" : "UV-PRO"));
             } catch (Exception e) {
                 appendLog("Ping failed: " + e.getMessage());

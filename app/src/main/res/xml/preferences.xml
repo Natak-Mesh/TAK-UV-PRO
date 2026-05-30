@@ -17,12 +17,6 @@
             android:summary="When SA Relay is enabled, forward inbound RF CoT to TAK network. Use with care to avoid unintended rebroadcast loops."
             android:defaultValue="false" />
 
-        <com.atakmap.android.gui.PanCheckBoxPreference
-            android:key="uvpro_restrict_chat_to_reachable_peers"
-            android:title="Restrict GeoChat to reachable peers"
-            android:summary="Keep map positions for all contacts, but disable GeoChat for peers not reachable on your active WiFi or radio path. Prevents misleading chat to RF-only or WiFi-only ghosts."
-            android:defaultValue="true" />
-
     </PreferenceCategory>
 
     <PreferenceCategory

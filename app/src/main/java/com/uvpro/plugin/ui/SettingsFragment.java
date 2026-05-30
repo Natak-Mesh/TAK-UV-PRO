@@ -532,8 +532,7 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     public static boolean isRestrictChatToReachablePeers(Context context) {
-        return getPrefs(context)
-                .getBoolean(PREF_RESTRICT_CHAT_TO_REACHABLE_PEERS, true);
+        return false;
     }
 
     public static boolean isEncryptionEnabled(Context context) {

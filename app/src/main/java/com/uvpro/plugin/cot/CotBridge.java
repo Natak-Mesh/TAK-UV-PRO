@@ -21,6 +21,7 @@ import com.atakmap.android.icons.UserIcon;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.comms.CommsLogger;
 import com.atakmap.comms.CommsMapComponent;
+import com.atakmap.commoncommo.CoTSendMethod;
 import com.atakmap.coremap.maps.assets.Icon;
 import com.atakmap.coremap.cot.event.CotDetail;
 import com.atakmap.coremap.cot.event.CotEvent;
@@ -102,6 +103,15 @@ public class CotBridge {
      * Populated when the plugin creates/registers contacts from radio packets.
      */
     private final Set<String> btechContactUids = ConcurrentHashMap.newKeySet();
+
+    /** Peers observed on TAK network with their own {@code contact@endpoint} (direct Wi‑Fi). */
+    private final Set<String> wifiNativeContactUids = ConcurrentHashMap.newKeySet();
+
+    /** Peers observed from inbound RF position packets (direct radio net). */
+    private final Set<String> rfNativeContactUids = ConcurrentHashMap.newKeySet();
+
+    /** Callsigns heard on RF (covers UID alias rows for the same operator). */
+    private final Set<String> rfHeardCallsigns = ConcurrentHashMap.newKeySet();
 
     /**
      * Map plugin-created display identifiers to contact UIDs.
@@ -329,6 +339,98 @@ public class CotBridge {
 
     public boolean isBtechContactUid(String uid) {
         return uid != null && btechContactUids.contains(uid);
+    }
+
+    public boolean isWifiNativeContact(String uid) {
+        return uid != null && wifiNativeContactUids.contains(uid.trim());
+    }
+
+    public boolean isRfNativeContact(String uid) {
+        return uid != null && rfNativeContactUids.contains(uid.trim());
+    }
+
+    public boolean isRfHeardCallsign(String callsign) {
+        if (callsign == null || callsign.trim().isEmpty()) {
+            return false;
+        }
+        String key = callsign.trim().toUpperCase(Locale.US);
+        if (rfHeardCallsigns.contains(key)) {
+            return true;
+        }
+        String compact = compactRoutingKey(key);
+        return !compact.isEmpty() && rfHeardCallsigns.contains(compact);
+    }
+
+    public void markWifiNativeContact(String uid) {
+        if (uid == null || uid.trim().isEmpty()) {
+            return;
+        }
+        String trimmed = uid.trim();
+        if (wifiNativeContactUids.add(trimmed)) {
+            Log.d(TAG, "WiFi-native contact uid=" + trimmed);
+            scheduleReachabilityRefreshForUid(trimmed);
+        }
+    }
+
+    public void markRfNativeContact(String uid) {
+        if (uid == null || uid.trim().isEmpty()) {
+            return;
+        }
+        String trimmed = uid.trim();
+        if (rfNativeContactUids.add(trimmed)) {
+            Log.d(TAG, "RF-native contact uid=" + trimmed);
+            scheduleReachabilityRefreshForUid(trimmed);
+        }
+    }
+
+    public void markRfHeardCallsign(String callsign) {
+        if (callsign == null || callsign.trim().isEmpty()) {
+            return;
+        }
+        String key = callsign.trim().toUpperCase(Locale.US);
+        if (rfHeardCallsigns.add(key)) {
+            Log.d(TAG, "RF-heard callsign=" + key);
+            scheduleReachabilityRefreshForCallsign(key);
+        }
+        String compact = compactRoutingKey(key);
+        if (!compact.isEmpty()) {
+            rfHeardCallsigns.add(compact);
+        }
+    }
+
+    private void scheduleReachabilityRefreshForCallsign(String callsign) {
+        if (mapView == null || callsign == null || callsign.trim().isEmpty()) {
+            return;
+        }
+        mapView.post(() -> {
+            try {
+                Contact match = com.uvpro.plugin.chat.ChatBridge.findContactByCallsignVariants(
+                        Contacts.getInstance(), callsign);
+                if (match instanceof IndividualContact) {
+                    com.uvpro.plugin.contacts.ContactReachability.applyContactCommsPolicy(
+                            (IndividualContact) match, this);
+                }
+            } catch (Exception e) {
+                Log.d(TAG, "Reachability refresh failed callsign=" + callsign, e);
+            }
+        });
+    }
+
+    private void scheduleReachabilityRefreshForUid(String uid) {
+        if (mapView == null || uid == null || uid.trim().isEmpty()) {
+            return;
+        }
+        mapView.post(() -> {
+            try {
+                Contact c = Contacts.getInstance().getContactByUuid(uid.trim());
+                if (c instanceof IndividualContact) {
+                    com.uvpro.plugin.contacts.ContactReachability.applyContactCommsPolicy(
+                            (IndividualContact) c, this);
+                }
+            } catch (Exception e) {
+                Log.d(TAG, "Reachability refresh failed uid=" + uid, e);
+            }
+        });
     }
 
     public boolean isRadioConnected() {
@@ -680,6 +782,10 @@ public class CotBridge {
             if (event != null && event.isValid()) {
                 Log.d(TAG, "Injecting position CoT for " + callsign + " uid=" + mapUid
                         + " team=" + teamForCot);
+                markRfNativeContact(mapUid);
+                if (normalizedCall != null && !normalizedCall.isEmpty()) {
+                    markRfHeardCallsign(normalizedCall);
+                }
                 markInboundInjectSkipOutboundRelay(event.getUID());
                 dispatchCotEvent(event);
                 maybeRelayInboundRadioCotToTak(event);
@@ -1583,6 +1689,7 @@ public class CotBridge {
 
             @Override
             public void logReceive(CotEvent event, String src, String dest) {
+                noteInboundNetworkTransport(event);
                 maybeNoteInboundNetworkGeoChat(event);
                 maybeSaRelayInboundNetworkCot(event);
             }
@@ -1751,6 +1858,47 @@ public class CotBridge {
             Log.d(TAG, "Registered PreSendProcessor for outgoing CoT relay");
         } catch (Exception e) {
             Log.e(TAG, "Failed to register PreSendProcessor", e);
+        }
+    }
+
+    private void noteInboundNetworkTransport(CotEvent event) {
+        if (event == null) {
+            return;
+        }
+        String uid = event.getUID();
+        if (uid == null || uid.trim().isEmpty()) {
+            return;
+        }
+        String endpoint = com.uvpro.plugin.contacts.ContactReachability.extractCotContactEndpoint(event);
+        if (endpoint != null && !endpoint.trim().isEmpty()) {
+            markWifiNativeContact(uid.trim());
+            return;
+        }
+        if (isFriendlyNetworkSa(event.getType())) {
+            String callsign = extractInboundSaCallsign(event);
+            if (callsign != null && !callsign.trim().isEmpty()) {
+                ChatBridge.ensureInboundNetworkSaContact(callsign, uid.trim());
+            }
+        }
+    }
+
+    private static boolean isFriendlyNetworkSa(String type) {
+        return type != null && type.startsWith("a-f-G");
+    }
+
+    private static String extractInboundSaCallsign(CotEvent event) {
+        if (event == null || event.getDetail() == null) {
+            return null;
+        }
+        try {
+            CotDetail contact = event.getDetail().getFirstChildByName(0, "contact");
+            if (contact == null) {
+                return null;
+            }
+            String callsign = contact.getAttribute("callsign");
+            return callsign != null ? callsign.trim() : null;
+        } catch (Exception ignored) {
+            return null;
         }
     }
 
@@ -1982,16 +2130,31 @@ public class CotBridge {
      * Optional RF -> TAK uplink path.
      * Active only when SA Relay and RF-to-TAK uplink are both enabled.
      */
-    private void maybeRelayInboundRadioCotToTak(CotEvent event) {
-        if (event == null) return;
-        if (!isRfToTakUplinkEnabled()) return;
+    public boolean isRfToTakUplinkActive() {
+        return isRfToTakUplinkEnabled();
+    }
+
+    public boolean dispatchRfPeerSaToTakNetwork(CotEvent event) {
+        if (event == null) {
+            return false;
+        }
+        if (!isRfToTakUplinkEnabled()) {
+            return false;
+        }
         try {
-            CotMapComponent.getExternalDispatcher().dispatch(event);
-            Log.d(TAG, "RF -> TAK uplink dispatched: type=" + event.getType()
+            CotMapComponent.getExternalDispatcher().dispatchToBroadcast(
+                    event, CoTSendMethod.ANY);
+            Log.i(TAG, "RF -> TAK broadcast uplink: type=" + event.getType()
                     + " uid=" + event.getUID());
+            return true;
         } catch (Exception e) {
             Log.w(TAG, "RF -> TAK uplink failed: " + e.getMessage());
+            return false;
         }
+    }
+
+    private void maybeRelayInboundRadioCotToTak(CotEvent event) {
+        dispatchRfPeerSaToTakNetwork(event);
     }
 
     private void maybeRelayLocalCotBroadcast(Intent intent) {

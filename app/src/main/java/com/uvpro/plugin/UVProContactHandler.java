@@ -1,15 +1,14 @@
 package com.uvpro.plugin;
 
-import android.content.Context;
 import android.util.Log;
 
 import com.atakmap.android.chat.ChatManagerMapComponent;
+import com.atakmap.android.chat.GeoChatConnector;
 import com.atakmap.android.contact.Contact;
 import com.atakmap.android.contact.ContactConnectorManager;
 import com.atakmap.android.contact.Contacts;
 import com.atakmap.android.contact.IndividualContact;
 import com.atakmap.android.contact.PluginConnector;
-import com.atakmap.android.maps.MapView;
 import com.atakmap.coremap.filesystem.FileSystemUtils;
 
 import java.util.Map;
@@ -23,7 +22,7 @@ public class UVProContactHandler extends
     public static final String PLUGIN_GEOCHAT_ACTION =
             "com.uvpro.plugin.action.PLUGIN_CONTACT_GEOCHAT_SEND";
 
-    private final Context pluginContext;
+    private final android.content.Context pluginContext;
 
     /**
      * Unread counter store for plugin contacts. ATAK queries this via
@@ -36,7 +35,7 @@ public class UVProContactHandler extends
     private static final int MAX_UNREAD_KEYS_PER_UID = 128;
     private static final Map<String, Set<String>> unreadKeysByUid = new ConcurrentHashMap<>();
 
-    public UVProContactHandler(Context pluginContext) {
+    public UVProContactHandler(android.content.Context pluginContext) {
         this.pluginContext = pluginContext;
     }
 
@@ -89,7 +88,8 @@ public class UVProContactHandler extends
 
     @Override
     public boolean isSupported(String type) {
-        return FileSystemUtils.isEquals(type, PluginConnector.CONNECTOR_TYPE);
+        return FileSystemUtils.isEquals(type, PluginConnector.CONNECTOR_TYPE)
+                || FileSystemUtils.isEquals(type, GeoChatConnector.CONNECTOR_TYPE);
     }
 
     @Override
@@ -111,16 +111,10 @@ public class UVProContactHandler extends
 
         if (contact instanceof IndividualContact) {
             IndividualContact ic = (IndividualContact) contact;
-            Context ctx = pluginContext != null ? pluginContext
-                    : (MapView.getMapView() != null ? MapView.getMapView().getContext() : null);
-            if (com.uvpro.plugin.contacts.ContactReachability.isPolicyEnabled(ctx)
-                    && !com.uvpro.plugin.contacts.ContactReachability.isGeoChatReachable(
-                    ic, com.uvpro.plugin.chat.ChatBridge.getMergeRoutingBridge())) {
-                com.uvpro.plugin.contacts.ContactReachability.handleUnreachableContactSelected(
-                        ctx, ic);
-                clearUnread(contactUID);
-                Log.i("BTRelay", "Contact selected (position only): " + contactUID);
-                return true;
+
+            if (FileSystemUtils.isEquals(connectorType, GeoChatConnector.CONNECTOR_TYPE)) {
+                // Reachable: defer to ATAK's default GeoChatConnectorHandler.
+                return false;
             }
 
             // Open chat UI

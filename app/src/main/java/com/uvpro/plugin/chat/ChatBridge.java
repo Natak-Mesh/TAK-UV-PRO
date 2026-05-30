@@ -927,6 +927,72 @@ public class ChatBridge {
         }
     }
 
+    /**
+     * Wi‑Fi peer received an RF-uplinked SA (map marker without {@code contact@endpoint}).
+     * ATAK does not always create a Contacts row — register one and apply reachability policy.
+     */
+    public static void ensureInboundNetworkSaContact(String callsignRaw, String uidRaw) {
+        ensureInboundNetworkSaContact(callsignRaw, uidRaw, 0);
+    }
+
+    private static void ensureInboundNetworkSaContact(String callsignRaw, String uidRaw,
+                                                        int attempt) {
+        if (uidRaw == null || uidRaw.trim().isEmpty()) {
+            return;
+        }
+        String uid = uidRaw.trim();
+        try {
+            String selfUid = MapView.getDeviceUid();
+            if (selfUid != null && selfUid.equalsIgnoreCase(uid)) {
+                return;
+            }
+        } catch (Exception ignored) {
+        }
+        MapView mv = MapView.getMapView();
+        if (mv == null) {
+            return;
+        }
+        String callsign = callsignRaw != null ? callsignRaw.trim().toUpperCase(Locale.US) : "";
+        if (callsign.isEmpty() && uid.toUpperCase(Locale.US).startsWith(ANDROID_UID_PREFIX)) {
+            callsign = uid.substring(ANDROID_UID_PREFIX.length());
+        }
+        if (callsign.isEmpty()) {
+            return;
+        }
+        try {
+            MapItem item = mv.getRootGroup() != null ? mv.getRootGroup().deepFindUID(uid) : null;
+            Contacts contacts = Contacts.getInstance();
+            IndividualContact ic = null;
+            Contact byUid = contacts.getContactByUuid(uid);
+            if (byUid instanceof IndividualContact) {
+                ic = (IndividualContact) byUid;
+            } else {
+                Contact byCallsign = findContactByCallsignVariants(contacts, callsign);
+                if (byCallsign instanceof IndividualContact) {
+                    ic = (IndividualContact) byCallsign;
+                }
+            }
+            if (ic == null) {
+                if (item == null && attempt < 20) {
+                    mv.postDelayed(() -> ensureInboundNetworkSaContact(
+                            callsignRaw, uidRaw, attempt + 1), 100L);
+                    return;
+                }
+                ic = new IndividualContact(callsign, uid, item, buildNativeConnectorSeed(callsign));
+                contacts.addContact(ic);
+                Log.i(TAG, "Registered inbound network SA contact uid=" + uid
+                        + " callsign=" + callsign);
+            } else if (item != null && ic.getMapItem() == null) {
+                ic.setMapItem(item);
+            }
+            applyPostMergeCommsPolicy(ic);
+            ic.dispatchChangeEvent();
+            collapseDuplicateContactsForCallsign(callsign, ic.getUID());
+        } catch (Exception e) {
+            Log.w(TAG, "ensureInboundNetworkSaContact failed uid=" + uid, e);
+        }
+    }
+
     private static void removeDuplicateUidContact(Contacts contacts, String candidateUid, String keepUid) {
         if (contacts == null || candidateUid == null || candidateUid.trim().isEmpty()) {
             return;
@@ -944,7 +1010,7 @@ public class ChatBridge {
         }
     }
 
-    private static Contact findContactByCallsignVariants(Contacts contacts, String rawCallsign) {
+    public static Contact findContactByCallsignVariants(Contacts contacts, String rawCallsign) {
         if (contacts == null) {
             return null;
         }
@@ -1040,6 +1106,40 @@ public class ChatBridge {
         preferNativeContactActionInternal(contact);
     }
 
+    public static boolean preferPositionOnlyContactActionInternal(IndividualContact contact) {
+        if (contact == null) {
+            return false;
+        }
+        try {
+            MapView mv = MapView.getMapView();
+            if (mv == null) {
+                return false;
+            }
+            AtakPreferences prefs = new AtakPreferences(mv.getContext());
+            String uid = contact.getUID();
+            clearDefaultConnectorPref(prefs, uid);
+
+            contact.removeConnector(PluginConnector.CONNECTOR_TYPE);
+            contact.removeConnector(GeoChatConnector.CONNECTOR_TYPE);
+            contact.removeConnector(IpConnector.CONNECTOR_TYPE);
+
+            if (contact.getConnector(
+                    com.uvpro.plugin.contacts.PositionOnlyConnector.CONNECTOR_TYPE) == null) {
+                contact.addConnector(new com.uvpro.plugin.contacts.PositionOnlyConnector());
+            }
+            writeDefaultConnectorPref(prefs, uid,
+                    com.uvpro.plugin.contacts.PositionOnlyConnector.CONNECTOR_TYPE);
+            contact.dispatchChangeEvent();
+            Log.i(TAG, "preferPositionOnlyContactAction uid=" + uid
+                    + " callsign=" + contact.getName());
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "preferPositionOnlyContactAction failed uid="
+                    + (contact != null ? contact.getUID() : "?"), e);
+            return false;
+        }
+    }
+
     public static boolean preferNativeContactActionInternal(IndividualContact contact) {
         if (contact == null) {
             return false;
@@ -1054,6 +1154,8 @@ public class ChatBridge {
             clearDefaultConnectorPref(prefs, uid);
 
             contact.removeConnector(PluginConnector.CONNECTOR_TYPE);
+            contact.removeConnector(
+                    com.uvpro.plugin.contacts.PositionOnlyConnector.CONNECTOR_TYPE);
 
             if (contact.getConnector(GeoChatConnector.CONNECTOR_TYPE) == null) {
                 String callsign = contact.getName() != null ? contact.getName() : "";
@@ -1127,9 +1229,27 @@ public class ChatBridge {
         }
     }
 
+    private static void applyPostMergeCommsPolicy(IndividualContact contact) {
+        if (contact == null) {
+            return;
+        }
+        Context ctx = MapView.getMapView() != null
+                ? MapView.getMapView().getContext() : null;
+        if (com.uvpro.plugin.contacts.ContactReachability.isPolicyEnabled(ctx)) {
+            com.uvpro.plugin.contacts.ContactReachability.applyContactCommsPolicy(
+                    contact, mergeRoutingBridge);
+        } else if (needsNativeContactRepair(contact)) {
+            preferNativeContactActionInternal(contact);
+        }
+    }
+
     private static boolean needsNativeContactRepair(IndividualContact ic) {
         if (ic == null) {
             return false;
+        }
+        if (ic.getConnector(
+                com.uvpro.plugin.contacts.PositionOnlyConnector.CONNECTOR_TYPE) != null) {
+            return true;
         }
         String uid = ic.getUID();
         if (isOpaqueWifiDeviceUid(uid)) {
@@ -1209,9 +1329,7 @@ public class ChatBridge {
             if (candidates.size() <= 1) {
                 if (candidates.size() == 1) {
                     IndividualContact only = candidates.get(0);
-                    if (needsNativeContactRepair(only)) {
-                        preferNativeContactAction(only);
-                    }
+                    applyPostMergeCommsPolicy(only);
                     finishContactMerge(only, rawCallsign);
                 }
                 return;
@@ -1234,7 +1352,7 @@ public class ChatBridge {
             if (keep == null) {
                 return;
             }
-            preferNativeContactAction(keep);
+            applyPostMergeCommsPolicy(keep);
             String keepUid = keep.getUID();
             for (IndividualContact ic : candidates) {
                 if (ic.getUID().equalsIgnoreCase(keepUid)) {

@@ -199,6 +199,22 @@ Operational expectation after patch:
 
 ---
 
+## 3.3 2026-05-30 Bridge uplink + reachability UI shelved
+
+**Field test plan:** `docs/UV-PRO-INTEGRATION-TEST-PLAN.md` (authoritative status + next phases).
+
+Implemented in this session:
+
+- **RF → TAK uplink keepalive** (`RfTakUplinkKeepalive`) — rebroadcasts RF peer SA to LAN when bridge has SA Relay + uplink ON.
+- **`dispatchToBroadcast(..., CoTSendMethod.ANY)`** — RF-uplinked SA reaches WiFi-only peers (e.g. J15).
+- **`ensureInboundNetworkSaContact()`** — WiFi devices register relayed RF peers in Contacts.
+- **LAN ownership / transport marks** in `ContactReachability` for SA-relay filtering (backend only).
+- **GeoChat reachability UI removed** — no position-only red X; all contacts use native chat bubble (operator accepts possible undelivered cross-transport messages).
+
+**Next field focus:** Phase 3 (SA Relay + uplink on J25) per integration test plan.
+
+---
+
 ## 4. Source layout (abbreviated)
 
 ```

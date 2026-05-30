@@ -1,19 +1,20 @@
 package com.uvpro.plugin.contacts;
 
 import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.util.Log;
-import android.widget.Toast;
 
 import com.atakmap.android.chat.GeoChatConnector;
+import com.atakmap.android.chat.ChatManagerMapComponent;
 import com.atakmap.android.contact.Contact;
 import com.atakmap.android.contact.Contacts;
 import com.atakmap.android.contact.IndividualContact;
 import com.atakmap.android.contact.IpConnector;
 import com.atakmap.android.contact.PluginConnector;
 import com.atakmap.android.cot.CotMapComponent;
-import com.atakmap.android.maps.MapItem;
 import com.atakmap.android.maps.MapView;
-import com.atakmap.android.maps.PointMapItem;
 import com.atakmap.android.preference.AtakPreferences;
 import com.atakmap.comms.NetConnectString;
 import com.atakmap.coremap.cot.event.CotDetail;
@@ -21,7 +22,6 @@ import com.atakmap.coremap.cot.event.CotEvent;
 import com.uvpro.plugin.chat.GeoChatContactListHelper;
 import com.uvpro.plugin.cot.CotBridge;
 import com.uvpro.plugin.network.WifiContactKeepalive;
-import com.uvpro.plugin.ui.SettingsFragment;
 
 import java.util.List;
 import java.util.Locale;
@@ -42,38 +42,110 @@ public final class ContactReachability {
     }
 
     public static boolean isPolicyEnabled(Context context) {
-        if (context == null) {
-            return true;
-        }
-        return SettingsFragment.isRestrictChatToReachablePeers(context);
+        return false;
     }
 
     public static boolean isGeoChatReachable(IndividualContact contact, CotBridge bridge) {
-        if (contact == null) {
+        if (contact == null || isProtectedContact(contact)) {
             return false;
         }
-        return hasWifiChatPath(contact) || hasRfChatPath(contact, bridge);
+        return hasWifiChatPath(contact, bridge) || hasRfChatPath(contact, bridge);
     }
 
-    public static boolean hasWifiChatPath(IndividualContact contact) {
-        if (contact == null || !isLocalWifiAvailable()) {
+    /**
+     * Direct Wi‑Fi GeoChat: local Wi‑Fi up and a routable connector for a peer that owns
+     * their LAN endpoint (not a relay-stamped IP shared with the bridge).
+     */
+    public static boolean hasWifiChatPath(IndividualContact contact, CotBridge bridge) {
+        if (contact == null || bridge == null || !isLocalWifiAvailable()) {
             return false;
         }
-        return resolveRoutableNetworkEndpoint(contact) != null;
+        if (resolveRoutableNetworkEndpoint(contact) == null) {
+            return false;
+        }
+        if (!isDirectLanWifiPeer(contact, bridge)) {
+            return false;
+        }
+        String uid = contact.getUID();
+        if (uid != null) {
+            bridge.markWifiNativeContact(uid.trim());
+        }
+        return true;
     }
 
     public static boolean hasRfChatPath(IndividualContact contact, CotBridge bridge) {
         if (contact == null || bridge == null || !bridge.isRadioConnected()) {
             return false;
         }
+        if (isWifiOnlyRemotePeer(contact, bridge)) {
+            return false;
+        }
         String uid = contact.getUID();
+        if (uid != null && bridge.isRfNativeContact(uid.trim())) {
+            return true;
+        }
+        String name = contact.getName();
+        if (name != null && bridge.isRfHeardCallsign(name.trim())) {
+            return true;
+        }
         return uid != null && bridge.isBtechContactUid(uid.trim());
     }
 
+    /**
+     * Wi‑Fi-only peers (never heard on RF here) must not show an RF chat path.
+     */
+    private static boolean isWifiOnlyRemotePeer(IndividualContact contact, CotBridge bridge) {
+        if (contact == null || bridge == null) {
+            return false;
+        }
+        String uid = contact.getUID();
+        if (uid == null || uid.trim().isEmpty()) {
+            return false;
+        }
+        String trimmed = uid.trim();
+        String name = contact.getName() != null ? contact.getName().trim() : "";
+
+        // Dual-net / RF peers heard on radio here are not Wi‑Fi-only remote.
+        if (!name.isEmpty() && bridge.isRfHeardCallsign(name)) {
+            return false;
+        }
+        if (bridge.isRfNativeContact(trimmed)) {
+            // Relay can stale-mark Wi‑Fi peers; confirm Wi‑Fi fingerprint before blocking RF.
+            if (bridge.isWifiNativeContact(trimmed) || isDirectLanWifiPeer(contact, bridge)) {
+                return true;
+            }
+            return false;
+        }
+
+        if (bridge.isWifiNativeContact(trimmed)) {
+            return true;
+        }
+        if (isDirectLanWifiPeer(contact, bridge)) {
+            return true;
+        }
+        if (!isLocalWifiAvailable() && resolveRoutableNetworkEndpoint(contact) != null) {
+            return true;
+        }
+        return isOpaqueWifiDeviceUid(trimmed);
+    }
+
     public static boolean isLocalWifiAvailable() {
+        Context ctx = resolveContext();
+        if (ctx == null) {
+            return false;
+        }
         try {
-            String endpoint = CotMapComponent.getEndpoint();
-            return endpoint != null && !endpoint.trim().isEmpty();
+            ConnectivityManager cm =
+                    (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) {
+                return false;
+            }
+            Network active = cm.getActiveNetwork();
+            if (active == null) {
+                return false;
+            }
+            NetworkCapabilities caps = cm.getNetworkCapabilities(active);
+            return caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
         } catch (Exception e) {
             return false;
         }
@@ -138,10 +210,6 @@ public final class ContactReachability {
     }
 
     public static void applyAllContactCommsPolicies(CotBridge bridge) {
-        Context ctx = resolveContext();
-        if (!isPolicyEnabled(ctx)) {
-            return;
-        }
         try {
             Contacts contacts = Contacts.getInstance();
             List<Contact> all = contacts.getAllContacts();
@@ -158,7 +226,7 @@ public final class ContactReachability {
                 }
             }
             if (updated > 0) {
-                Log.i(TAG, "Applied comms reachability policy to " + updated + " contact(s)");
+                Log.i(TAG, "Restored native GeoChat connectors for " + updated + " contact(s)");
             }
         } catch (Exception e) {
             Log.w(TAG, "applyAllContactCommsPolicies failed", e);
@@ -169,107 +237,41 @@ public final class ContactReachability {
      * @return true when connectors or prefs were changed
      */
     public static boolean applyContactCommsPolicy(IndividualContact contact, CotBridge bridge) {
-        Context ctx = resolveContext();
-        if (contact == null || !isPolicyEnabled(ctx)) {
+        if (contact == null || isProtectedContact(contact)) {
             return false;
         }
-        if (isGeoChatReachable(contact, bridge)) {
-            return applyReachableCommsPolicy(contact, bridge);
-        }
-        return applyChatUnreachablePolicy(contact);
-    }
-
-    private static boolean applyReachableCommsPolicy(IndividualContact contact, CotBridge bridge) {
-        if (hasWifiChatPath(contact)) {
-            return com.uvpro.plugin.chat.ChatBridge.preferNativeContactActionInternal(contact);
-        }
-        if (hasRfChatPath(contact, bridge)) {
-            return applyRfChatPolicy(contact);
-        }
-        return false;
-    }
-
-    private static boolean applyRfChatPolicy(IndividualContact contact) {
-        try {
-            MapView mv = MapView.getMapView();
-            if (mv == null) {
-                return false;
-            }
-            AtakPreferences prefs = new AtakPreferences(mv.getContext());
-            String uid = contact.getUID();
-            clearDefaultConnectorPref(prefs, uid);
-            contact.removeConnector(GeoChatConnector.CONNECTOR_TYPE);
-            contact.removeConnector(IpConnector.CONNECTOR_TYPE);
-            if (contact.getConnector(PluginConnector.CONNECTOR_TYPE) == null) {
-                contact.addConnector(new PluginConnector(
-                        com.uvpro.plugin.UVProContactHandler.PLUGIN_GEOCHAT_ACTION));
-            }
-            writeDefaultConnectorPref(prefs, uid, PluginConnector.CONNECTOR_TYPE);
-            contact.dispatchChangeEvent();
-            return true;
-        } catch (Exception e) {
-            Log.w(TAG, "applyRfChatPolicy failed uid="
-                    + (contact != null ? contact.getUID() : "?"), e);
+        boolean hasPositionOnly =
+                contact.getConnector(PositionOnlyConnector.CONNECTOR_TYPE) != null;
+        boolean missingGeoChat =
+                contact.getConnector(GeoChatConnector.CONNECTOR_TYPE) == null;
+        if (!hasPositionOnly && !missingGeoChat) {
             return false;
         }
+        return com.uvpro.plugin.chat.ChatBridge.preferNativeContactActionInternal(contact);
     }
 
-    static boolean applyChatUnreachablePolicy(IndividualContact contact) {
-        try {
-            MapView mv = MapView.getMapView();
-            if (mv == null) {
-                return false;
-            }
-            AtakPreferences prefs = new AtakPreferences(mv.getContext());
-            String uid = contact.getUID();
-            clearDefaultConnectorPref(prefs, uid);
-            contact.removeConnector(GeoChatConnector.CONNECTOR_TYPE);
-            contact.removeConnector(IpConnector.CONNECTOR_TYPE);
-            if (contact.getConnector(PluginConnector.CONNECTOR_TYPE) == null) {
-                contact.addConnector(new PluginConnector(
-                        com.uvpro.plugin.UVProContactHandler.PLUGIN_GEOCHAT_ACTION));
-            }
-            writeDefaultConnectorPref(prefs, uid, PluginConnector.CONNECTOR_TYPE);
-            contact.dispatchChangeEvent();
-            Log.d(TAG, "Chat unreachable uid=" + uid + " callsign=" + contact.getName());
-            return true;
-        } catch (Exception e) {
-            Log.w(TAG, "applyChatUnreachablePolicy failed uid="
-                    + (contact != null ? contact.getUID() : "?"), e);
-            return false;
-        }
-    }
-
-    public static void handleUnreachableContactSelected(Context context, IndividualContact contact) {
-        String callsign = contact != null && contact.getName() != null
-                ? contact.getName().trim() : "Contact";
-        Context ctx = context != null ? context : resolveContext();
-        if (ctx != null) {
-            Toast.makeText(ctx,
-                    callsign + " — position only (not reachable for GeoChat from this device)",
-                    Toast.LENGTH_LONG).show();
-        }
-        focusContactOnMap(contact);
-    }
-
-    private static void focusContactOnMap(IndividualContact contact) {
+    static boolean isProtectedContact(IndividualContact contact) {
         if (contact == null) {
-            return;
+            return true;
+        }
+        String uid = contact.getUID();
+        if (uid == null || uid.trim().isEmpty()) {
+            return true;
+        }
+        String trimmed = uid.trim();
+        if (ALL_CHAT_ROOMS.equals(trimmed)
+                || trimmed.contains("All Chat Rooms")) {
+            return true;
         }
         try {
-            MapView mv = MapView.getMapView();
-            if (mv == null || mv.getRootGroup() == null) {
-                return;
-            }
-            MapItem item = contact.getMapItem();
-            if (item == null && contact.getUID() != null) {
-                item = mv.getRootGroup().deepFindUID(contact.getUID());
-            }
-            if (item instanceof PointMapItem) {
-                mv.getMapController().panTo(((PointMapItem) item).getPoint(), true);
+            String role = ChatManagerMapComponent.getRoleName();
+            if (role != null && role.equals(trimmed)) {
+                return true;
             }
         } catch (Exception ignored) {
         }
+        String self = safeSelfUid();
+        return !self.isEmpty() && self.equalsIgnoreCase(trimmed);
     }
 
     static NetConnectString resolveRoutableNetworkEndpoint(IndividualContact contact) {
@@ -295,7 +297,108 @@ public final class ContactReachability {
         return WifiContactKeepalive.isRoutableEndpoint(ncs) ? ncs : null;
     }
 
-    static String extractCotContactEndpoint(CotEvent event) {
+    /**
+     * True when this contact owns their LAN IP (direct Wi‑Fi peer), not a relay-stamped endpoint
+     * shared with another contact (e.g. bridge IP on an RF-uplinked SA).
+     */
+    static boolean isDirectLanWifiPeer(IndividualContact contact, CotBridge bridge) {
+        if (contact == null) {
+            return false;
+        }
+        NetConnectString ncs = resolveRoutableNetworkEndpoint(contact);
+        if (ncs == null) {
+            return false;
+        }
+        String host = ncs.getHost();
+        if (host == null || host.trim().isEmpty()) {
+            return false;
+        }
+        IndividualContact hostOwner = findLanEndpointHostOwner(host.trim(), bridge);
+        if (hostOwner == null) {
+            return false;
+        }
+        String contactUid = contact.getUID();
+        String ownerUid = hostOwner.getUID();
+        return contactUid != null && ownerUid != null
+                && contactUid.trim().equalsIgnoreCase(ownerUid.trim());
+    }
+
+    private static IndividualContact findLanEndpointHostOwner(String host, CotBridge bridge) {
+        if (host == null || host.isEmpty()) {
+            return null;
+        }
+        try {
+            Contacts contacts = Contacts.getInstance();
+            List<Contact> all = contacts.getAllContacts();
+            if (all == null) {
+                return null;
+            }
+            List<IndividualContact> onHost = new java.util.ArrayList<>();
+            for (Contact c : all) {
+                if (!(c instanceof IndividualContact)) {
+                    continue;
+                }
+                IndividualContact ic = (IndividualContact) c;
+                NetConnectString ncs = resolveRoutableNetworkEndpoint(ic);
+                if (ncs == null || !host.equalsIgnoreCase(ncs.getHost())) {
+                    continue;
+                }
+                onHost.add(ic);
+            }
+            if (onHost.isEmpty()) {
+                return null;
+            }
+            if (bridge != null) {
+                for (IndividualContact ic : onHost) {
+                    String uid = ic.getUID();
+                    if (uid != null && bridge.isWifiNativeContact(uid.trim())) {
+                        return ic;
+                    }
+                }
+            }
+            if (onHost.size() == 1) {
+                IndividualContact sole = onHost.get(0);
+                if (connectorSuffixMatchesCallsign(sole, sole.getName())) {
+                    return sole;
+                }
+            }
+            return null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static boolean connectorSuffixMatchesCallsign(IndividualContact contact, String callsign) {
+        if (contact == null || callsign == null || callsign.trim().isEmpty()) {
+            return false;
+        }
+        String normalized = callsign.trim().toUpperCase(Locale.US);
+        for (String type : new String[] {
+                IpConnector.CONNECTOR_TYPE,
+                GeoChatConnector.CONNECTOR_TYPE
+        }) {
+            com.atakmap.android.contact.Connector connector = contact.getConnector(type);
+            if (connector == null) {
+                continue;
+            }
+            String cs = connector.getConnectionString();
+            if (cs == null || cs.trim().isEmpty()) {
+                continue;
+            }
+            NetConnectString ncs = NetConnectString.fromString(cs.trim());
+            if (ncs == null) {
+                continue;
+            }
+            String callsignPart = ncs.getCallsign();
+            if (callsignPart != null
+                    && normalized.equals(callsignPart.trim().toUpperCase(Locale.US))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public static String extractCotContactEndpoint(CotEvent event) {
         if (event == null || event.getDetail() == null) {
             return null;
         }

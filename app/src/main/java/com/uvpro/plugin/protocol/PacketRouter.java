@@ -217,6 +217,8 @@ public class PacketRouter {
                             gps.teamColor, uid);
 
                     cotBridge.registerBtechContactUid(uid);
+                    cotBridge.markRfNativeContact(uid);
+                    cotBridge.markRfHeardCallsign(normalized);
                     cotBridge.registerBtechContactId(normalized, uid);
                     String radioTrunc = CallsignUtil.toRadioCallsign(normalized);
                     if (radioTrunc != null && !radioTrunc.isEmpty()

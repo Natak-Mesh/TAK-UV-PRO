@@ -41,6 +41,7 @@ import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.ax25.AprsIconsetInstaller;
 import com.uvpro.plugin.location.RadioGpsBridge;
 import com.uvpro.plugin.location.RadioPositionFix;
+import com.uvpro.plugin.network.RfTakUplinkKeepalive;
 import com.uvpro.plugin.network.WifiContactKeepalive;
 import com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
 import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry;
@@ -140,6 +141,7 @@ public class UVProMapComponent extends DropDownMapComponent {
     private android.content.BroadcastReceiver beaconIntervalReceiver;
     private final SmartBeacon smartBeacon = new SmartBeacon();
     private WifiContactKeepalive wifiContactKeepalive;
+    private RfTakUplinkKeepalive rfTakUplinkKeepalive;
     /** One startup pull from radio GPS after first successful BT connect. */
     private final AtomicBoolean startupRadioGpsUpdateDone = new AtomicBoolean(false);
     private final AtomicBoolean startupRadioGpsUpdateInFlight = new AtomicBoolean(false);
@@ -275,7 +277,14 @@ try {
                 // Anchor first periodic beacon to connection time.
                 startBeaconTimer();
                 triggerOneTimeStartupRadioGpsUpdate();
-                view.post(() -> ChatBridge.collapseAllCallsignAliasDuplicates());
+                view.post(() -> {
+                    ChatBridge.collapseAllCallsignAliasDuplicates();
+                    com.uvpro.plugin.contacts.ContactReachability.applyAllContactCommsPolicies(
+                            cotBridge);
+                    if (rfTakUplinkKeepalive != null) {
+                        rfTakUplinkKeepalive.kick();
+                    }
+                });
             }
             @Override
             public void onDisconnected(String reason) {
@@ -298,7 +307,14 @@ try {
                 // Keep periodic beacon behavior consistent with UV-PRO transport:
                 // first beacon 30s after a successful mesh connection.
                 startBeaconTimer();
-                view.post(() -> ChatBridge.collapseAllCallsignAliasDuplicates());
+                view.post(() -> {
+                    ChatBridge.collapseAllCallsignAliasDuplicates();
+                    com.uvpro.plugin.contacts.ContactReachability.applyAllContactCommsPolicies(
+                            cotBridge);
+                    if (rfTakUplinkKeepalive != null) {
+                        rfTakUplinkKeepalive.kick();
+                    }
+                });
             }
 
             @Override
@@ -374,10 +390,14 @@ try {
         view.postDelayed(() -> {
             ChatBridge.collapseAllCallsignAliasDuplicates();
             ChatBridge.repairAllNativeContactActions();
+            com.uvpro.plugin.contacts.ContactReachability.applyAllContactCommsPolicies(
+                    cotBridge);
         }, 5000L);
 
         wifiContactKeepalive = new WifiContactKeepalive(view);
         wifiContactKeepalive.start();
+        rfTakUplinkKeepalive = new RfTakUplinkKeepalive(view, cotBridge);
+        rfTakUplinkKeepalive.start();
 
         // Repeater selection + APRS marker tap → APRS metadata panel.
         mapItemClickListener = event -> {
@@ -485,6 +505,10 @@ try {
         if (wifiContactKeepalive != null) {
             wifiContactKeepalive.stop();
             wifiContactKeepalive = null;
+        }
+        if (rfTakUplinkKeepalive != null) {
+            rfTakUplinkKeepalive.stop();
+            rfTakUplinkKeepalive = null;
         }
         if (iconsetReminderHandler != null && iconsetReminderRunnable != null) {
             iconsetReminderHandler.removeCallbacks(iconsetReminderRunnable);

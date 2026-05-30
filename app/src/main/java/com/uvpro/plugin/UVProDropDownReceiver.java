@@ -4236,20 +4236,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
         hintRfToTakUplink.setTextSize(12);
         layout.addView(hintRfToTakUplink);
 
-        Switch switchRestrictReachableChat = new Switch(ctx);
-        switchRestrictReachableChat.setText("Restrict GeoChat to reachable peers");
-        switchRestrictReachableChat.setTextColor(0xFFCCCCCC);
-        switchRestrictReachableChat.setChecked(
-                SettingsFragment.isRestrictChatToReachablePeers(ctx));
-        layout.addView(switchRestrictReachableChat);
-
-        TextView hintRestrictReachableChat = new TextView(ctx);
-        hintRestrictReachableChat.setText(
-                "Map positions stay visible; GeoChat is disabled for peers not on your WiFi or radio path.");
-        hintRestrictReachableChat.setTextColor(0xFF888888);
-        hintRestrictReachableChat.setTextSize(12);
-        layout.addView(hintRestrictReachableChat);
-
         // Team color is controlled by ATAK core settings (locationTeam). Plugin no longer overrides it.
 
         SettingsFragment.AdministrationUi adminUi =
@@ -4266,8 +4252,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
                             switchSaRelay.isChecked());
                     editor.putBoolean(SettingsFragment.PREF_RF_TO_TAK_UPLINK_ENABLED,
                             switchRfToTakUplink.isChecked());
-                    editor.putBoolean(SettingsFragment.PREF_RESTRICT_CHAT_TO_REACHABLE_PEERS,
-                            switchRestrictReachableChat.isChecked());
 
                     editor.putBoolean(SettingsFragment.PREF_PING_REPLY_ENABLED,
                             switchPingReply.isChecked());
@@ -4298,8 +4282,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     appendLog("SA Relay " + (switchSaRelay.isChecked() ? "enabled" : "disabled"));
                     appendLog("RF -> TAK Uplink "
                             + (switchRfToTakUplink.isChecked() ? "enabled" : "disabled"));
-                    appendLog("Restrict reachable GeoChat "
-                            + (switchRestrictReachableChat.isChecked() ? "enabled" : "disabled"));
                     if (rootView != null) {
                         getMapView().post(() -> {
                             updateStatusFields();

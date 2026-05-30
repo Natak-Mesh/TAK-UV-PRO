@@ -2791,21 +2791,38 @@ public class ChatBridge {
     }
 
     /**
-     * Notify peer over RF that their chat frame was received (GeoChat delivered).
+     * Wait for follow-up RF traffic (sender CoT relay, OPENRL guard, etc.) to clear
+     * before keying a compact chat ACK — reduces mesh drops from on-channel collisions.
+     */
+    private static final long RF_CHAT_ACK_DELIVERED_DELAY_MS = 5000L;
+    private static final long RF_CHAT_ACK_READ_DELAY_MS = 5000L;
+
+    /**
+     * Notify peer over RF that their chat frame was received (GeoChat delivered/read).
      */
     public void sendRadioChatAck(int wireMessageId, byte ackKind) {
-        sendRadioChatAck(wireMessageId, ackKind, 0);
+        if (!relayOutgoing || btManager == null || !btManager.isConnected()) {
+            return;
+        }
+        long delayMs = ackKind == UVProPacket.ACK_KIND_READ
+                ? RF_CHAT_ACK_READ_DELAY_MS
+                : RF_CHAT_ACK_DELIVERED_DELAY_MS;
+        Log.d(TAG, "Scheduling radio chat ACK kind=" + ackKind + " mid=" + wireMessageId
+                + " in " + (delayMs / 1000) + "s");
+        android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+        h.postDelayed(() -> sendRadioChatAckWhenReady(wireMessageId, ackKind, 0), delayMs);
     }
 
-    private void sendRadioChatAck(int wireMessageId, byte ackKind, int deferAttempt) {
-        if (!relayOutgoing || btManager == null || !btManager.isConnected()) {
+    private void sendRadioChatAckWhenReady(int wireMessageId, byte ackKind, int deferAttempt) {
+        if (disposed || !relayOutgoing || btManager == null || !btManager.isConnected()) {
             return;
         }
         if (com.uvpro.plugin.protocol.RfTxArbitrator.get().shouldDeferRfChatAck()) {
             if (deferAttempt < 24) {
                 android.os.Handler h = new android.os.Handler(
                         android.os.Looper.getMainLooper());
-                h.postDelayed(() -> sendRadioChatAck(wireMessageId, ackKind, deferAttempt + 1),
+                h.postDelayed(() -> sendRadioChatAckWhenReady(wireMessageId, ackKind,
+                                deferAttempt + 1),
                         400L);
             } else {
                 Log.w(TAG, "Chat ACK deferred too long; dropping mid=" + wireMessageId);

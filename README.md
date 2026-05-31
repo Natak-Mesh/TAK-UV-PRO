@@ -32,6 +32,14 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
 
+### 2026-05-30 Progress Update (v1.9.55)
+
+- **MeshCore DMs use native contact messages:** Map-selected GeoChat direct messages to MeshCore nodes now go out as standard pubkey-to-pubkey contact messages (`CMD_SEND_TXT_MSG`) instead of the proprietary `0xFF01` AX.25 channel datagram. Native MeshCore clients previously rejected those datagrams as "Unhandled," so DMs were never delivered; they now interoperate with the native MeshCore app in both directions.
+- **Inbound native DMs → GeoChat:** Incoming MeshCore contact messages (`RESP_CONTACT_MSG` / `_V3`) are parsed by the sender's pubkey prefix and injected into the matching `MESHCORE-NODE-<pubkey>` GeoChat thread.
+- **Mesh contact routing:** Mesh-node contacts are kept on the `MeshSendMessageConnector` (plugin RF) path rather than the unroutable native `stcp` connector that caused ATAK to throw "Send to unknown contact."
+- **Transmit-mode persistence:** The `ATAK MeshCore Transmit` preference is now persisted and honored for beacon transport selection.
+- **Note:** As with the native app, the recipient node must already be a contact on the sender's MeshCore node (the firmware routes DMs by 6-byte pubkey prefix).
+
 ### 2026-05-21 Progress Update
 
 - RF group sync now relays full GeoChat CoT `b-t-f` with `hierarchy` and improved inbound handling through ATAK GeoChat paths.

@@ -31,6 +31,8 @@ app/build/
 # Local-only agent / handoff notes (not published)
 NEW-AGENT-HANDOFF.md
 HANDOFF.md
+docs/agent_meshcore_handoff_*.md
+!docs/agent_meshcore_handoff_v54.md
 
 # Debug / scratch
 build_output.txt

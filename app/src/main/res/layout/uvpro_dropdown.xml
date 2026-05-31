@@ -238,7 +238,7 @@
                     android:layout_weight="1"
                     android:text="SCAN &amp; CONNECT"
                     android:layout_marginEnd="4dp"
-                    android:background="@drawable/bg_uvpro_connection_button_connect" />
+                    android:background="@drawable/bg_uvpro_connection_button" />
 
                 <Button
                     android:id="@+id/btn_mesh_disconnect"
@@ -889,7 +889,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:background="#FF2D2D2D"
+            android:background="@drawable/bg_uvpro_beacon_section"
             android:padding="12dp"
             android:layout_marginBottom="8dp">
 
@@ -909,7 +909,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="4dp"
                 android:text="Send Beacon"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_beacon_button" />
 
             <Button
                 android:id="@+id/btn_send_ping"
@@ -918,7 +918,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
                 android:text="Send Ping"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_beacon_button" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -957,7 +957,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
                 android:text="Smart Beacon Settings"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_beacon_button" />
 
             <LinearLayout
                 android:id="@+id/row_beacon_interval"
@@ -993,7 +993,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="Beacon Settings"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_beacon_button" />
         </LinearLayout>
 
         <!-- ==================== APRS ==================== -->
@@ -1001,7 +1001,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:background="#FF2D2D2D"
+            android:background="@drawable/bg_uvpro_aprs_section"
             android:padding="12dp"
             android:layout_marginBottom="8dp">
 
@@ -1021,7 +1021,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="4dp"
                 android:text="Long Press for APRS Beacon"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_aprs_button" />
 
             <TextView
                 android:layout_width="match_parent"
@@ -1121,7 +1121,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
                 android:text="Send APRS Beacon"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_aprs_button" />
 
             <Button
                 android:id="@+id/btn_clear_aprs_contacts"
@@ -1130,7 +1130,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
                 android:text="Clear all APRS contacts"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_aprs_button" />
 
             <Button
                 android:id="@+id/btn_edit_aprs_settings"
@@ -1138,7 +1138,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="Edit APRS Settings"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_aprs_button" />
         </LinearLayout>
 
         <!-- ==================== MESHCORE ==================== -->
@@ -1301,17 +1301,9 @@
                 android:text="Clear All Mesh Contacts"
                 android:background="@drawable/bg_uvpro_mesh_button" />
 
-            <Button
-                android:id="@+id/btn_mesh_node_settings"
-                style="@style/UvproPillButton.Beacon"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Node Settings"
-                android:background="@drawable/bg_uvpro_mesh_button" />
         </LinearLayout>
 
-        <!-- ==================== ACTIONS ==================== -->
+        <!-- ==================== SETTINGS ==================== -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -1323,7 +1315,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="ACTIONS"
+                android:text="SETTINGS"
                 android:textColor="#FF00BCD4"
                 android:textSize="12sp"
                 android:textStyle="bold"
@@ -1344,6 +1336,15 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="6dp"
                 android:text="Plugin Settings"
+                android:backgroundTint="#FF455A64" />
+
+            <Button
+                android:id="@+id/btn_mesh_node_settings"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="6dp"
+                android:text="Node Settings"
                 android:backgroundTint="#FF455A64" />
 
             <Button

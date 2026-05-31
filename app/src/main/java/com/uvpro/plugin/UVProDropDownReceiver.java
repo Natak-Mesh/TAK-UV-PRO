@@ -5937,12 +5937,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
         stopMeshConnectButtonPulse(false);
         btnMeshScan.setBackgroundTintList(null);
         meshConnectPulseDrawable = buildVfoButtonBackground(
-                COLOR_PILL_BUTTON_PRIMARY, 0x00FFEB3B, EDIT_SELECTION_STROKE_DP);
+                COLOR_PILL_BUTTON_PRIMARY, 0x00F44336, EDIT_SELECTION_STROKE_DP);
         btnMeshScan.setBackground(meshConnectPulseDrawable);
         meshConnectPulseAnimator = ValueAnimator.ofObject(
                 new ArgbEvaluator(),
-                0x11FFEB3B,
-                0xFFFFEB3B);
+                0x11F44336,
+                0xFFF44336);
         meshConnectPulseAnimator.setDuration(260L);
         meshConnectPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
         meshConnectPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
@@ -6018,7 +6018,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         meshConnectPulseDrawable = null;
         if (restoreBackground && btnMeshScan != null) {
-            applyPillButtonBackground(btnMeshScan, 0xFF455A64);
+            int bgId = pluginContext.getResources().getIdentifier(
+                    "bg_uvpro_connection_button", "drawable", pluginContext.getPackageName());
+            if (bgId != 0) {
+                btnMeshScan.setBackgroundResource(bgId);
+            } else {
+                applyPillButtonBackground(btnMeshScan, 0xFF455A64);
+            }
         }
     }
 

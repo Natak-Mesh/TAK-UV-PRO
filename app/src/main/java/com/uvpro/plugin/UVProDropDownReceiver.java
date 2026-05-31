@@ -20,6 +20,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.preference.PreferenceManager;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
+import android.text.style.RelativeSizeSpan;
 import android.text.style.ReplacementSpan;
 import android.util.Base64;
 import android.util.Log;
@@ -145,6 +146,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
             "uvpro_atak_wifi_transmit";
     private static final String PREF_MESH_CHANNEL_HISTORY =
             "uvpro_mesh_channel_history_v1";
+    private static final String PREF_MESH_SHOW_REPEATERS =
+            "uvpro_mesh_show_repeaters";
+    private static final String PREF_MESH_SHOW_NODES =
+            "uvpro_mesh_show_nodes";
 
     private final Context pluginContext;
     private final BtConnectionManager btManager;
@@ -194,6 +199,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Button btnSendAprsBeacon;
     private Button btnClearAprsContacts;
     private Button btnEditAprsSettings;
+    private Switch switchMeshShowRepeaters;
+    private Switch switchMeshShowNodes;
     private Button btnMeshcoreChannels;
     private TextView teamColorText;
     private Button btnScan;
@@ -686,6 +693,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnSendAprsBeacon = rootView.findViewById(getId("btn_send_aprs_beacon"));
         btnClearAprsContacts = rootView.findViewById(getId("btn_clear_aprs_contacts"));
         btnEditAprsSettings = rootView.findViewById(getId("btn_edit_aprs_settings"));
+        switchMeshShowRepeaters = rootView.findViewById(getId("switch_mesh_show_repeaters"));
+        switchMeshShowNodes = rootView.findViewById(getId("switch_mesh_show_nodes"));
         btnMeshcoreChannels = rootView.findViewById(getId("btn_meshcore_channels"));
         teamColorText = rootView.findViewById(getId("text_team_color"));
         btnScan = rootView.findViewById(getId("btn_scan"));
@@ -827,6 +836,24 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 appendLog(isChecked
                         ? "Radio GPS augment enabled (fallback mode)."
                         : "Radio GPS augment disabled.");
+            });
+        }
+        if (switchMeshShowRepeaters != null) {
+            switchMeshShowRepeaters.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (!buttonView.isPressed()) {
+                    return;
+                }
+                setMeshShowRepeatersPreference(isChecked);
+                appendLog("MeshCore repeater map markers " + (isChecked ? "enabled." : "disabled."));
+            });
+        }
+        if (switchMeshShowNodes != null) {
+            switchMeshShowNodes.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (!buttonView.isPressed()) {
+                    return;
+                }
+                setMeshShowNodesPreference(isChecked);
+                appendLog("MeshCore node map markers " + (isChecked ? "enabled." : "disabled."));
             });
         }
 
@@ -1285,7 +1312,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         scrollLp.weight = 1f;
         TextView log = new TextView(ctx);
         log.setTextColor(0xFFE0E0E0);
-        log.setTextSize(15f);
+        log.setTextSize(13f);
         log.setMovementMethod(new ScrollingMovementMethod());
         log.setPadding(dip(ctx, 8), dip(ctx, 8), dip(ctx, 8), dip(ctx, 8));
         log.setBackgroundColor(0xFF1E1E1E);
@@ -1707,16 +1734,25 @@ public class UVProDropDownReceiver extends DropDownReceiver
             return;
         }
         LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket = meshChannelMessages.get(channelIndex);
-        StringBuilder sb = new StringBuilder();
+        SpannableStringBuilder sb = new SpannableStringBuilder();
         if (bucket != null) {
             for (MeshBtConnectionManager.MeshChannelMessage m : bucket) {
                 String ts = new SimpleDateFormat("HH:mm:ss", Locale.US)
                         .format(new Date(m.receivedAtMs));
-                sb.append("[").append(ts).append("] ");
-                sb.append(m.outbound ? "Me" : "Node").append(": ").append(m.text);
+                String sender = resolveMeshChannelSenderName(m);
+                String msg = m.text == null ? "" : m.text;
+                String prefix = "[" + ts + "] /" + sender + "/ ";
+                int start = sb.length();
+                sb.append(prefix).append(msg);
+                int msgStart = start + prefix.length();
+                int msgEnd = msgStart + msg.length();
+                if (msgEnd > msgStart) {
+                    sb.setSpan(new RelativeSizeSpan(15f / 13f), msgStart, msgEnd,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
                 String meta = buildMeshChannelMetaLine(m);
                 if (!meta.isEmpty()) {
-                    sb.append("\n   ").append(meta);
+                    sb.append("\n").append(meta);
                 }
                 sb.append("\n\n");
             }
@@ -1755,35 +1791,55 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private String buildMeshChannelMetaLine(MeshBtConnectionManager.MeshChannelMessage m) {
         List<String> parts = new ArrayList<>();
-        if (m.senderTimestampSec != null && m.senderTimestampSec > 0) {
-            long ms = (m.senderTimestampSec.longValue() & 0xffffffffL) * 1000L;
-            String senderTs = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date(ms));
-            parts.add("sender " + senderTs);
-        }
-        if (m.pathLen != null) {
-            if (m.pathLen <= 0) {
-                if (!m.outbound) {
-                    parts.add("direct");
-                }
-            } else {
-                parts.add("heard " + m.pathLen + " repeats");
-            }
-        }
         if (m.snrQuarterDb != null) {
             parts.add(String.format(Locale.US, "SNR %.2f dB", m.snrQuarterDb / 4.0f));
         }
-        if (m.statusText != null && !m.statusText.trim().isEmpty()) {
-            parts.add(m.statusText.trim());
+        String status = deriveMeshChannelMetaStatus(m);
+        if (!status.isEmpty()) {
+            parts.add(status);
         }
         if (parts.isEmpty()) {
             return "";
         }
-        StringBuilder out = new StringBuilder("status: ");
+        StringBuilder out = new StringBuilder();
         for (int i = 0; i < parts.size(); i++) {
-            if (i > 0) out.append(" | ");
+            if (i > 0) out.append(" / ");
             out.append(parts.get(i));
         }
         return out.toString();
+    }
+
+    private String resolveMeshChannelSenderName(MeshBtConnectionManager.MeshChannelMessage m) {
+        if (!m.outbound) {
+            return "Node";
+        }
+        try {
+            MapView mv = MapView.getMapView();
+            if (mv != null && mv.getSelfMarker() != null) {
+                String cs = mv.getSelfMarker().getMetaString("callsign", "");
+                if (cs != null && !cs.trim().isEmpty()) {
+                    return cs.trim();
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "Me";
+    }
+
+    private String deriveMeshChannelMetaStatus(MeshBtConnectionManager.MeshChannelMessage m) {
+        if (m.statusText != null) {
+            String status = m.statusText.trim();
+            if (!status.isEmpty()) {
+                return status;
+            }
+        }
+        if (m.pathLen != null && m.pathLen > 0) {
+            return "heard " + m.pathLen + " repeats";
+        }
+        if (m.outbound) {
+            return "Sent";
+        }
+        return "";
     }
 
     private void loadMeshChannelHistoryIfNeeded() {
@@ -2632,6 +2688,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (switchAugmentGpsFromMeshcore != null) {
             switchAugmentGpsFromMeshcore.setChecked(isAugmentMeshPreferenceEnabled(ctx));
         }
+        if (switchMeshShowRepeaters != null) {
+            switchMeshShowRepeaters.setChecked(isMeshShowRepeatersPreferenceEnabled(ctx));
+        }
+        if (switchMeshShowNodes != null) {
+            switchMeshShowNodes.setChecked(isMeshShowNodesPreferenceEnabled(ctx));
+        }
 
         // Team color (ATAK preference)
         try {
@@ -2751,6 +2813,40 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
         prefs.edit().putBoolean(PREF_AUGMENT_GPS_FROM_MESHCORE, enabled).apply();
+    }
+
+    private boolean isMeshShowRepeatersPreferenceEnabled(Context ctx) {
+        if (ctx == null) {
+            return true;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        return prefs.getBoolean(PREF_MESH_SHOW_REPEATERS, true);
+    }
+
+    private boolean isMeshShowNodesPreferenceEnabled(Context ctx) {
+        if (ctx == null) {
+            return false;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        return prefs.getBoolean(PREF_MESH_SHOW_NODES, false);
+    }
+
+    private void setMeshShowRepeatersPreference(boolean enabled) {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        prefs.edit().putBoolean(PREF_MESH_SHOW_REPEATERS, enabled).apply();
+    }
+
+    private void setMeshShowNodesPreference(boolean enabled) {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        prefs.edit().putBoolean(PREF_MESH_SHOW_NODES, enabled).apply();
     }
 
     private boolean isWifiTransmitPreferenceEnabled(Context ctx) {

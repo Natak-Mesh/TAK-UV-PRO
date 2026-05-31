@@ -134,6 +134,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<RepeaterAdvertListener> repeaterAdvertListeners =
             new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<MeshAdvertListener> meshAdvertListeners =
+            new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<MeshChannelListener> meshChannelListeners =
             new CopyOnWriteArrayList<>();
     private final Map<String, Long> repeaterToastDedupByPubKeyTs = new ConcurrentHashMap<>();
@@ -215,6 +217,49 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     public interface RepeaterAdvertListener {
         void onRepeaterAdvert(RepeaterAdvert advert);
+    }
+
+    public interface MeshAdvertListener {
+        void onMeshAdvert(MeshAdvert advert);
+    }
+
+    public static final class MeshAdvert {
+        public final int advertType;
+        public final String pubKeyHex;
+        public final String name;
+        public final long advertTimestampSec;
+        public final double latitude;
+        public final double longitude;
+        public final boolean hasPosition;
+
+        public MeshAdvert(int advertType,
+                          String pubKeyHex,
+                          String name,
+                          long advertTimestampSec,
+                          double latitude,
+                          double longitude,
+                          boolean hasPosition) {
+            this.advertType = advertType;
+            this.pubKeyHex = pubKeyHex;
+            this.name = name;
+            this.advertTimestampSec = advertTimestampSec;
+            this.latitude = latitude;
+            this.longitude = longitude;
+            this.hasPosition = hasPosition;
+        }
+
+        public boolean hasValidPosition() {
+            return hasPosition
+                    && !Double.isNaN(latitude)
+                    && !Double.isNaN(longitude)
+                    && latitude >= -90.0 && latitude <= 90.0
+                    && longitude >= -180.0 && longitude <= 180.0
+                    && !(Math.abs(latitude) < 0.000001 && Math.abs(longitude) < 0.000001);
+        }
+
+        public boolean isRepeater() {
+            return advertType == ADV_TYPE_REPEATER;
+        }
     }
 
     public static final class RepeaterAdvert {
@@ -684,6 +729,16 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         repeaterAdvertListeners.remove(listener);
     }
 
+    public void addMeshAdvertListener(MeshAdvertListener listener) {
+        if (listener != null) {
+            meshAdvertListeners.addIfAbsent(listener);
+        }
+    }
+
+    public void removeMeshAdvertListener(MeshAdvertListener listener) {
+        meshAdvertListeners.remove(listener);
+    }
+
     public void addMeshChannelListener(MeshChannelListener listener) {
         if (listener != null) {
             meshChannelListeners.addIfAbsent(listener);
@@ -826,6 +881,15 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         for (RepeaterAdvertListener l : repeaterAdvertListeners) {
             try {
                 l.onRepeaterAdvert(advert);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void notifyMeshAdvert(MeshAdvert advert) {
+        for (MeshAdvertListener l : meshAdvertListeners) {
+            try {
+                l.onMeshAdvert(advert);
             } catch (Exception ignored) {
             }
         }
@@ -1152,10 +1216,14 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             if (t == PUSH_CODE_ADVERT) {
                 requestFullContactForAdvertRefresh(pkt);
             }
-            RepeaterAdvert advert = parseRepeaterAdvert(pkt);
-            if (advert != null) {
-                maybeToastRepeaterDiscovery(advert);
-                notifyRepeaterAdvert(advert);
+            MeshAdvert meshAdvert = parseMeshAdvert(pkt);
+            if (meshAdvert != null) {
+                notifyMeshAdvert(meshAdvert);
+                if (meshAdvert.isRepeater()) {
+                    RepeaterAdvert advert = repeaterAdvertFromMesh(meshAdvert);
+                    maybeToastRepeaterDiscovery(advert);
+                    notifyRepeaterAdvert(advert);
+                }
             }
             if (t == PUSH_CODE_NEW_ADVERT || t == PUSH_CODE_ADVERT) {
                 return;
@@ -1194,15 +1262,12 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         }
     }
 
-    private RepeaterAdvert parseRepeaterAdvert(byte[] pkt) {
+    private MeshAdvert parseMeshAdvert(byte[] pkt) {
         if (pkt == null || pkt.length < 148) {
             return null;
         }
         try {
             int type = pkt[33] & 0xFF;
-            if (type != ADV_TYPE_REPEATER) {
-                return null;
-            }
             String pubKeyHex = bytesToHex(pkt, 1, 32);
             if (pubKeyHex.isEmpty()) {
                 return null;
@@ -1222,11 +1287,21 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             double lat = latE6 / 1_000_000.0;
             double lon = lonE6 / 1_000_000.0;
             boolean hasPosition = !(latE6 == 0 && lonE6 == 0);
-            return new RepeaterAdvert(pubKeyHex, name, tsSec, lat, lon, hasPosition);
+            return new MeshAdvert(type, pubKeyHex, name, tsSec, lat, lon, hasPosition);
         } catch (Exception e) {
-            Log.w(TAG, "Repeater advert parse failed", e);
+            Log.w(TAG, "Mesh advert parse failed", e);
             return null;
         }
+    }
+
+    private RepeaterAdvert repeaterAdvertFromMesh(MeshAdvert advert) {
+        return new RepeaterAdvert(
+                advert.pubKeyHex,
+                advert.name,
+                advert.advertTimestampSec,
+                advert.latitude,
+                advert.longitude,
+                advert.hasPosition);
     }
 
     private void requestFullContactForAdvertRefresh(byte[] pkt) {

@@ -39,6 +39,7 @@ import com.uvpro.plugin.ui.SettingsFragment;
 import com.uvpro.plugin.aprs.AprsDetailsDropDownReceiver;
 import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.ax25.AprsIconsetInstaller;
+import com.uvpro.plugin.ax25.MeshcoreIconsetInstaller;
 import com.uvpro.plugin.location.RadioGpsBridge;
 import com.uvpro.plugin.location.RadioPositionFix;
 import com.uvpro.plugin.network.RfTakUplinkKeepalive;
@@ -49,6 +50,9 @@ import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry.BtDeviceRecord;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * UVPro Map Component — the central nervous system of the plugin.
@@ -114,6 +118,8 @@ public class UVProMapComponent extends DropDownMapComponent {
             "com.uvpro.plugin.BEACON_INTERVAL_CHANGED";
     private static final String PREF_SMART_BEACON_V21_OFF_MIGRATED =
             "uvpro_smart_beacon_v21_off_migrated";
+    private static final String PREF_MESH_SHOW_REPEATERS = "uvpro_mesh_show_repeaters";
+    private static final String PREF_MESH_SHOW_NODES = "uvpro_mesh_show_nodes";
 
     private Context pluginContext;
     private MapView mapView;
@@ -132,6 +138,10 @@ public class UVProMapComponent extends DropDownMapComponent {
     private EncryptionManager encryptionManager;
     private UVProRadioControlManager radioControlManager;
     private MeshBtConnectionManager.RepeaterAdvertListener repeaterAdvertListener;
+    private MeshBtConnectionManager.MeshAdvertListener meshAdvertListener;
+    private SharedPreferences.OnSharedPreferenceChangeListener meshMapPrefsListener;
+    private final Set<String> meshRepeaterMapUids = new HashSet<>();
+    private final Set<String> meshNodeMapUids = new HashSet<>();
     private MapEventDispatcher.MapEventDispatchListener mapItemClickListener;
     private Handler beaconHandler;
     private Runnable beaconRunnable;
@@ -161,7 +171,7 @@ public class UVProMapComponent extends DropDownMapComponent {
         this.pluginContext = context;
         this.mapView = view;
         applySmartBeaconV21OffMigration(getBeaconPrefsContext());
-        // Persistent APRS iconset assist: keep reminding until import is complete.
+        // Persistent iconset assist: keep reminding until APRS and MeshCore imports are complete.
         startAprsIconsetReminder(context, view.getContext());
 
         // Update-server TLS + prefs as early as possible (before CotBridge/BT/etc.). Production
@@ -265,7 +275,8 @@ try {
         btConnectionManager = new BtConnectionManager(context, packetRouter);
         meshBtConnectionManager = new MeshBtConnectionManager(context, packetRouter);
         repeaterAdvertListener = advert -> {
-            if (advert == null || cotBridge == null || !advert.hasValidPosition()) {
+            if (advert == null || cotBridge == null || !advert.hasValidPosition()
+                    || !isMeshRepeaterDisplayEnabled()) {
                 return;
             }
             String display = sanitizeRepeaterDisplayName(advert.name);
@@ -284,8 +295,48 @@ try {
                     remarks,
                     mapUid);
             cotBridge.markMeshRepeaterMapItem(mapUid);
+            synchronized (meshRepeaterMapUids) {
+                meshRepeaterMapUids.add(mapUid);
+            }
+        };
+        meshAdvertListener = advert -> {
+            if (advert == null || advert.isRepeater() || cotBridge == null
+                    || !advert.hasValidPosition() || !isMeshNodeDisplayEnabled()) {
+                return;
+            }
+            String display = sanitizeNodeDisplayName(advert.name, advert.pubKeyHex);
+            String mapUid = "MESHCORE-NODE-" + sanitizeRepeaterUidSuffix(advert.pubKeyHex);
+            char meshNodeSymbol = meshNodeSymbolCode(advert.name, display);
+            cotBridge.injectPositionCotAtMapUid(
+                    display,
+                    advert.latitude,
+                    advert.longitude,
+                    0.0,
+                    -1.0,
+                    -1.0,
+                    "Cyan",
+                    'M',
+                    meshNodeSymbol,
+                    "MeshCore node advert",
+                    mapUid);
+            synchronized (meshNodeMapUids) {
+                meshNodeMapUids.add(mapUid);
+            }
         };
         meshBtConnectionManager.addRepeaterAdvertListener(repeaterAdvertListener);
+        meshBtConnectionManager.addMeshAdvertListener(meshAdvertListener);
+        SharedPreferences meshPrefs = PreferenceManager.getDefaultSharedPreferences(view.getContext());
+        meshMapPrefsListener = (prefs, key) -> {
+            if (PREF_MESH_SHOW_REPEATERS.equals(key)
+                    && !prefs.getBoolean(PREF_MESH_SHOW_REPEATERS, true)) {
+                clearTrackedMeshMarkers(meshRepeaterMapUids);
+            }
+            if (PREF_MESH_SHOW_NODES.equals(key)
+                    && !prefs.getBoolean(PREF_MESH_SHOW_NODES, false)) {
+                clearTrackedMeshMarkers(meshNodeMapUids);
+            }
+        };
+        meshPrefs.registerOnSharedPreferenceChangeListener(meshMapPrefsListener);
         radioControlManager = new UVProRadioControlManager(btConnectionManager);
         radioControlManager.start();
 
@@ -568,10 +619,27 @@ try {
             if (repeaterAdvertListener != null) {
                 meshBtConnectionManager.removeRepeaterAdvertListener(repeaterAdvertListener);
             }
+            if (meshAdvertListener != null) {
+                meshBtConnectionManager.removeMeshAdvertListener(meshAdvertListener);
+            }
             meshBtConnectionManager.disconnect();
             meshBtConnectionManager = null;
         }
         repeaterAdvertListener = null;
+        meshAdvertListener = null;
+        if (meshMapPrefsListener != null) {
+            try {
+                Context prefsCtx = (view != null)
+                        ? view.getContext()
+                        : (mapView != null ? mapView.getContext() : null);
+                if (prefsCtx != null) {
+                    PreferenceManager.getDefaultSharedPreferences(prefsCtx)
+                            .unregisterOnSharedPreferenceChangeListener(meshMapPrefsListener);
+                }
+            } catch (Exception ignored) {
+            }
+            meshMapPrefsListener = null;
+        }
         if (radioControlManager != null) {
             radioControlManager.stop();
             radioControlManager = null;
@@ -759,6 +827,95 @@ try {
             return "UNKNOWN";
         }
         return raw.replaceAll("[^A-F0-9]", "");
+    }
+
+    private static String sanitizeNodeDisplayName(String name, String pubKeyHex) {
+        String raw = name != null ? name.trim() : "";
+        if (!raw.isEmpty()) {
+            String upper = raw.toUpperCase(Locale.US);
+            String normalized = upper.replaceAll("[^A-Z0-9_\\- ]", "_").trim();
+            if (!normalized.isEmpty()) {
+                return normalized;
+            }
+        }
+        String suffix = sanitizeRepeaterUidSuffix(pubKeyHex);
+        if (suffix.length() > 6) {
+            suffix = suffix.substring(0, 6);
+        }
+        if (suffix.isEmpty()) {
+            suffix = "UNKNOWN";
+        }
+        return "MESH_NODE_" + suffix;
+    }
+
+    private static char meshNodeSymbolCode(String rawNodeName, String displayName) {
+        String source = rawNodeName;
+        if (source == null || source.trim().isEmpty()) {
+            source = displayName;
+        }
+        if (source == null) {
+            return 'N';
+        }
+        String trimmed = source.trim();
+        if (trimmed.isEmpty()) {
+            return 'N';
+        }
+        char first = Character.toUpperCase(trimmed.charAt(0));
+        if (first >= 'A' && first <= 'Z') {
+            return first;
+        }
+        return 'N';
+    }
+
+    private boolean isMeshRepeaterDisplayEnabled() {
+        try {
+            Context ctx = mapView != null ? mapView.getContext() : pluginContext;
+            if (ctx == null) {
+                return true;
+            }
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+            return prefs.getBoolean(PREF_MESH_SHOW_REPEATERS, true);
+        } catch (Exception ignored) {
+            return true;
+        }
+    }
+
+    private boolean isMeshNodeDisplayEnabled() {
+        try {
+            Context ctx = mapView != null ? mapView.getContext() : pluginContext;
+            if (ctx == null) {
+                return false;
+            }
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+            return prefs.getBoolean(PREF_MESH_SHOW_NODES, false);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private void clearTrackedMeshMarkers(Set<String> trackedUids) {
+        if (trackedUids == null || trackedUids.isEmpty() || mapView == null) {
+            return;
+        }
+        mapView.post(() -> {
+            List<String> copy;
+            synchronized (trackedUids) {
+                copy = new ArrayList<>(trackedUids);
+                trackedUids.clear();
+            }
+            for (String uid : copy) {
+                try {
+                    if (uid == null || uid.isEmpty()) {
+                        continue;
+                    }
+                    MapItem item = mapView.getRootGroup().deepFindUID(uid);
+                    if (item != null && item.getGroup() != null) {
+                        item.getGroup().removeItem(item);
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        });
     }
 
     /** Formal parameter types must accept the given actual argument types (invoke side). */
@@ -2027,9 +2184,11 @@ try {
         iconsetReminderRunnable = new Runnable() {
             @Override
             public void run() {
-                boolean missing = AprsIconsetInstaller.ensureStagedAndPromptIfMissing(
+                boolean aprsMissing = AprsIconsetInstaller.ensureStagedAndPromptIfMissing(
                         pluginCtx, uiCtx);
-                if (missing && iconsetReminderHandler != null) {
+                boolean meshcoreMissing = MeshcoreIconsetInstaller.ensureStagedAndPromptIfMissing(
+                        pluginCtx, uiCtx);
+                if ((aprsMissing || meshcoreMissing) && iconsetReminderHandler != null) {
                     // Persistent guidance while missing, throttled toast inside installer.
                     iconsetReminderHandler.postDelayed(this, 15000L);
                 }

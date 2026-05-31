@@ -210,6 +210,45 @@ public class UVProContactHandler extends
         }
     }
 
+    /**
+     * Ensure a chat contact for a mesh-node UID whose default action routes over the plugin RF DM
+     * path ({@link MeshSendMessageConnector}) rather than native GeoChat/IP. Mesh nodes are
+     * addressed by pubkey, so the synthesized {@code stcp/*:-1} Ip endpoint is unroutable and
+     * makes ATAK's {@code CotDispatcher} throw "Send to unknown contact". Unlike
+     * {@link #promoteMeshFavoriteContactByUid}, this does not rename the contact to the favorite
+     * format; it only fixes the connector stack so map-selected sends actually relay.
+     */
+    public static boolean ensureMeshChatContactByUid(String contactUid, String currentName) {
+        if (contactUid == null || contactUid.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            final String uid = contactUid.trim();
+            final Contacts contacts = Contacts.getInstance();
+            Contact existing = contacts.getContactByUuid(uid);
+            if (existing instanceof IndividualContact) {
+                applyMeshContactConnectors((IndividualContact) existing);
+                return true;
+            }
+            MapItem item = null;
+            com.atakmap.android.maps.MapView mv = com.atakmap.android.maps.MapView.getMapView();
+            if (mv != null && mv.getRootGroup() != null) {
+                item = mv.getRootGroup().deepFindUID(uid);
+            }
+            String name = currentName != null && !currentName.trim().isEmpty()
+                    ? currentName.trim() : uid;
+            IndividualContact c = new IndividualContact(name, uid, item,
+                    buildNativeConnectorSeed(name));
+            applyMeshContactConnectors(c);
+            contacts.addContact(c);
+            contacts.updateTotalUnreadCount();
+            return true;
+        } catch (Exception e) {
+            Log.w("UVPro.Handler", "ensureMeshChatContactByUid failed", e);
+            return false;
+        }
+    }
+
     private static void applyMeshContactConnectors(IndividualContact contact) {
         if (contact == null) {
             return;

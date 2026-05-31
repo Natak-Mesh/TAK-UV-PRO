@@ -68,6 +68,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     private static final byte CMD_APP_START = 0x01;
     private static final byte CMD_SEND_SELF_ADVERT = 0x07;
+    private static final byte CMD_SEND_TXT_MSG = 0x02;
+    private static final byte TXT_TYPE_PLAIN = 0x00;
     private static final byte CMD_SEND_CHANNEL_MSG = 0x03;
     private static final byte CMD_GET_NEXT_MSG = 0x0A;
     private static final byte CMD_DEVICE_QUERY = 0x16;
@@ -834,6 +836,61 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         return true;
     }
 
+    /**
+     * Send a native MeshCore direct (contact) message to a node identified by pubkey, using
+     * {@code CMD_SEND_TXT_MSG (0x02)}. This is the standard pubkey-to-pubkey DM that native
+     * MeshCore clients understand — unlike the {@code 0xFF01} channel datagram used for the
+     * AX.25 tunnel. The recipient must be a contact on this node (firmware looks it up by the
+     * first 6 bytes of the pubkey); otherwise the node replies {@code ERR_CODE_NOT_FOUND}.
+     *
+     * @param pubKeyHex recipient pubkey (>= 12 hex chars; first 6 bytes are used as the prefix)
+     * @param text      plain UTF-8 message
+     */
+    public boolean sendContactTextMessage(String pubKeyHex, String text) {
+        if (!connected.get()) {
+            return false;
+        }
+        if (radioSilenceEnabled.get()) {
+            return false;
+        }
+        if (text == null || text.trim().isEmpty()) {
+            return false;
+        }
+        byte[] prefix = pubKeyPrefixBytes(pubKeyHex, 6);
+        if (prefix == null) {
+            Log.w(TAG, "Native DM aborted: invalid pubkey hex");
+            return false;
+        }
+        byte[] cmd = buildSendTxtMsgCommand(prefix, text.trim());
+        if (cmd == null) {
+            return false;
+        }
+        enqueueCommand(cmd);
+        packetRouter.notifyPacketTransmitted();
+        Log.d(TAG, "Native MeshCore DM queued pubkeyPrefix="
+                + bytesToHex(prefix, 0, prefix.length) + " len=" + text.trim().length());
+        return true;
+    }
+
+    private static byte[] pubKeyPrefixBytes(String pubKeyHex, int byteCount) {
+        if (pubKeyHex == null) {
+            return null;
+        }
+        String hex = pubKeyHex.trim();
+        if (hex.length() < byteCount * 2) {
+            return null;
+        }
+        byte[] out = new byte[byteCount];
+        try {
+            for (int i = 0; i < byteCount; i++) {
+                out[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+            }
+        } catch (NumberFormatException e) {
+            return null;
+        }
+        return out;
+    }
+
     public boolean sendSelfAdvert() {
         if (!connected.get()) {
             return false;
@@ -1203,6 +1260,22 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         return buf.array();
     }
 
+    private byte[] buildSendTxtMsgCommand(byte[] pubKeyPrefix6, String text) {
+        if (pubKeyPrefix6 == null || pubKeyPrefix6.length != 6) {
+            return null;
+        }
+        byte[] msg = text.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer buf = ByteBuffer.allocate(13 + msg.length);
+        buf.order(ByteOrder.LITTLE_ENDIAN);
+        buf.put(CMD_SEND_TXT_MSG);
+        buf.put(TXT_TYPE_PLAIN);
+        buf.put((byte) 0x00); // attempt
+        buf.putInt((int) (System.currentTimeMillis() / 1000L));
+        buf.put(pubKeyPrefix6);
+        buf.put(msg);
+        return buf.array();
+    }
+
     private byte[] buildSendChannelDataCommand(int channel, int dataType, byte[] payload) {
         int payloadLen = payload != null ? payload.length : 0;
         ByteBuffer buf = ByteBuffer.allocate(6 + payloadLen);
@@ -1316,9 +1389,26 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             String routed = extractRoutableEnvelope(message);
             if (routed != null) {
                 handleMeshMessage(routed);
+            } else if (t == RESP_CONTACT_MSG || t == RESP_CONTACT_MSG_V3) {
+                // Native pubkey-to-pubkey DM (plain text, no UVAX1|/__UVGW__ envelope).
+                // Route it into ATAK GeoChat keyed by the sender's pubkey prefix.
+                String senderPrefixHex = extractContactSenderPubKeyPrefix(pkt, t == RESP_CONTACT_MSG_V3);
+                if (senderPrefixHex != null && !senderPrefixHex.isEmpty()
+                        && !message.trim().isEmpty()) {
+                    packetRouter.routeNativeMeshDm(senderPrefixHex, message.trim());
+                }
             }
             enqueueCommand(buildGetNextMessageCommand());
         }
+    }
+
+    /** Sender pubkey prefix (6 bytes) from a contact-message frame: bytes 1..6 (v1) or 4..9 (v3). */
+    private String extractContactSenderPubKeyPrefix(byte[] pkt, boolean v3) {
+        int off = v3 ? 4 : 1;
+        if (pkt == null || pkt.length < off + 6) {
+            return null;
+        }
+        return bytesToHex(pkt, off, 6);
     }
 
     private MeshAdvert parseMeshAdvert(byte[] pkt) {

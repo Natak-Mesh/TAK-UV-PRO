@@ -120,6 +120,8 @@ public class UVProMapComponent extends DropDownMapComponent {
     public static final String PLUGIN_PACKAGE = "com.uvpro.plugin";
     public static final String ACTION_BEACON_INTERVAL_CHANGED =
             "com.uvpro.plugin.BEACON_INTERVAL_CHANGED";
+    private static final String PREF_ATAK_MESHCORE_TRANSMIT =
+            "uvpro_atak_meshcore_transmit";
     private static final String PREF_SMART_BEACON_V21_OFF_MIGRATED =
             "uvpro_smart_beacon_v21_off_migrated";
     private static final String PREF_MESH_SHOW_REPEATERS = "uvpro_mesh_show_repeaters";
@@ -2264,6 +2266,25 @@ try {
     }
 
     private BtConnectionManager resolveBeaconTransportManager() {
+        boolean preferMesh = false;
+        try {
+            Context ctx = getBeaconPrefsContext();
+            if (ctx != null) {
+                SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+                preferMesh = prefs.getBoolean(PREF_ATAK_MESHCORE_TRANSMIT, false);
+            }
+        } catch (Exception ignored) {
+            preferMesh = false;
+        }
+        if (preferMesh) {
+            if (meshBtConnectionManager != null && meshBtConnectionManager.isConnected()) {
+                return meshBtConnectionManager;
+            }
+            if (btConnectionManager != null && btConnectionManager.isConnected()) {
+                return btConnectionManager;
+            }
+            return meshBtConnectionManager != null ? meshBtConnectionManager : btConnectionManager;
+        }
         if (btConnectionManager != null && btConnectionManager.isConnected()) {
             return btConnectionManager;
         }

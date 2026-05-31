@@ -976,6 +976,13 @@ public class ChatBridge {
         if (uid.isEmpty()) {
             return "";
         }
+        // Mesh nodes are addressed by pubkey; native GeoChat/IP routing (stcp) is unroutable and
+        // makes ATAK throw "Send to unknown contact". Route these over the plugin RF DM path
+        // (MeshSendMessageConnector) instead of falling through to preferNativeContactAction.
+        if (uid.startsWith(MESH_NODE_UID_PREFIX) || uid.startsWith(MESH_RPTR_UID_PREFIX)) {
+            com.uvpro.plugin.UVProContactHandler.ensureMeshChatContactByUid(uid, callsignRaw);
+            return uid;
+        }
         String callsign = callsignRaw != null ? callsignRaw.trim().toUpperCase(Locale.US) : "";
         if (callsign.isEmpty() && uid.startsWith(ANDROID_UID_PREFIX)) {
             callsign = uid.substring(ANDROID_UID_PREFIX.length());
@@ -1243,8 +1250,19 @@ public class ChatBridge {
             if (mv == null) {
                 return false;
             }
-            AtakPreferences prefs = new AtakPreferences(mv.getContext());
             String uid = contact.getUID();
+            // Never force native GeoChat/IP for mesh-node contacts: they are addressed by pubkey
+            // and the stcp endpoint is unroutable (ATAK throws "Send to unknown contact"). Keep the
+            // plugin RF DM connector as the default action instead.
+            if (uid != null) {
+                String uidUpper = uid.trim().toUpperCase(Locale.US);
+                if (uidUpper.startsWith(MESH_NODE_UID_PREFIX)
+                        || uidUpper.startsWith(MESH_RPTR_UID_PREFIX)) {
+                    return com.uvpro.plugin.UVProContactHandler.ensureMeshChatContactByUid(
+                            uid, contact.getName());
+                }
+            }
+            AtakPreferences prefs = new AtakPreferences(mv.getContext());
             clearDefaultConnectorPref(prefs, uid);
 
             contact.removeConnector(PluginConnector.CONNECTOR_TYPE);
@@ -2403,6 +2421,11 @@ public class ChatBridge {
             // TYPE_CHAT room is 6 bytes on-wire; preserve full group conversationId in payload.
             outbound = wrapGatewayMessage("", conversationId, lineUid, msg);
         } else if (!ALL_CHAT_ROOMS.equalsIgnoreCase(room) && !outbound.startsWith(GW_PREFIX)) {
+            // Mesh-node DM: send as a native MeshCore contact message (pubkey DM), not the
+            // proprietary 0xFF01 AX.25 datagram that native clients reject.
+            if (trySendNativeMeshDm(conversationId, room, msg)) {
+                return true;
+            }
             String dmWireDest = resolveRfWireDestination(conversationId, room);
             if (!dmWireDest.isEmpty()) {
                 outbound = wrapGatewayMessage(dmWireDest, room, lineUid, msg);
@@ -2799,6 +2822,11 @@ public class ChatBridge {
                 && !isLikelyGroupConversationThread(chatRoom)
                 && !outbound.startsWith(GW_PREFIX)) {
             String destHint = extractGeoChatDestinationHint(event, chatRoom);
+            // Mesh-node DM: send as a native MeshCore contact message (pubkey DM), not the
+            // proprietary 0xFF01 AX.25 datagram that native clients reject.
+            if (trySendNativeMeshDm(destHint, chatRoom, message)) {
+                return;
+            }
             String dmWireDest = resolveRfWireDestination(destHint, chatRoom);
             if (!dmWireDest.isEmpty()) {
                 String aprsSender = isAprsChatDestination(chatRoom, destHint, event)
@@ -2998,6 +3026,96 @@ public class ChatBridge {
         }
         if (body.isEmpty()) return null;
         return new GatewayWrapped(toUid, room, lineUid, aprsSenderCall, body);
+    }
+
+    /**
+     * Send an outbound ATAK GeoChat to a MeshCore node as a native pubkey-to-pubkey DM
+     * ({@code CMD_SEND_TXT_MSG}) instead of the proprietary {@code 0xFF01} AX.25 channel datagram
+     * (which native MeshCore clients reject as "Unhandled"). Returns true if handled here.
+     */
+    private boolean trySendNativeMeshDm(String destUidHint, String roomHint, String message) {
+        if (!(btManager instanceof MeshBtConnectionManager)) {
+            return false;
+        }
+        if (message == null || message.trim().isEmpty()) {
+            return false;
+        }
+        String pubKey = extractMeshPublicKeyCandidate(destUidHint);
+        if (pubKey.isEmpty()) {
+            pubKey = extractMeshPublicKeyCandidate(roomHint);
+        }
+        if (pubKey.isEmpty()) {
+            return false;
+        }
+        boolean ok = ((MeshBtConnectionManager) btManager)
+                .sendContactTextMessage(pubKey, message.trim());
+        if (ok) {
+            Log.d(TAG, "Outbound GeoChat sent as native MeshCore DM pubkeyPrefix="
+                    + pubKey.substring(0, Math.min(12, pubKey.length())) + " len=" + message.trim().length());
+        }
+        return ok;
+    }
+
+    /**
+     * Inject an inbound native MeshCore DM ({@code RESP_CONTACT_MSG}) into ATAK GeoChat. The native
+     * frame carries only the sender's 6-byte pubkey prefix, so resolve the full
+     * {@code MESHCORE-NODE-<pubkey>} contact when known; otherwise thread under the prefix.
+     */
+    public boolean injectInboundMeshDm(String senderPubKeyPrefixHex, String text) {
+        if (cotBridge == null || text == null || text.trim().isEmpty()) {
+            return false;
+        }
+        String prefix = senderPubKeyPrefixHex == null
+                ? "" : senderPubKeyPrefixHex.trim().toUpperCase(Locale.US);
+        if (prefix.isEmpty()) {
+            return false;
+        }
+        String senderUid = resolveMeshNodeUidByPubKeyPrefix(prefix);
+        String fromCallsign = meshNodeDisplayForUid(senderUid);
+        cotBridge.registerBtechContactUid(senderUid);
+        cotBridge.registerBtechContactId(fromCallsign, senderUid);
+        int mid = (prefix + "|" + text.trim()).hashCode() & 0x7fffffff;
+        if (mid == 0) {
+            mid = 1;
+        }
+        Log.d(TAG, "Inbound native MeshCore DM from " + fromCallsign
+                + " (" + senderUid + ") len=" + text.trim().length());
+        return injectRadioMessage(fromCallsign, localCallsign, text.trim(), mid);
+    }
+
+    private String resolveMeshNodeUidByPubKeyPrefix(String prefixUpper) {
+        try {
+            java.util.List<Contact> all = Contacts.getInstance().getAllContacts();
+            if (all != null) {
+                for (Contact c : all) {
+                    if (c == null) {
+                        continue;
+                    }
+                    String uid = c.getUID();
+                    if (uid == null) {
+                        continue;
+                    }
+                    String u = uid.toUpperCase(Locale.US);
+                    if ((u.startsWith(MESH_NODE_UID_PREFIX) || u.startsWith(MESH_RPTR_UID_PREFIX))
+                            && extractMeshPublicKeyCandidate(u).startsWith(prefixUpper)) {
+                        return uid;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return MESH_NODE_UID_PREFIX + prefixUpper;
+    }
+
+    private String meshNodeDisplayForUid(String uid) {
+        try {
+            Contact c = Contacts.getInstance().getContactByUuid(uid);
+            if (c != null && c.getName() != null && !c.getName().trim().isEmpty()) {
+                return c.getName().trim();
+            }
+        } catch (Exception ignored) {
+        }
+        return uid;
     }
 
     /**

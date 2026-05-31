@@ -127,6 +127,17 @@ public class PacketRouter {
     }
 
     /**
+     * Inbound native MeshCore DM ({@code CMD_SEND_TXT_MSG} path): inject the plain text into ATAK
+     * GeoChat, threaded by the sender's pubkey prefix.
+     */
+    public void routeNativeMeshDm(String senderPubKeyPrefixHex, String text) {
+        if (chatBridge == null) {
+            return;
+        }
+        chatBridge.injectInboundMeshDm(senderPubKeyPrefixHex, text);
+    }
+
+    /**
      * Route an incoming AX.25 frame from the radio.
      * Called by BtConnectionManager on the read thread.
      */

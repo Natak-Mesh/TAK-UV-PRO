@@ -68,6 +68,9 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     private static final byte CMD_APP_START = 0x01;
     private static final byte CMD_SEND_SELF_ADVERT = 0x07;
+    private static final byte CMD_SET_ADVERT_NAME = 0x08;
+    private static final byte CMD_SET_RADIO_PARAMS = 0x0B;
+    private static final byte CMD_SET_RADIO_TX_POWER = 0x0C;
     private static final byte CMD_SEND_TXT_MSG = 0x02;
     private static final byte TXT_TYPE_PLAIN = 0x00;
     private static final byte CMD_SEND_CHANNEL_MSG = 0x03;
@@ -78,6 +81,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private static final byte CMD_GET_CHANNEL = 0x1F;
     private static final byte CMD_SET_CHANNEL = 0x20;
     private static final byte CMD_GET_GPS_STATE = 0x28;
+    private static final byte CMD_SET_OTHER_PARAMS = 0x26;
     private static final byte CMD_SET_SETTING_TEXT = 0x29;
     private static final byte CMD_SEND_CHANNEL_DATA = 0x3E;
 
@@ -101,6 +105,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     private static final int MAX_MESH_MESSAGE_LEN = 130;
     private static final int MAX_RAW_AX25_CHUNK = 57;
+    private static final int ADVERT_LOC_NONE = 0;
+    private static final int ADVERT_LOC_SHARE = 1;
     private static final String ENV_PREFIX = "UVAX1|";
     // Use MeshCore companion app-id for firmware compatibility with settings commands.
     private static final String COMPANION_APP_ID = "meshcore-flutter";
@@ -161,8 +167,13 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private BluetoothDevice lastDevice;
     private BluetoothDevice pendingBondDevice;
     private volatile Boolean meshGpsEnabled = null;
+    private volatile Boolean sendPositionWithAdvertEnabled = null;
+    private volatile MeshNodeSettings latestNodeSettings = null;
     private volatile MeshLocationFix latestSelfLocation = null;
     private volatile String selfPubKeyHex = "";
+    private volatile int cachedManualAddContacts = 0;
+    private volatile int cachedTelemetryModes = 0;
+    private volatile int cachedMultiAcks = 0;
     private int reconnectAttempts = 0;
     private static final int MAX_RECONNECT_ATTEMPTS = 5;
 
@@ -194,7 +205,38 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     public interface MeshStateListener {
         void onMeshGpsStateChanged(boolean enabled);
+        void onSendPositionWithAdvertChanged(boolean enabled);
+        void onMeshNodeSettingsUpdated(MeshNodeSettings settings);
         void onMeshSelfLocationUpdated(MeshLocationFix fix);
+    }
+
+    public static final class MeshNodeSettings {
+        public final String nodeName;
+        public final double frequencyMHz;
+        public final double bandwidthKHz;
+        public final int spreadingFactor;
+        public final int codingRate;
+        public final int txPowerDbm;
+        public final int maxTxPowerDbm;
+        public final long receivedAtMs;
+
+        public MeshNodeSettings(String nodeName,
+                                double frequencyMHz,
+                                double bandwidthKHz,
+                                int spreadingFactor,
+                                int codingRate,
+                                int txPowerDbm,
+                                int maxTxPowerDbm,
+                                long receivedAtMs) {
+            this.nodeName = nodeName;
+            this.frequencyMHz = frequencyMHz;
+            this.bandwidthKHz = bandwidthKHz;
+            this.spreadingFactor = spreadingFactor;
+            this.codingRate = codingRate;
+            this.txPowerDbm = txPowerDbm;
+            this.maxTxPowerDbm = maxTxPowerDbm;
+            this.receivedAtMs = receivedAtMs;
+        }
     }
 
     public static final class MeshLocationFix {
@@ -573,6 +615,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         connecting.set(false);
         connected.set(false);
         meshGpsEnabled = null;
+        sendPositionWithAdvertEnabled = null;
+        latestNodeSettings = null;
         latestSelfLocation = null;
         stopScanInternal();
         ioHandler.removeCallbacks(periodicMessagePoll);
@@ -590,6 +634,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         connecting.set(false);
         connected.set(false);
         meshGpsEnabled = null;
+        sendPositionWithAdvertEnabled = null;
+        latestNodeSettings = null;
         latestSelfLocation = null;
         stopScanInternal();
         ioHandler.removeCallbacks(periodicMessagePoll);
@@ -903,6 +949,14 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         return meshGpsEnabled;
     }
 
+    public Boolean getSendPositionWithAdvertEnabled() {
+        return sendPositionWithAdvertEnabled;
+    }
+
+    public MeshNodeSettings getLatestNodeSettings() {
+        return latestNodeSettings;
+    }
+
     public String getSelfPubKeyHex() {
         String v = selfPubKeyHex;
         return v != null ? v : "";
@@ -930,6 +984,76 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         enqueueCommand(out);
         // Query immediately after set to refresh authoritative state.
         enqueueCommand(new byte[]{CMD_GET_GPS_STATE});
+    }
+
+    public void setSendPositionWithAdvertEnabled(boolean enabled) {
+        if (!connected.get()) {
+            return;
+        }
+        byte[] out = new byte[5];
+        out[0] = CMD_SET_OTHER_PARAMS;
+        out[1] = (byte) (cachedManualAddContacts & 0xFF);
+        out[2] = (byte) (cachedTelemetryModes & 0xFF);
+        out[3] = (byte) ((enabled ? ADVERT_LOC_SHARE : ADVERT_LOC_NONE) & 0xFF);
+        out[4] = (byte) (cachedMultiAcks & 0xFF);
+        enqueueCommand(out);
+        // Refresh the authoritative state from node self-info.
+        enqueueCommand(buildAppStartCommand());
+    }
+
+    public boolean setNodeAdvertName(String nodeName) {
+        if (!connected.get() || nodeName == null) {
+            return false;
+        }
+        String trimmed = nodeName.trim();
+        if (trimmed.isEmpty()) {
+            return false;
+        }
+        byte[] nameBytes = trimmed.getBytes(StandardCharsets.UTF_8);
+        int maxLen = 31; // firmware stores node_name[32] including null terminator
+        int n = Math.min(nameBytes.length, maxLen);
+        byte[] out = new byte[1 + n];
+        out[0] = CMD_SET_ADVERT_NAME;
+        System.arraycopy(nameBytes, 0, out, 1, n);
+        enqueueCommand(out);
+        enqueueCommand(buildAppStartCommand());
+        return true;
+    }
+
+    public boolean setRadioParams(double frequencyMHz, double bandwidthKHz, int sf, int cr) {
+        if (!connected.get()) {
+            return false;
+        }
+        int freqKHz = (int) Math.round(frequencyMHz * 1000.0);
+        int bwHz = (int) Math.round(bandwidthKHz * 1000.0);
+        if (freqKHz < 150000 || freqKHz > 2500000
+                || bwHz < 7000 || bwHz > 500000
+                || sf < 5 || sf > 12
+                || cr < 5 || cr > 8) {
+            return false;
+        }
+        byte[] out = new byte[11];
+        ByteBuffer bb = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN);
+        bb.put(CMD_SET_RADIO_PARAMS);
+        bb.putInt(freqKHz);
+        bb.putInt(bwHz);
+        bb.put((byte) (sf & 0xFF));
+        bb.put((byte) (cr & 0xFF));
+        enqueueCommand(out);
+        enqueueCommand(buildAppStartCommand());
+        return true;
+    }
+
+    public boolean setRadioTxPowerDbm(int txPowerDbm) {
+        if (!connected.get()) {
+            return false;
+        }
+        byte[] out = new byte[2];
+        out[0] = CMD_SET_RADIO_TX_POWER;
+        out[1] = (byte) txPowerDbm;
+        enqueueCommand(out);
+        enqueueCommand(buildAppStartCommand());
+        return true;
     }
 
     public void requestSelfInfo() {
@@ -972,6 +1096,27 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         for (MeshStateListener l : meshStateListeners) {
             try {
                 l.onMeshGpsStateChanged(enabled);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void notifySendPositionWithAdvertChanged(boolean enabled) {
+        for (MeshStateListener l : meshStateListeners) {
+            try {
+                l.onSendPositionWithAdvertChanged(enabled);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void notifyMeshNodeSettingsUpdated(MeshNodeSettings settings) {
+        if (settings == null) {
+            return;
+        }
+        for (MeshStateListener l : meshStateListeners) {
+            try {
+                l.onMeshNodeSettingsUpdated(settings);
             } catch (Exception ignored) {
             }
         }
@@ -1543,12 +1688,103 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         return out;
     }
 
+    private void applySelfInfoOtherParams(byte[] pkt) {
+        if (pkt == null) {
+            return;
+        }
+        // Some firmware builds include 3 bytes (advType/tx/maxTx) before pubkey, some do not.
+        int[][] candidates = new int[][]{
+                {41, 42, 43, 44}, // companion_radio upstream layout
+                {38, 39, 40, 41}  // legacy/trimmed layout
+        };
+        for (int[] c : candidates) {
+            int multiIdx = c[0];
+            int advertIdx = c[1];
+            int telemetryIdx = c[2];
+            int manualIdx = c[3];
+            if (pkt.length <= manualIdx) {
+                continue;
+            }
+            int advertPolicy = pkt[advertIdx] & 0xFF;
+            if (advertPolicy < ADVERT_LOC_NONE || advertPolicy > 2) {
+                continue;
+            }
+            cachedMultiAcks = pkt[multiIdx] & 0xFF;
+            cachedTelemetryModes = pkt[telemetryIdx] & 0xFF;
+            cachedManualAddContacts = pkt[manualIdx] & 0xFF;
+            boolean enabled = advertPolicy != ADVERT_LOC_NONE;
+            if (sendPositionWithAdvertEnabled == null
+                    || sendPositionWithAdvertEnabled.booleanValue() != enabled) {
+                sendPositionWithAdvertEnabled = enabled;
+                notifySendPositionWithAdvertChanged(enabled);
+            } else {
+                sendPositionWithAdvertEnabled = enabled;
+            }
+            return;
+        }
+    }
+
+    private void applySelfInfoNodeSettings(byte[] pkt) {
+        if (pkt == null) {
+            return;
+        }
+        // Self-info layout differs across firmware branches; probe known offsets.
+        int[][] candidates = new int[][]{
+                {48, 52, 56, 57, 2, 3, 58}, // companion_radio upstream layout
+                {45, 49, 53, 54, 1, 2, 55}  // legacy layout without advType
+        };
+        for (int[] c : candidates) {
+            int freqIdx = c[0];
+            int bwIdx = c[1];
+            int sfIdx = c[2];
+            int crIdx = c[3];
+            int txIdx = c[4];
+            int maxTxIdx = c[5];
+            int nameIdx = c[6];
+            if (pkt.length <= crIdx || pkt.length <= txIdx || pkt.length <= maxTxIdx
+                    || pkt.length < nameIdx) {
+                continue;
+            }
+            ByteBuffer bb = ByteBuffer.wrap(pkt).order(ByteOrder.LITTLE_ENDIAN);
+            long freqKHz = ((long) bb.getInt(freqIdx)) & 0xFFFFFFFFL;
+            long bwHz = ((long) bb.getInt(bwIdx)) & 0xFFFFFFFFL;
+            int sf = pkt[sfIdx] & 0xFF;
+            int cr = pkt[crIdx] & 0xFF;
+            int txPower = (int) pkt[txIdx];
+            int maxTxPower = pkt[maxTxIdx] & 0xFF;
+            if (freqKHz < 150000 || freqKHz > 2500000
+                    || bwHz < 7000 || bwHz > 500000
+                    || sf < 5 || sf > 12
+                    || cr < 5 || cr > 8) {
+                continue;
+            }
+            String name = "";
+            if (pkt.length > nameIdx) {
+                name = new String(pkt, nameIdx, pkt.length - nameIdx, StandardCharsets.UTF_8).trim();
+            }
+            MeshNodeSettings settings = new MeshNodeSettings(
+                    name,
+                    freqKHz / 1000.0,
+                    bwHz / 1000.0,
+                    sf,
+                    cr,
+                    txPower,
+                    maxTxPower,
+                    System.currentTimeMillis());
+            latestNodeSettings = settings;
+            notifyMeshNodeSettingsUpdated(settings);
+            return;
+        }
+    }
+
     private void logSelfInfo(byte[] pkt) {
         try {
-            if (pkt.length < 58) {
+            if (pkt.length < 55) {
                 Log.d(TAG, "SELF info short len=" + pkt.length);
                 return;
             }
+            applySelfInfoOtherParams(pkt);
+            applySelfInfoNodeSettings(pkt);
             String selfPub = bytesToHex(pkt, 1, 32);
             if (!selfPub.isEmpty()) {
                 selfPubKeyHex = selfPub;
@@ -1606,6 +1842,15 @@ public class MeshBtConnectionManager extends BtConnectionManager {
                         || text.equalsIgnoreCase("gps:true");
                 meshGpsEnabled = enabled;
                 notifyMeshGpsStateChanged(enabled);
+                return;
+            }
+            if (text.startsWith("adloc:") || text.startsWith("advert_loc:")) {
+                boolean enabled = text.endsWith("1")
+                        || text.endsWith("2")
+                        || text.equalsIgnoreCase("adloc:on")
+                        || text.equalsIgnoreCase("adloc:true");
+                sendPositionWithAdvertEnabled = enabled;
+                notifySendPositionWithAdvertChanged(enabled);
             }
         } catch (Exception ignored) {
         }

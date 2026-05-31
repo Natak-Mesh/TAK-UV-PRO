@@ -131,7 +131,10 @@ public class UVProMapComponent extends DropDownMapComponent {
     private static final String PREF_MESH_SHOW_REPEATERS = "uvpro_mesh_show_repeaters";
     private static final String PREF_MESH_SHOW_NODES = "uvpro_mesh_show_nodes";
     private static final String PREF_MESH_REPEATER_CACHE = "uvpro_mesh_repeater_cache_v1";
+    private static final String PREF_MESH_NODE_CACHE = "uvpro_mesh_node_cache_v1";
     private static final long MESH_REPEATER_TTL_MS = 30L * 24L * 60L * 60L * 1000L;
+    private static final long MESH_NODE_TTL_MS = 30L * 24L * 60L * 60L * 1000L;
+    private static final int MESH_NODE_CACHE_MAX = 100;
 
     private Context pluginContext;
     private MapView mapView;
@@ -290,48 +293,31 @@ try {
         btConnectionManager.setReconnectBlocker(
                 () -> meshBtConnectionManager != null && meshBtConnectionManager.isConnected());
         repeaterAdvertListener = advert -> {
-            if (advert == null || cotBridge == null || !advert.hasValidPosition()
-                    || !isMeshRepeaterDisplayEnabled()) {
+            if (advert == null || !advert.hasValidPosition()) {
                 return;
             }
             String display = sanitizeRepeaterDisplayName(advert.name);
             persistRepeaterAdvert(advert, display);
-            renderMeshRepeaterMarker(display, advert.pubKeyHex, advert.latitude, advert.longitude,
-                    advert.advertTimestampSec);
+            if (cotBridge != null && isMeshRepeaterDisplayEnabled()) {
+                renderMeshRepeaterMarker(display, advert.pubKeyHex, advert.latitude, advert.longitude,
+                        advert.advertTimestampSec);
+            }
         };
         meshAdvertListener = advert -> {
-            if (advert == null || advert.isRepeater() || cotBridge == null
-                    || !advert.hasValidPosition() || !isMeshNodeDisplayEnabled()) {
+            if (advert == null || advert.isRepeater() || !advert.hasValidPosition()) {
                 return;
             }
             String display = sanitizeNodeDisplayName(advert.name, advert.pubKeyHex);
-            String mapUid = "MESHCORE-NODE-" + sanitizeRepeaterUidSuffix(advert.pubKeyHex);
-            char meshNodeSymbol = meshNodeSymbolCode(advert.name, display);
-            String contactType = meshContactTypeLabel(advert.advertType);
-            String remarks = buildMeshAdvertDetails(
-                    display,
-                    advert.pubKeyHex,
-                    advert.latitude,
-                    advert.longitude,
-                    contactType,
-                    advert.advertTimestampSec);
-            cotBridge.injectPositionCotAtMapUid(
-                    display,
-                    advert.latitude,
-                    advert.longitude,
-                    0.0,
-                    -1.0,
-                    -1.0,
-                    "Cyan",
-                    'M',
-                    meshNodeSymbol,
-                    remarks,
-                    mapUid);
-            cotBridge.markMeshNodeMapItem(mapUid);
-            cotBridge.setMeshMarkerDetails(mapUid, remarks);
-            cotBridge.promoteMeshContactMapItem(mapUid, display);
-            synchronized (meshNodeMapUids) {
-                meshNodeMapUids.add(mapUid);
+            persistNodeAdvert(advert, display);
+            if (cotBridge != null && isMeshNodeDisplayEnabled()) {
+                renderMeshNodeMarker(
+                        display,
+                        advert.pubKeyHex,
+                        advert.latitude,
+                        advert.longitude,
+                        advert.advertTimestampSec,
+                        advert.advertType,
+                        advert.name);
             }
         };
         meshBtConnectionManager.addRepeaterAdvertListener(repeaterAdvertListener);
@@ -350,9 +336,14 @@ try {
                     && !prefs.getBoolean(PREF_MESH_SHOW_NODES, false)) {
                 clearTrackedMeshMarkers(meshNodeMapUids);
             }
+            if (PREF_MESH_SHOW_NODES.equals(key)
+                    && prefs.getBoolean(PREF_MESH_SHOW_NODES, false)) {
+                restorePersistedNodes();
+            }
         };
         meshPrefs.registerOnSharedPreferenceChangeListener(meshMapPrefsListener);
         restorePersistedRepeaters();
+        restorePersistedNodes();
         radioControlManager = new UVProRadioControlManager(btConnectionManager);
         radioControlManager.start();
 
@@ -1002,6 +993,41 @@ try {
         }
     }
 
+    private void renderMeshNodeMarker(String display, String pubKeyHex, double lat, double lon,
+                                      long advertTimestampSec, int advertType, String rawName) {
+        if (cotBridge == null || mapView == null || !isMeshNodeDisplayEnabled()) {
+            return;
+        }
+        String mapUid = "MESHCORE-NODE-" + sanitizeRepeaterUidSuffix(pubKeyHex);
+        char meshNodeSymbol = meshNodeSymbolCode(rawName, display);
+        String contactType = meshContactTypeLabel(advertType);
+        String remarks = buildMeshAdvertDetails(
+                display,
+                pubKeyHex,
+                lat,
+                lon,
+                contactType,
+                advertTimestampSec);
+        cotBridge.injectPositionCotAtMapUid(
+                display,
+                lat,
+                lon,
+                0.0,
+                -1.0,
+                -1.0,
+                "Cyan",
+                'M',
+                meshNodeSymbol,
+                remarks,
+                mapUid);
+        cotBridge.markMeshNodeMapItem(mapUid);
+        cotBridge.setMeshMarkerDetails(mapUid, remarks);
+        cotBridge.promoteMeshContactMapItem(mapUid, display);
+        synchronized (meshNodeMapUids) {
+            meshNodeMapUids.add(mapUid);
+        }
+    }
+
     private void persistRepeaterAdvert(MeshBtConnectionManager.RepeaterAdvert advert, String display) {
         if (advert == null || advert.pubKeyHex == null || advert.pubKeyHex.trim().isEmpty()) {
             return;
@@ -1057,6 +1083,84 @@ try {
         }
     }
 
+    private void persistNodeAdvert(MeshBtConnectionManager.MeshAdvert advert, String display) {
+        if (advert == null || advert.pubKeyHex == null || advert.pubKeyHex.trim().isEmpty()) {
+            return;
+        }
+        try {
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(
+                    mapView != null ? mapView.getContext() : pluginContext);
+            String raw = prefs.getString(PREF_MESH_NODE_CACHE, "[]");
+            JSONArray arr = new JSONArray(raw != null ? raw : "[]");
+            Map<String, JSONObject> byKey = new HashMap<>();
+            long now = System.currentTimeMillis();
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) {
+                    continue;
+                }
+                String key = o.optString("pubKeyHex", "").trim().toUpperCase(Locale.US);
+                if (key.isEmpty()) {
+                    continue;
+                }
+                long lastSeenMs = o.optLong("lastSeenMs", o.optLong("firstSeenMs", 0L));
+                if (lastSeenMs > 0L && (now - lastSeenMs) > MESH_NODE_TTL_MS) {
+                    continue;
+                }
+                byKey.put(key, o);
+            }
+
+            String pubKey = advert.pubKeyHex.trim().toUpperCase(Locale.US);
+            JSONObject row = byKey.get(pubKey);
+            if (row == null) {
+                row = new JSONObject();
+                byKey.put(pubKey, row);
+            }
+            long existingFirstSeen = row.optLong("firstSeenMs", 0L);
+            long firstSeen = existingFirstSeen > 0L
+                    ? existingFirstSeen
+                    : now;
+
+            row.put("pubKeyHex", pubKey);
+            row.put("display", display != null ? display : "Mesh Node");
+            row.put("rawName", advert.name != null ? advert.name : "");
+            row.put("advertType", advert.advertType);
+            row.put("lat", advert.latitude);
+            row.put("lon", advert.longitude);
+            row.put("firstSeenMs", firstSeen);
+            row.put("lastSeenMs", now);
+            row.put("lastAdvertSec", advert.advertTimestampSec);
+
+            if (byKey.size() > MESH_NODE_CACHE_MAX) {
+                String oldestKey = null;
+                long oldestSeenMs = Long.MAX_VALUE;
+                for (Map.Entry<String, JSONObject> e : byKey.entrySet()) {
+                    JSONObject candidate = e.getValue();
+                    long seenMs = candidate.optLong("lastSeenMs",
+                            candidate.optLong("firstSeenMs", 0L));
+                    if (seenMs <= 0L) {
+                        seenMs = Long.MIN_VALUE;
+                    }
+                    if (seenMs < oldestSeenMs) {
+                        oldestSeenMs = seenMs;
+                        oldestKey = e.getKey();
+                    }
+                }
+                if (oldestKey != null && byKey.size() > MESH_NODE_CACHE_MAX) {
+                    byKey.remove(oldestKey);
+                }
+            }
+
+            JSONArray out = new JSONArray();
+            for (JSONObject o : byKey.values()) {
+                out.put(o);
+            }
+            prefs.edit().putString(PREF_MESH_NODE_CACHE, out.toString()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "persistNodeAdvert failed", e);
+        }
+    }
+
     private void restorePersistedRepeaters() {
         try {
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(
@@ -1089,6 +1193,73 @@ try {
             prefs.edit().putString(PREF_MESH_REPEATER_CACHE, kept.toString()).apply();
         } catch (Exception e) {
             Log.w(TAG, "restorePersistedRepeaters failed", e);
+        }
+    }
+
+    private void restorePersistedNodes() {
+        try {
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(
+                    mapView != null ? mapView.getContext() : pluginContext);
+            String raw = prefs.getString(PREF_MESH_NODE_CACHE, "[]");
+            JSONArray arr = new JSONArray(raw != null ? raw : "[]");
+            JSONArray kept = new JSONArray();
+            long now = System.currentTimeMillis();
+
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) {
+                    continue;
+                }
+                String pubKey = o.optString("pubKeyHex", "").trim().toUpperCase(Locale.US);
+                String display = o.optString("display", "Mesh Node").trim();
+                String rawName = o.optString("rawName", "");
+                int advertType = o.optInt("advertType", 0);
+                double lat = o.optDouble("lat", Double.NaN);
+                double lon = o.optDouble("lon", Double.NaN);
+                long firstSeenMs = o.optLong("firstSeenMs", 0L);
+                long lastSeenMs = o.optLong("lastSeenMs", firstSeenMs);
+                long lastAdvertSec = o.optLong("lastAdvertSec", 0L);
+                if (pubKey.isEmpty() || Double.isNaN(lat) || Double.isNaN(lon)
+                        || lastSeenMs <= 0L || (now - lastSeenMs) > MESH_NODE_TTL_MS) {
+                    continue;
+                }
+                kept.put(o);
+                if (isMeshNodeDisplayEnabled()) {
+                    renderMeshNodeMarker(display, pubKey, lat, lon, lastAdvertSec, advertType, rawName);
+                }
+            }
+            while (kept.length() > MESH_NODE_CACHE_MAX) {
+                int oldestIdx = -1;
+                long oldestSeenMs = Long.MAX_VALUE;
+                for (int i = 0; i < kept.length(); i++) {
+                    JSONObject o = kept.optJSONObject(i);
+                    if (o == null) {
+                        continue;
+                    }
+                    long seenMs = o.optLong("lastSeenMs", o.optLong("firstSeenMs", 0L));
+                    if (seenMs < oldestSeenMs) {
+                        oldestSeenMs = seenMs;
+                        oldestIdx = i;
+                    }
+                }
+                if (oldestIdx < 0) {
+                    break;
+                }
+                JSONArray trimmed = new JSONArray();
+                for (int i = 0; i < kept.length(); i++) {
+                    if (i == oldestIdx) {
+                        continue;
+                    }
+                    JSONObject o = kept.optJSONObject(i);
+                    if (o != null) {
+                        trimmed.put(o);
+                    }
+                }
+                kept = trimmed;
+            }
+            prefs.edit().putString(PREF_MESH_NODE_CACHE, kept.toString()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "restorePersistedNodes failed", e);
         }
     }
 

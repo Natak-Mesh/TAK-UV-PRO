@@ -3070,12 +3070,13 @@ public class ChatBridge {
         if (prefix.isEmpty()) {
             return false;
         }
-        String senderUid = resolveMeshNodeUidByPubKeyPrefix(prefix);
-        String fromCallsign = meshNodeDisplayForInboundPrefix(prefix, senderUid);
-        if (senderUid.toUpperCase(Locale.US).startsWith(MESH_NODE_UID_PREFIX)
-                || senderUid.toUpperCase(Locale.US).startsWith(MESH_RPTR_UID_PREFIX)) {
-            com.uvpro.plugin.UVProContactHandler.ensureMeshChatContactByUid(senderUid, fromCallsign);
+        String senderUid = resolveExistingMeshContactUidByPubKeyPrefix(prefix);
+        if (senderUid == null || senderUid.trim().isEmpty()) {
+            Log.w(TAG, "Dropping inbound native MeshCore DM from unknown prefix=" + prefix
+                    + " (not in mesh contacts)");
+            return false;
         }
+        String fromCallsign = meshNodeDisplayForInboundPrefix(prefix, senderUid);
         cotBridge.registerBtechContactUid(senderUid);
         cotBridge.registerBtechContactId(fromCallsign, senderUid);
         int mid = (prefix + "|" + text.trim()).hashCode() & 0x7fffffff;
@@ -3087,7 +3088,7 @@ public class ChatBridge {
         return injectRadioMessage(fromCallsign, localCallsign, text.trim(), mid);
     }
 
-    private String resolveMeshNodeUidByPubKeyPrefix(String prefixUpper) {
+    private String resolveExistingMeshContactUidByPubKeyPrefix(String prefixUpper) {
         try {
             java.util.List<Contact> all = Contacts.getInstance().getAllContacts();
             if (all != null) {
@@ -3102,13 +3103,19 @@ public class ChatBridge {
                     String u = uid.toUpperCase(Locale.US);
                     if ((u.startsWith(MESH_NODE_UID_PREFIX) || u.startsWith(MESH_RPTR_UID_PREFIX))
                             && extractMeshPublicKeyCandidate(u).startsWith(prefixUpper)) {
-                        return uid;
+                        if (c instanceof IndividualContact) {
+                            IndividualContact ic = (IndividualContact) c;
+                            if (ic.getConnector(com.uvpro.plugin.contacts.MeshSendMessageConnector.CONNECTOR_TYPE) != null
+                                    || ic.getConnector(com.uvpro.plugin.contacts.MeshFavoriteConnector.CONNECTOR_TYPE) != null) {
+                                return uid;
+                            }
+                        }
                     }
                 }
             }
         } catch (Exception ignored) {
         }
-        return MESH_NODE_UID_PREFIX + prefixUpper;
+        return null;
     }
 
     private String meshNodeDisplayForUid(String uid) {

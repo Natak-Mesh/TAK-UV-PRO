@@ -40,6 +40,14 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 - **Transmit-mode persistence:** The `ATAK MeshCore Transmit` preference is now persisted and honored for beacon transport selection.
 - **Note:** As with the native app, the recipient node must already be a contact on the sender's MeshCore node (the firmware routes DMs by 6-byte pubkey prefix).
 
+### 2026-05-31 Progress Update (v1.9.56)
+
+- **MeshCore Node Settings panel:** Added a new `Node Settings` action in the MeshCore section with live polling and apply controls for node name, frequency, bandwidth, spreading factor, coding rate, and transmit power (dBm). `Apply` and `Refresh` now keep the dialog open, and the panel always opens scrolled to the top.
+- **Advert persistence decoupled from display toggles:** Node and repeater adverts are now stored even when `Show Nodes` / `Show Repeaters` is OFF. The toggles now control rendering only.
+- **Node cache policy:** Mesh node cache now keeps a rolling cap of the most recent 100 nodes, evicts oldest when over cap, and purges entries older than 30 days.
+- **Channels picker cleanup:** The internal `ATAK_DATA` channel is hidden from the user-facing MeshCore `Channels` list.
+- **Inbound DM trust gate:** Native MeshCore inbound DMs are now accepted only from existing mesh contacts (favorited/known in ATAK); unknown senders are dropped instead of auto-creating a new contact thread.
+
 ### 2026-05-21 Progress Update
 
 - RF group sync now relays full GeoChat CoT `b-t-f` with `hierarchy` and improved inbound handling through ATAK GeoChat paths.

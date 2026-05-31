@@ -3071,7 +3071,11 @@ public class ChatBridge {
             return false;
         }
         String senderUid = resolveMeshNodeUidByPubKeyPrefix(prefix);
-        String fromCallsign = meshNodeDisplayForUid(senderUid);
+        String fromCallsign = meshNodeDisplayForInboundPrefix(prefix, senderUid);
+        if (senderUid.toUpperCase(Locale.US).startsWith(MESH_NODE_UID_PREFIX)
+                || senderUid.toUpperCase(Locale.US).startsWith(MESH_RPTR_UID_PREFIX)) {
+            com.uvpro.plugin.UVProContactHandler.ensureMeshChatContactByUid(senderUid, fromCallsign);
+        }
         cotBridge.registerBtechContactUid(senderUid);
         cotBridge.registerBtechContactId(fromCallsign, senderUid);
         int mid = (prefix + "|" + text.trim()).hashCode() & 0x7fffffff;
@@ -3116,6 +3120,46 @@ public class ChatBridge {
         } catch (Exception ignored) {
         }
         return uid;
+    }
+
+    private String meshNodeDisplayForInboundPrefix(String prefixUpper, String senderUid) {
+        String byUid = meshNodeDisplayForUid(senderUid);
+        if (byUid != null && !byUid.trim().isEmpty()) {
+            String clean = byUid.trim();
+            String upper = clean.toUpperCase(Locale.US);
+            if (!upper.startsWith(MESH_NODE_UID_PREFIX) && !upper.startsWith(MESH_RPTR_UID_PREFIX)) {
+                return clean;
+            }
+        }
+        try {
+            MapView mv = MapView.getMapView();
+            if (mv != null && mv.getRootGroup() != null) {
+                java.util.List<MapItem> items = mv.getRootGroup().deepFindItems("type", "a-f-G-U-C");
+                if (items != null) {
+                    for (MapItem item : items) {
+                        if (item == null) {
+                            continue;
+                        }
+                        String uid = item.getUID();
+                        if (uid == null) {
+                            continue;
+                        }
+                        String candidate = extractMeshPublicKeyCandidate(uid);
+                        if (!candidate.isEmpty() && candidate.startsWith(prefixUpper)) {
+                            String call = item.getMetaString("callsign", item.getTitle());
+                            if (call != null) {
+                                call = call.trim();
+                                if (!call.isEmpty()) {
+                                    return call;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return MESH_NODE_UID_PREFIX + prefixUpper;
     }
 
     /**

@@ -19,12 +19,16 @@ import com.uvpro.plugin.contacts.PositionOnlyConnector;
 
 import android.widget.Toast;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class UVProContactHandler extends
         ContactConnectorManager.ContactConnectorHandler {
+
+    private static final String MESH_NODE_UID_PREFIX = "MESHCORE-NODE-";
+    private static final String MESH_RPTR_UID_PREFIX = "MESHCORE-RPTR-";
 
     /** Must match ChatBridge.ACTION_PLUGIN_CONTACT_GEOCHAT_SEND. */
     public static final String PLUGIN_GEOCHAT_ACTION =
@@ -225,18 +229,21 @@ public class UVProContactHandler extends
         try {
             final String uid = contactUid.trim();
             final Contacts contacts = Contacts.getInstance();
-            Contact existing = contacts.getContactByUuid(uid);
-            if (existing instanceof IndividualContact) {
-                applyMeshContactConnectors((IndividualContact) existing);
-                return true;
-            }
             MapItem item = null;
             com.atakmap.android.maps.MapView mv = com.atakmap.android.maps.MapView.getMapView();
             if (mv != null && mv.getRootGroup() != null) {
                 item = mv.getRootGroup().deepFindUID(uid);
             }
-            String name = currentName != null && !currentName.trim().isEmpty()
-                    ? currentName.trim() : uid;
+            String name = formatMeshFavoriteName(currentName, uid, item);
+            Contact existing = contacts.getContactByUuid(uid);
+            if (existing instanceof IndividualContact) {
+                IndividualContact ic = (IndividualContact) existing;
+                if (name != null && !name.equals(ic.getName())) {
+                    ic.setName(name);
+                }
+                applyMeshContactConnectors(ic);
+                return true;
+            }
             IndividualContact c = new IndividualContact(name, uid, item,
                     buildNativeConnectorSeed(name));
             applyMeshContactConnectors(c);
@@ -276,21 +283,44 @@ public class UVProContactHandler extends
     }
 
     public static String formatMeshFavoriteName(String currentName, String uid) {
-        String base = currentName != null ? currentName.trim() : "";
-        if (base.isEmpty()) {
-            base = uid != null ? uid.trim() : "node";
+        return formatMeshFavoriteName(currentName, uid, null);
+    }
+
+    private static String formatMeshFavoriteName(String currentName, String uid, MapItem item) {
+        String base = normalizeMeshBaseName(currentName);
+        if (base.isEmpty() && item != null) {
+            String mapCallsign = item.getMetaString("callsign", item.getTitle());
+            base = normalizeMeshBaseName(mapCallsign);
         }
+        if (base.isEmpty()) {
+            base = normalizeMeshBaseName(uid);
+        }
+        if (base.isEmpty()) {
+            base = "NODE";
+        }
+        return base + "-MESH";
+    }
+
+    private static String normalizeMeshBaseName(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        String base = raw.trim();
         if (base.startsWith("#")) {
             base = base.substring(1);
         }
-        if (base.toLowerCase().endsWith("-mesh")) {
-            base = base.substring(0, base.length() - 5);
-        }
         base = base.trim();
         if (base.isEmpty()) {
-            base = "node";
+            return "";
         }
-        return base + "-mesh";
+        String upper = base.toUpperCase(Locale.US);
+        if (upper.startsWith(MESH_NODE_UID_PREFIX) || upper.startsWith(MESH_RPTR_UID_PREFIX)) {
+            return "";
+        }
+        if (upper.endsWith("-MESH")) {
+            upper = upper.substring(0, upper.length() - 5).trim();
+        }
+        return upper;
     }
 
     private static NetConnectString buildNativeConnectorSeed(String callsign) {

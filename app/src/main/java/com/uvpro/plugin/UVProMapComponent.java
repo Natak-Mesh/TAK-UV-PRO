@@ -53,10 +53,14 @@ import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry.BtDeviceRecord;
 import java.util.List;
 import java.util.Locale;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.Date;
 import java.text.SimpleDateFormat;
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * UVPro Map Component — the central nervous system of the plugin.
@@ -126,6 +130,8 @@ public class UVProMapComponent extends DropDownMapComponent {
             "uvpro_smart_beacon_v21_off_migrated";
     private static final String PREF_MESH_SHOW_REPEATERS = "uvpro_mesh_show_repeaters";
     private static final String PREF_MESH_SHOW_NODES = "uvpro_mesh_show_nodes";
+    private static final String PREF_MESH_REPEATER_CACHE = "uvpro_mesh_repeater_cache_v1";
+    private static final long MESH_REPEATER_TTL_MS = 30L * 24L * 60L * 60L * 1000L;
 
     private Context pluginContext;
     private MapView mapView;
@@ -289,32 +295,9 @@ try {
                 return;
             }
             String display = sanitizeRepeaterDisplayName(advert.name);
-            String mapUid = "MESHCORE-RPTR-" + sanitizeRepeaterUidSuffix(advert.pubKeyHex);
-            String remarks = buildMeshAdvertDetails(
-                    display,
-                    advert.pubKeyHex,
-                    advert.latitude,
-                    advert.longitude,
-                    "Repeater",
+            persistRepeaterAdvert(advert, display);
+            renderMeshRepeaterMarker(display, advert.pubKeyHex, advert.latitude, advert.longitude,
                     advert.advertTimestampSec);
-            cotBridge.injectPositionCotAtMapUid(
-                    display,
-                    advert.latitude,
-                    advert.longitude,
-                    0.0,
-                    -1.0,
-                    -1.0,
-                    "Cyan",
-                    'M',
-                    '>',
-                    remarks,
-                    mapUid);
-            cotBridge.markMeshRepeaterMapItem(mapUid);
-            cotBridge.setMeshMarkerDetails(mapUid, remarks);
-            cotBridge.promoteMeshContactMapItem(mapUid, display);
-            synchronized (meshRepeaterMapUids) {
-                meshRepeaterMapUids.add(mapUid);
-            }
         };
         meshAdvertListener = advert -> {
             if (advert == null || advert.isRepeater() || cotBridge == null
@@ -359,12 +342,17 @@ try {
                     && !prefs.getBoolean(PREF_MESH_SHOW_REPEATERS, true)) {
                 clearTrackedMeshMarkers(meshRepeaterMapUids);
             }
+            if (PREF_MESH_SHOW_REPEATERS.equals(key)
+                    && prefs.getBoolean(PREF_MESH_SHOW_REPEATERS, true)) {
+                restorePersistedRepeaters();
+            }
             if (PREF_MESH_SHOW_NODES.equals(key)
                     && !prefs.getBoolean(PREF_MESH_SHOW_NODES, false)) {
                 clearTrackedMeshMarkers(meshNodeMapUids);
             }
         };
         meshPrefs.registerOnSharedPreferenceChangeListener(meshMapPrefsListener);
+        restorePersistedRepeaters();
         radioControlManager = new UVProRadioControlManager(btConnectionManager);
         radioControlManager.start();
 
@@ -978,6 +966,129 @@ try {
             return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date(ms));
         } catch (Exception ignored) {
             return "Unknown";
+        }
+    }
+
+    private void renderMeshRepeaterMarker(String display, String pubKeyHex, double lat, double lon,
+                                          long advertTimestampSec) {
+        if (cotBridge == null || mapView == null || !isMeshRepeaterDisplayEnabled()) {
+            return;
+        }
+        String mapUid = "MESHCORE-RPTR-" + sanitizeRepeaterUidSuffix(pubKeyHex);
+        String remarks = buildMeshAdvertDetails(
+                display,
+                pubKeyHex,
+                lat,
+                lon,
+                "Repeater",
+                advertTimestampSec);
+        cotBridge.injectPositionCotAtMapUid(
+                display,
+                lat,
+                lon,
+                0.0,
+                -1.0,
+                -1.0,
+                "Cyan",
+                'M',
+                '>',
+                remarks,
+                mapUid);
+        cotBridge.markMeshRepeaterMapItem(mapUid);
+        cotBridge.setMeshMarkerDetails(mapUid, remarks);
+        cotBridge.promoteMeshContactMapItem(mapUid, display);
+        synchronized (meshRepeaterMapUids) {
+            meshRepeaterMapUids.add(mapUid);
+        }
+    }
+
+    private void persistRepeaterAdvert(MeshBtConnectionManager.RepeaterAdvert advert, String display) {
+        if (advert == null || advert.pubKeyHex == null || advert.pubKeyHex.trim().isEmpty()) {
+            return;
+        }
+        try {
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(
+                    mapView != null ? mapView.getContext() : pluginContext);
+            String raw = prefs.getString(PREF_MESH_REPEATER_CACHE, "[]");
+            JSONArray arr = new JSONArray(raw != null ? raw : "[]");
+            Map<String, JSONObject> byKey = new HashMap<>();
+            long now = System.currentTimeMillis();
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) {
+                    continue;
+                }
+                String key = o.optString("pubKeyHex", "").trim().toUpperCase(Locale.US);
+                if (key.isEmpty()) {
+                    continue;
+                }
+                long firstSeenMs = o.optLong("firstSeenMs", 0L);
+                if (firstSeenMs > 0L && (now - firstSeenMs) > MESH_REPEATER_TTL_MS) {
+                    continue;
+                }
+                byKey.put(key, o);
+            }
+
+            String pubKey = advert.pubKeyHex.trim().toUpperCase(Locale.US);
+            JSONObject row = byKey.get(pubKey);
+            if (row == null) {
+                row = new JSONObject();
+                byKey.put(pubKey, row);
+            }
+            long existingFirstSeen = row.optLong("firstSeenMs", 0L);
+            long firstSeen = existingFirstSeen > 0L
+                    ? existingFirstSeen
+                    : now;
+
+            row.put("pubKeyHex", pubKey);
+            row.put("display", display != null ? display : "Mesh Repeater");
+            row.put("lat", advert.latitude);
+            row.put("lon", advert.longitude);
+            row.put("firstSeenMs", firstSeen);
+            row.put("lastAdvertSec", advert.advertTimestampSec);
+
+            JSONArray out = new JSONArray();
+            for (JSONObject o : byKey.values()) {
+                out.put(o);
+            }
+            prefs.edit().putString(PREF_MESH_REPEATER_CACHE, out.toString()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "persistRepeaterAdvert failed", e);
+        }
+    }
+
+    private void restorePersistedRepeaters() {
+        try {
+            SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(
+                    mapView != null ? mapView.getContext() : pluginContext);
+            String raw = prefs.getString(PREF_MESH_REPEATER_CACHE, "[]");
+            JSONArray arr = new JSONArray(raw != null ? raw : "[]");
+            JSONArray kept = new JSONArray();
+            long now = System.currentTimeMillis();
+
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) {
+                    continue;
+                }
+                String pubKey = o.optString("pubKeyHex", "").trim().toUpperCase(Locale.US);
+                String display = o.optString("display", "Mesh Repeater").trim();
+                double lat = o.optDouble("lat", Double.NaN);
+                double lon = o.optDouble("lon", Double.NaN);
+                long firstSeenMs = o.optLong("firstSeenMs", 0L);
+                long lastAdvertSec = o.optLong("lastAdvertSec", 0L);
+                if (pubKey.isEmpty() || Double.isNaN(lat) || Double.isNaN(lon)
+                        || firstSeenMs <= 0L || (now - firstSeenMs) > MESH_REPEATER_TTL_MS) {
+                    continue;
+                }
+                kept.put(o);
+                if (isMeshRepeaterDisplayEnabled()) {
+                    renderMeshRepeaterMarker(display, pubKey, lat, lon, lastAdvertSec);
+                }
+            }
+            prefs.edit().putString(PREF_MESH_REPEATER_CACHE, kept.toString()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "restorePersistedRepeaters failed", e);
         }
     }
 

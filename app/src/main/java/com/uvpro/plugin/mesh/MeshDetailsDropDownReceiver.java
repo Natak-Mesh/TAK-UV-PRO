@@ -137,7 +137,7 @@ public class MeshDetailsDropDownReceiver extends DropDownReceiver
         sendMessageButton.setOnClickListener(v -> {
             // Force exact UID contact targeting for map-selected Mesh markers.
             // Using callsign-first resolution can bind to unrelated non-mesh contacts.
-            String ensured = ChatBridge.ensurePluginChatContactExactUid(uid, uid);
+            String ensured = ChatBridge.ensurePluginChatContactExactUid(callsign, uid);
             if (ensured == null || ensured.isEmpty()) {
                 Toast.makeText(getMapView().getContext(),
                         "Could not create Mesh chat contact",

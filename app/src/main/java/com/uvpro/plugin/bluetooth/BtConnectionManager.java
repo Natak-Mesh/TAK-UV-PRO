@@ -97,6 +97,7 @@ public class BtConnectionManager {
             new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<RawDataListener> rawDataListeners =
             new CopyOnWriteArrayList<>();
+    private volatile ReconnectBlocker reconnectBlocker;
 
     /** Invoked while the socket is still open, before streams are closed. */
     private final CopyOnWriteArrayList<Runnable> beforeDisconnectHooks =
@@ -118,6 +119,14 @@ public class BtConnectionManager {
         boolean onRawBytes(byte[] data);
     }
 
+    @FunctionalInterface
+    public interface ReconnectBlocker {
+        /**
+         * @return true when UV-PRO auto-reconnect should be suppressed.
+         */
+        boolean shouldBlockReconnect();
+    }
+
     public BtConnectionManager(Context context, PacketRouter packetRouter) {
         // Use ATAK's activity context for BT operations — the plugin context
         // runs under a different package and lacks ATAK's runtime permissions.
@@ -130,6 +139,10 @@ public class BtConnectionManager {
         this.kissEncoder = new KissFrameEncoder();
         this.btAdapter = BluetoothAdapter.getDefaultAdapter();
         registerBondReceiver();
+    }
+
+    public void setReconnectBlocker(ReconnectBlocker blocker) {
+        reconnectBlocker = blocker;
     }
 
     /**
@@ -572,6 +585,10 @@ public class BtConnectionManager {
 
     private void scheduleReconnect() {
         if (lastDevice == null) return;
+        if (isReconnectBlocked()) {
+            Log.i(TAG, "Auto-reconnect suppressed (external transport active)");
+            return;
+        }
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
             Log.w(TAG, "Max reconnect attempts reached (" + MAX_RECONNECT_ATTEMPTS + "). Giving up.");
             notifyError("Reconnect failed after " + MAX_RECONNECT_ATTEMPTS + " attempts. Tap Scan to retry.");
@@ -584,14 +601,30 @@ public class BtConnectionManager {
         new Thread(() -> {
             try {
                 Thread.sleep(delaySec * 1000L);
-                if (shouldReconnect.get() && !connected.get() && !connecting.get()) {
+                if (shouldReconnect.get() && !connected.get() && !connecting.get()
+                        && !isReconnectBlocked()) {
                     Log.i(TAG, "Attempting reconnect #" + reconnectAttempts + "...");
                     connect(lastDevice);
+                } else if (isReconnectBlocked()) {
+                    Log.i(TAG, "Reconnect attempt skipped (external transport active)");
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         }, "BT-Reconnect").start();
+    }
+
+    private boolean isReconnectBlocked() {
+        ReconnectBlocker blocker = reconnectBlocker;
+        if (blocker == null) {
+            return false;
+        }
+        try {
+            return blocker.shouldBlockReconnect();
+        } catch (Exception e) {
+            Log.w(TAG, "Reconnect blocker check failed", e);
+            return false;
+        }
     }
 
     private void cleanup() {

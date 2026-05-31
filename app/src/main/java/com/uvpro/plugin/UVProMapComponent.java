@@ -19,6 +19,7 @@ import com.atakmap.android.maps.PointMapItem;
 import com.atakmap.android.maps.MapEvent;
 import com.atakmap.android.maps.MapEventDispatcher;
 import com.atakmap.coremap.maps.coords.GeoPoint;
+import com.atakmap.coremap.maps.coords.GeoCalculations;
 import com.atakmap.app.preferences.ToolsPreferenceFragment;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -38,6 +39,7 @@ import com.uvpro.plugin.ui.RadioStatusOverlay;
 import com.uvpro.plugin.ui.SettingsFragment;
 import com.uvpro.plugin.aprs.AprsDetailsDropDownReceiver;
 import com.uvpro.plugin.aprs.AprsTrackManager;
+import com.uvpro.plugin.mesh.MeshDetailsDropDownReceiver;
 import com.uvpro.plugin.ax25.AprsIconsetInstaller;
 import com.uvpro.plugin.ax25.MeshcoreIconsetInstaller;
 import com.uvpro.plugin.location.RadioGpsBridge;
@@ -53,6 +55,8 @@ import java.util.Locale;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.Date;
+import java.text.SimpleDateFormat;
 
 /**
  * UVPro Map Component — the central nervous system of the plugin.
@@ -133,6 +137,7 @@ public class UVProMapComponent extends DropDownMapComponent {
     private ContactTracker contactTracker;
     private UVProDropDownReceiver dropDownReceiver;
     private AprsDetailsDropDownReceiver aprsDetailsDropDownReceiver;
+    private MeshDetailsDropDownReceiver meshDetailsDropDownReceiver;
     private PacketTerminalDropDownReceiver packetTerminalDropDownReceiver;
     private AprsTrackManager aprsTrackManager;
     private EncryptionManager encryptionManager;
@@ -274,6 +279,8 @@ try {
         // 5. BtConnectionManager (needs context + PacketRouter)
         btConnectionManager = new BtConnectionManager(context, packetRouter);
         meshBtConnectionManager = new MeshBtConnectionManager(context, packetRouter);
+        btConnectionManager.setReconnectBlocker(
+                () -> meshBtConnectionManager != null && meshBtConnectionManager.isConnected());
         repeaterAdvertListener = advert -> {
             if (advert == null || cotBridge == null || !advert.hasValidPosition()
                     || !isMeshRepeaterDisplayEnabled()) {
@@ -281,7 +288,13 @@ try {
             }
             String display = sanitizeRepeaterDisplayName(advert.name);
             String mapUid = "MESHCORE-RPTR-" + sanitizeRepeaterUidSuffix(advert.pubKeyHex);
-            String remarks = "MeshCore repeater advert";
+            String remarks = buildMeshAdvertDetails(
+                    display,
+                    advert.pubKeyHex,
+                    advert.latitude,
+                    advert.longitude,
+                    "Repeater",
+                    advert.advertTimestampSec);
             cotBridge.injectPositionCotAtMapUid(
                     display,
                     advert.latitude,
@@ -295,6 +308,8 @@ try {
                     remarks,
                     mapUid);
             cotBridge.markMeshRepeaterMapItem(mapUid);
+            cotBridge.setMeshMarkerDetails(mapUid, remarks);
+            cotBridge.promoteMeshContactMapItem(mapUid, display);
             synchronized (meshRepeaterMapUids) {
                 meshRepeaterMapUids.add(mapUid);
             }
@@ -307,6 +322,14 @@ try {
             String display = sanitizeNodeDisplayName(advert.name, advert.pubKeyHex);
             String mapUid = "MESHCORE-NODE-" + sanitizeRepeaterUidSuffix(advert.pubKeyHex);
             char meshNodeSymbol = meshNodeSymbolCode(advert.name, display);
+            String contactType = meshContactTypeLabel(advert.advertType);
+            String remarks = buildMeshAdvertDetails(
+                    display,
+                    advert.pubKeyHex,
+                    advert.latitude,
+                    advert.longitude,
+                    contactType,
+                    advert.advertTimestampSec);
             cotBridge.injectPositionCotAtMapUid(
                     display,
                     advert.latitude,
@@ -317,8 +340,11 @@ try {
                     "Cyan",
                     'M',
                     meshNodeSymbol,
-                    "MeshCore node advert",
+                    remarks,
                     mapUid);
+            cotBridge.markMeshNodeMapItem(mapUid);
+            cotBridge.setMeshMarkerDetails(mapUid, remarks);
+            cotBridge.promoteMeshContactMapItem(mapUid, display);
             synchronized (meshNodeMapUids) {
                 meshNodeMapUids.add(mapUid);
             }
@@ -463,6 +489,12 @@ try {
         aprsDetailsFilter.addAction(AprsDetailsDropDownReceiver.REFRESH_APRS_DETAILS);
         registerDropDownReceiver(aprsDetailsDropDownReceiver, aprsDetailsFilter);
 
+        meshDetailsDropDownReceiver = new MeshDetailsDropDownReceiver(view, context, cotBridge);
+        AtakBroadcast.DocumentedIntentFilter meshDetailsFilter =
+                new AtakBroadcast.DocumentedIntentFilter();
+        meshDetailsFilter.addAction(MeshDetailsDropDownReceiver.SHOW_MESH_DETAILS);
+        registerDropDownReceiver(meshDetailsDropDownReceiver, meshDetailsFilter);
+
         packetTerminalDropDownReceiver = new PacketTerminalDropDownReceiver(
                 view, context, btConnectionManager);
         packetTerminalDropDownReceiver.setPacketRouter(packetRouter);
@@ -524,6 +556,17 @@ try {
             if (!handledRepeater && cotBridge != null
                     && CotBridge.isUvproAprsMarker(item)) {
                 cotBridge.openAprsDetailsPanel(item);
+                return;
+            }
+            if (!handledRepeater && cotBridge != null
+                    && CotBridge.isUvproMeshMarker(item)) {
+                try {
+                    Intent details = new Intent(MeshDetailsDropDownReceiver.SHOW_MESH_DETAILS);
+                    details.putExtra(MeshDetailsDropDownReceiver.EXTRA_TARGET_UID, item.getUID());
+                    AtakBroadcast.getInstance().sendBroadcast(details);
+                } catch (Exception e) {
+                    Log.w(TAG, "Could not open Mesh details panel", e);
+                }
             }
         };
         view.getMapEventDispatcher().addMapEventListener(
@@ -659,6 +702,10 @@ try {
         if (packetTerminalDropDownReceiver != null) {
             packetTerminalDropDownReceiver.dispose();
             packetTerminalDropDownReceiver = null;
+        }
+        if (meshDetailsDropDownReceiver != null) {
+            meshDetailsDropDownReceiver.dispose();
+            meshDetailsDropDownReceiver = null;
         }
         if (beaconIntervalReceiver != null) {
             try {
@@ -865,6 +912,71 @@ try {
             return first;
         }
         return 'N';
+    }
+
+    private static String meshContactTypeLabel(int advertType) {
+        switch (advertType) {
+            case 0x01:
+                return "Client";
+            case 0x02:
+                return "Repeater";
+            case 0x03:
+                return "Sensor";
+            case 0x04:
+                return "Gateway";
+            default:
+                return "Node (" + advertType + ")";
+        }
+    }
+
+    private String buildMeshAdvertDetails(String name,
+                                          String pubKeyHex,
+                                          double lat,
+                                          double lon,
+                                          String contactType,
+                                          long advertTimestampSec) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Name: ").append(name != null ? name : "Unknown").append("\n");
+        sb.append("Public Key: ").append(pubKeyHex != null ? pubKeyHex : "Unknown").append("\n");
+        sb.append("Position: ")
+                .append(String.format(Locale.US, "%.5f, %.5f", lat, lon))
+                .append("\n");
+        sb.append("Distance: ").append(formatDistanceFromSelf(lat, lon)).append("\n");
+        sb.append("Contact Type: ").append(contactType != null ? contactType : "Unknown").append("\n");
+        sb.append("Last Advert Heard: ").append(formatAdvertTimestamp(advertTimestampSec));
+        return sb.toString();
+    }
+
+    private String formatDistanceFromSelf(double lat, double lon) {
+        try {
+            if (mapView == null || mapView.getSelfMarker() == null || mapView.getSelfMarker().getPoint() == null) {
+                return "Unknown";
+            }
+            GeoPoint self = mapView.getSelfMarker().getPoint();
+            GeoPoint peer = new GeoPoint(lat, lon);
+            double meters = GeoCalculations.distanceTo(self, peer);
+            if (Double.isNaN(meters) || meters < 0) {
+                return "Unknown";
+            }
+            if (meters >= 1000.0) {
+                return String.format(Locale.US, "%.2f km", meters / 1000.0);
+            }
+            return String.format(Locale.US, "%.0f m", meters);
+        } catch (Exception ignored) {
+            return "Unknown";
+        }
+    }
+
+    private String formatAdvertTimestamp(long advertTimestampSec) {
+        if (advertTimestampSec <= 0L) {
+            return "Unknown";
+        }
+        try {
+            long ms = advertTimestampSec * 1000L;
+            return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date(ms));
+        } catch (Exception ignored) {
+            return "Unknown";
+        }
     }
 
     private boolean isMeshRepeaterDisplayEnabled() {

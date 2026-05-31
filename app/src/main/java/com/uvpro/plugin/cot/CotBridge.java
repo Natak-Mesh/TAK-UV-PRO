@@ -83,6 +83,10 @@ public class CotBridge {
     public static final String META_UVPRO_APRS_DETAILS = "uvpro_aprs_details";
     /** Marker flag for MeshCore repeater advert points (not APRS contacts/messages). */
     public static final String META_UVPRO_MESH_REPEATER = "uvpro_mesh_repeater";
+    /** Marker flag for MeshCore node advert points. */
+    public static final String META_UVPRO_MESH_NODE = "uvpro_mesh_node";
+    /** Multi-line MeshCore details text for custom details panel. */
+    public static final String META_UVPRO_MESH_DETAILS = "uvpro_mesh_details";
     private static final long STALE_GRACE_MS = 30_000L;
     private static final long MIN_CONTACT_STALE_MS = 60_000L;
     /** Inbound APRS / radio peers: ATAK uses CoT stale as marker TTL; keep ≥ 2h for sparse beacons. */
@@ -1560,6 +1564,19 @@ public class CotBridge {
                 && !item.getMetaBoolean(META_UVPRO_MESH_REPEATER, false);
     }
 
+    /** True for MeshCore advert markers (node or repeater). */
+    public static boolean isUvproMeshMarker(com.atakmap.android.maps.MapItem item) {
+        if (item == null) {
+            return false;
+        }
+        if (item.getMetaBoolean(META_UVPRO_MESH_REPEATER, false)
+                || item.getMetaBoolean(META_UVPRO_MESH_NODE, false)) {
+            return true;
+        }
+        String uid = item.getUID();
+        return uid != null && (uid.startsWith("MESHCORE-RPTR-") || uid.startsWith("MESHCORE-NODE-"));
+    }
+
     /**
      * Opens the APRS metadata panel (packet comment, symbol, telemetry — not generic CoT point UI).
      */
@@ -1660,6 +1677,7 @@ public class CotBridge {
                         this.mapView.getRootGroup().deepFindUID(uid);
                 if (item != null) {
                     item.setMetaBoolean(META_UVPRO_MESH_REPEATER, true);
+                    item.setMetaBoolean(META_UVPRO_MESH_NODE, false);
                     item.setMetaBoolean(META_UVPRO_APRS, false);
                 }
             } catch (Exception e) {
@@ -1670,6 +1688,92 @@ public class CotBridge {
             tag.run();
         } else {
             this.mapView.post(tag);
+        }
+    }
+
+    /** Tag marker as Mesh node so custom Mesh details panel can handle map-click selection. */
+    public void markMeshNodeMapItem(String uid) {
+        if (uid == null || uid.isEmpty() || this.mapView == null) {
+            return;
+        }
+        Runnable tag = () -> {
+            try {
+                com.atakmap.android.maps.MapItem item =
+                        this.mapView.getRootGroup().deepFindUID(uid);
+                if (item != null) {
+                    item.setMetaBoolean(META_UVPRO_MESH_NODE, true);
+                    item.setMetaBoolean(META_UVPRO_MESH_REPEATER, false);
+                    item.setMetaBoolean(META_UVPRO_APRS, false);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "markMeshNodeMapItem failed uid=" + uid, e);
+            }
+        };
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            tag.run();
+        } else {
+            this.mapView.post(tag);
+        }
+    }
+
+    /** Store Mesh summary/details on a marker for the one-page Mesh details dropdown. */
+    public void setMeshMarkerDetails(String uid, String detailsText) {
+        if (uid == null || uid.isEmpty() || this.mapView == null) {
+            return;
+        }
+        Runnable apply = () -> {
+            try {
+                com.atakmap.android.maps.MapItem item =
+                        this.mapView.getRootGroup().deepFindUID(uid);
+                if (item != null && detailsText != null && !detailsText.trim().isEmpty()) {
+                    item.setMetaString(META_UVPRO_MESH_DETAILS, detailsText.trim());
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "setMeshMarkerDetails failed uid=" + uid, e);
+            }
+        };
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            apply.run();
+        } else {
+            this.mapView.post(apply);
+        }
+    }
+
+    /**
+     * Promote MeshCore advert markers as contact-card capable ATAK contacts.
+     * Keeps pinwheel contact card action enabled and updates display metadata.
+     */
+    public void promoteMeshContactMapItem(String uid, String displayName) {
+        if (uid == null || uid.isEmpty() || this.mapView == null) {
+            return;
+        }
+        Runnable work = () -> {
+            try {
+                com.atakmap.android.maps.MapItem item =
+                        this.mapView.getRootGroup().deepFindUID(uid);
+                if (item != null) {
+                    item.setMetaString("menu", "menus/default_item_w_type.xml");
+                    item.setMetaBoolean("sendable", true);
+                    if (displayName != null && !displayName.trim().isEmpty()) {
+                        item.setTitle(displayName.trim());
+                    }
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "promoteMeshContactMapItem map metadata failed uid=" + uid, e);
+            }
+            try {
+                registerBtechContactUid(uid);
+                if (displayName != null && !displayName.trim().isEmpty()) {
+                    registerBtechContactId(displayName.trim(), uid);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "promoteMeshContactMapItem contacts failed uid=" + uid, e);
+            }
+        };
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            work.run();
+        } else {
+            this.mapView.post(work);
         }
     }
 

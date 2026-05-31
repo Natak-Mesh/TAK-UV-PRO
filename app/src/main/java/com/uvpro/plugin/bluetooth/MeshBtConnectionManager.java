@@ -52,6 +52,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class MeshBtConnectionManager extends BtConnectionManager {
 
     private static final String TAG = "UVPro.MeshBLE";
+    private static final long MESH_SCAN_TIMEOUT_MS = 15_000L;
 
     private static final UUID UUID_UART_SERVICE =
             UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
@@ -66,6 +67,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             UUID.fromString("00002902-0000-1000-8000-00805F9B34FB");
 
     private static final byte CMD_APP_START = 0x01;
+    private static final byte CMD_SEND_SELF_ADVERT = 0x07;
     private static final byte CMD_SEND_CHANNEL_MSG = 0x03;
     private static final byte CMD_GET_NEXT_MSG = 0x0A;
     private static final byte CMD_DEVICE_QUERY = 0x16;
@@ -139,6 +141,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private final CopyOnWriteArrayList<MeshChannelListener> meshChannelListeners =
             new CopyOnWriteArrayList<>();
     private final Map<String, Long> repeaterToastDedupByPubKeyTs = new ConcurrentHashMap<>();
+    private final Map<String, Long> nodeToastDedupByPubKeyTs = new ConcurrentHashMap<>();
     private final Map<String, Long> contactQueryThrottleMsByPubKey = new ConcurrentHashMap<>();
     private final Map<Integer, String> meshChannelNamesByIndex = new ConcurrentHashMap<>();
 
@@ -157,6 +160,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private BluetoothDevice pendingBondDevice;
     private volatile Boolean meshGpsEnabled = null;
     private volatile MeshLocationFix latestSelfLocation = null;
+    private volatile String selfPubKeyHex = "";
     private int reconnectAttempts = 0;
     private static final int MAX_RECONNECT_ATTEMPTS = 5;
 
@@ -366,6 +370,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         synchronized (seenScanAddresses) {
             seenScanAddresses.clear();
         }
+        emitBondedMeshCandidates();
 
         bleScanner = btAdapter.getBluetoothLeScanner();
         if (bleScanner == null) {
@@ -417,12 +422,46 @@ public class MeshBtConnectionManager extends BtConnectionManager {
                 if (scanCompleteNotified.compareAndSet(false, true)) {
                     notifyScanComplete();
                 }
-            }, 8000L);
+            }, MESH_SCAN_TIMEOUT_MS);
         } catch (Exception e) {
             Log.w(TAG, "BLE scan start failed", e);
             if (scanCompleteNotified.compareAndSet(false, true)) {
                 notifyScanComplete();
             }
+        }
+    }
+
+    private void emitBondedMeshCandidates() {
+        if (btAdapter == null) {
+            return;
+        }
+        try {
+            Set<BluetoothDevice> bonded = btAdapter.getBondedDevices();
+            if (bonded == null || bonded.isEmpty()) {
+                return;
+            }
+            for (BluetoothDevice device : bonded) {
+                if (device == null || !isLikelyMeshDevice(null, device)) {
+                    continue;
+                }
+                String address = device.getAddress();
+                boolean isNew = false;
+                if (address != null && !address.isEmpty()) {
+                    synchronized (seenScanAddresses) {
+                        if (!seenScanAddresses.contains(address)) {
+                            seenScanAddresses.add(address);
+                            isNew = true;
+                        }
+                    }
+                } else {
+                    isNew = true;
+                }
+                if (isNew) {
+                    notifyDeviceFound(device);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not enumerate bonded mesh devices", e);
         }
     }
 
@@ -795,8 +834,21 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         return true;
     }
 
+    public boolean sendSelfAdvert() {
+        if (!connected.get()) {
+            return false;
+        }
+        enqueueCommand(new byte[]{CMD_SEND_SELF_ADVERT});
+        return true;
+    }
+
     public Boolean getMeshGpsEnabled() {
         return meshGpsEnabled;
+    }
+
+    public String getSelfPubKeyHex() {
+        String v = selfPubKeyHex;
+        return v != null ? v : "";
     }
 
     public MeshLocationFix getLatestSelfLocation() {
@@ -943,6 +995,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
                     || n.contains("mesh")
                     || n.contains("heltec")
                     || n.contains("lilygo")
+                    || n.contains("echo")
                     || n.contains("t-echo")
                     || n.contains("tdeck")
                     || n.contains("t-deck")
@@ -1206,6 +1259,9 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         }
         if (t == PUSH_CODE_LOG_RX_DATA) {
             handleLogRxData(pkt);
+            // Some firmware builds emit LOG_RX_DATA first, then queue follow-up companion frames
+            // (including advert/contact refreshes). Prompt an immediate drain.
+            enqueueCommand(buildGetNextMessageCommand());
             return;
         }
         if (t == PUSH_CODE_SEND_CONFIRMED) {
@@ -1218,6 +1274,9 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             }
             MeshAdvert meshAdvert = parseMeshAdvert(pkt);
             if (meshAdvert != null) {
+                if (!meshAdvert.isRepeater()) {
+                    maybeToastNodeDiscovery(meshAdvert);
+                }
                 notifyMeshAdvert(meshAdvert);
                 if (meshAdvert.isRepeater()) {
                     RepeaterAdvert advert = repeaterAdvertFromMesh(meshAdvert);
@@ -1263,7 +1322,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     }
 
     private MeshAdvert parseMeshAdvert(byte[] pkt) {
-        if (pkt == null || pkt.length < 148) {
+        // Required fields are within [1..143]; accept shorter variants from firmware forks.
+        if (pkt == null || pkt.length < 144) {
             return null;
         }
         try {
@@ -1347,6 +1407,30 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         });
     }
 
+    private void maybeToastNodeDiscovery(MeshAdvert advert) {
+        if (advert == null || context == null) {
+            return;
+        }
+        String dedupKey = advert.pubKeyHex + ":" + advert.advertTimestampSec;
+        Long previous = nodeToastDedupByPubKeyTs.putIfAbsent(dedupKey, advert.advertTimestampSec);
+        if (previous != null) {
+            return;
+        }
+        Handler main = new Handler(Looper.getMainLooper());
+        main.post(() -> {
+            try {
+                String name = advert.name != null ? advert.name.trim() : "";
+                if (name.isEmpty()) {
+                    name = "Node";
+                }
+                Toast.makeText(context,
+                        "New Node Discovered-#" + name,
+                        Toast.LENGTH_SHORT).show();
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
     private static String bytesToHex(byte[] src, int offset, int len) {
         if (src == null || len <= 0 || offset < 0 || offset + len > src.length) {
             return "";
@@ -1374,6 +1458,10 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             if (pkt.length < 58) {
                 Log.d(TAG, "SELF info short len=" + pkt.length);
                 return;
+            }
+            String selfPub = bytesToHex(pkt, 1, 32);
+            if (!selfPub.isEmpty()) {
+                selfPubKeyHex = selfPub;
             }
             ByteBuffer bb = ByteBuffer.wrap(pkt).order(ByteOrder.LITTLE_ENDIAN);
             int latE6 = bb.getInt(36);

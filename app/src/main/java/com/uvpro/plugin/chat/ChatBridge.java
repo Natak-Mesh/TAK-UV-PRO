@@ -26,6 +26,7 @@ import com.atakmap.comms.NetConnectString;
 import com.uvpro.plugin.ax25.Ax25Frame;
 import com.uvpro.plugin.aprs.AprsMessageTransmitter;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
+import com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
 import com.uvpro.plugin.cot.CotBridge;
 import com.uvpro.plugin.crypto.EncryptionManager;
 import com.uvpro.plugin.protocol.UVProPacket;
@@ -64,6 +65,8 @@ import java.util.concurrent.TimeUnit;
 public class ChatBridge {
 
     private static final String TAG = "UVPro.ChatBridge";
+    private static final String MESH_NODE_UID_PREFIX = "MESHCORE-NODE-";
+    private static final String MESH_RPTR_UID_PREFIX = "MESHCORE-RPTR-";
 
     /** ATAK broadcasts some GeoChat sends with this intent (extras vary). */
     private static final String ACTION_CHAT_SEND =
@@ -662,19 +665,52 @@ public class ChatBridge {
                 && rfDestinationLooksLikeSelf(gatewayWireDest.trim())) {
             return true;
         }
+        if (inboundDestinationMatchesLocalMeshPubKey(gatewayWireDest)) {
+            return true;
+        }
         if (gatewayDisplayCallsign != null && !gatewayDisplayCallsign.trim().isEmpty()
                 && rfDestinationLooksLikeSelf(gatewayDisplayCallsign.trim())) {
+            return true;
+        }
+        if (inboundDestinationMatchesLocalMeshPubKey(gatewayDisplayCallsign)) {
             return true;
         }
         if (chatRoom != null && !chatRoom.trim().isEmpty()
                 && rfDestinationLooksLikeSelf(chatRoom.trim())) {
             return true;
         }
+        if (inboundDestinationMatchesLocalMeshPubKey(chatRoom)) {
+            return true;
+        }
         if (wireToCallsign != null && !wireToCallsign.trim().isEmpty()
                 && rfDestinationLooksLikeSelf(wireToCallsign.trim())) {
             return true;
         }
+        if (inboundDestinationMatchesLocalMeshPubKey(wireToCallsign)) {
+            return true;
+        }
         return false;
+    }
+
+    private boolean inboundDestinationMatchesLocalMeshPubKey(String rawDestination) {
+        String candidate = extractMeshPublicKeyCandidate(rawDestination);
+        if (candidate.isEmpty()) {
+            return false;
+        }
+        String local = getLocalMeshPublicKey();
+        return !local.isEmpty() && candidate.equalsIgnoreCase(local);
+    }
+
+    private String getLocalMeshPublicKey() {
+        if (!(btManager instanceof MeshBtConnectionManager)) {
+            return "";
+        }
+        String key = ((MeshBtConnectionManager) btManager).getSelfPubKeyHex();
+        if (key == null) {
+            return "";
+        }
+        String trimmed = key.trim().toUpperCase(Locale.US);
+        return isLikelyMeshPublicKey(trimmed) ? trimmed : "";
     }
 
     /**
@@ -2969,6 +3005,13 @@ public class ChatBridge {
      * Used only in TYPE_CHAT room bytes and gateway {@code wireDest}; never for UI labels.
      */
     private String resolveRfWireDestination(String toUidHint, String displayCallsignHint) {
+        String meshKey = extractMeshPublicKeyCandidate(toUidHint);
+        if (meshKey.isEmpty()) {
+            meshKey = extractMeshPublicKeyCandidate(displayCallsignHint);
+        }
+        if (!meshKey.isEmpty()) {
+            return meshKey;
+        }
         String hint = displayCallsignHint != null ? displayCallsignHint.trim() : "";
         if (hint.isEmpty() && toUidHint != null) {
             hint = toUidHint.trim();
@@ -2985,6 +3028,41 @@ public class ChatBridge {
             return radio.trim().toUpperCase(Locale.US);
         }
         return upper.length() > 6 ? upper.substring(0, 6) : upper;
+    }
+
+    private static String extractMeshPublicKeyCandidate(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        String value = raw.trim().toUpperCase(Locale.US);
+        if (value.isEmpty()) {
+            return "";
+        }
+        if (value.startsWith(MESH_NODE_UID_PREFIX)) {
+            String suffix = value.substring(MESH_NODE_UID_PREFIX.length()).trim();
+            return isLikelyMeshPublicKey(suffix) ? suffix : "";
+        }
+        if (value.startsWith(MESH_RPTR_UID_PREFIX)) {
+            String suffix = value.substring(MESH_RPTR_UID_PREFIX.length()).trim();
+            return isLikelyMeshPublicKey(suffix) ? suffix : "";
+        }
+        return isLikelyMeshPublicKey(value) ? value : "";
+    }
+
+    private static boolean isLikelyMeshPublicKey(String key) {
+        if (key == null || key.length() != 64) {
+            return false;
+        }
+        for (int i = 0; i < key.length(); i++) {
+            char c = key.charAt(i);
+            boolean hex = (c >= '0' && c <= '9')
+                    || (c >= 'A' && c <= 'F')
+                    || (c >= 'a' && c <= 'f');
+            if (!hex) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private String resolveDmDestinationUid(String toUidHint, String roomHint) {

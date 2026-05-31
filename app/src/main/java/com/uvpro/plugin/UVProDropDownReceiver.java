@@ -202,6 +202,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Switch switchMeshShowRepeaters;
     private Switch switchMeshShowNodes;
     private Button btnMeshcoreChannels;
+    private Button btnMeshcoreSendAdvert;
     private TextView teamColorText;
     private Button btnScan;
     private Button btnDisconnect;
@@ -696,6 +697,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         switchMeshShowRepeaters = rootView.findViewById(getId("switch_mesh_show_repeaters"));
         switchMeshShowNodes = rootView.findViewById(getId("switch_mesh_show_nodes"));
         btnMeshcoreChannels = rootView.findViewById(getId("btn_meshcore_channels"));
+        btnMeshcoreSendAdvert = rootView.findViewById(getId("btn_meshcore_send_advert"));
         teamColorText = rootView.findViewById(getId("text_team_color"));
         btnScan = rootView.findViewById(getId("btn_scan"));
         btnDisconnect = rootView.findViewById(getId("btn_disconnect"));
@@ -757,6 +759,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         if (btnMeshcoreChannels != null) {
             btnMeshcoreChannels.setOnClickListener(v -> onMeshcoreChannelsClicked());
+        }
+        if (btnMeshcoreSendAdvert != null) {
+            btnMeshcoreSendAdvert.setOnClickListener(v -> onMeshcoreSendAdvertClicked());
         }
         if (switchMeshTransmit != null) {
             switchMeshTransmit.setOnCheckedChangeListener((buttonView, isChecked) -> {
@@ -1246,6 +1251,22 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         updateMeshChannelButtonLabel();
         showMeshChannelPickerDialog();
+    }
+
+    private void onMeshcoreSendAdvertClicked() {
+        if (meshBtManager == null || !meshBtManager.isConnected()) {
+            Toast.makeText(getMapView().getContext(),
+                    "Connect to a MeshCore node first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!meshBtManager.sendSelfAdvert()) {
+            Toast.makeText(getMapView().getContext(),
+                    "Could not send MeshCore advert.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        appendLog("MeshCore advert sent (flood).");
+        Toast.makeText(getMapView().getContext(),
+                "MeshCore advert sent.", Toast.LENGTH_SHORT).show();
     }
 
     private void showMeshChannelPickerDialog() {

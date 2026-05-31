@@ -3,6 +3,7 @@ package com.uvpro.plugin.cot;
 import android.util.Log;
 
 import com.uvpro.plugin.ax25.AprsSymbolMapper;
+import com.uvpro.plugin.ax25.MeshcoreIconset;
 
 import com.atakmap.android.cot.CotMapComponent;
 import com.atakmap.android.maps.MapView;
@@ -197,9 +198,11 @@ public class CotBuilder {
         }
 
         // APRS markers use usericon for the bitmap; omit __group so ATAK does not classify them
-        // as TAK server contacts (team meta). Otherwise "Details" routes to the greyed contact-card
-        // pinwheel path instead of CoT Info where remarks/comment text are shown.
-        if (iconsetPath == null) {
+        // as TAK server contacts (team meta). MeshCore usericons still need __group so ATAK keeps
+        // the contact-card path active for contact details.
+        boolean isMeshcoreUserIcon = iconsetPath != null
+                && iconsetPath.startsWith(MeshcoreIconset.ICONSET_UID + "/");
+        if (iconsetPath == null || isMeshcoreUserIcon) {
             CotDetail group = new CotDetail("__group");
             group.setAttribute("name", teamColor != null ? teamColor : "Cyan");
             group.setAttribute("role", "Team Member");

@@ -8,8 +8,16 @@ import com.atakmap.android.contact.Contact;
 import com.atakmap.android.contact.ContactConnectorManager;
 import com.atakmap.android.contact.Contacts;
 import com.atakmap.android.contact.IndividualContact;
+import com.atakmap.android.maps.MapItem;
 import com.atakmap.android.contact.PluginConnector;
+import com.atakmap.android.preference.AtakPreferences;
+import com.atakmap.comms.NetConnectString;
 import com.atakmap.coremap.filesystem.FileSystemUtils;
+import com.uvpro.plugin.contacts.MeshFavoriteConnector;
+import com.uvpro.plugin.contacts.MeshSendMessageConnector;
+import com.uvpro.plugin.contacts.PositionOnlyConnector;
+
+import android.widget.Toast;
 
 import java.util.Map;
 import java.util.Set;
@@ -89,7 +97,9 @@ public class UVProContactHandler extends
     @Override
     public boolean isSupported(String type) {
         return FileSystemUtils.isEquals(type, PluginConnector.CONNECTOR_TYPE)
-                || FileSystemUtils.isEquals(type, GeoChatConnector.CONNECTOR_TYPE);
+                || FileSystemUtils.isEquals(type, GeoChatConnector.CONNECTOR_TYPE)
+                || FileSystemUtils.isEquals(type, MeshFavoriteConnector.CONNECTOR_TYPE)
+                || FileSystemUtils.isEquals(type, MeshSendMessageConnector.CONNECTOR_TYPE);
     }
 
     @Override
@@ -111,6 +121,15 @@ public class UVProContactHandler extends
 
         if (contact instanceof IndividualContact) {
             IndividualContact ic = (IndividualContact) contact;
+
+            if (FileSystemUtils.isEquals(connectorType, MeshFavoriteConnector.CONNECTOR_TYPE)) {
+                if (promoteMeshFavoriteContactByUid(ic.getUID(), ic.getName())) {
+                    Toast.makeText(pluginContext,
+                            "Favorited " + ic.getName(),
+                            Toast.LENGTH_SHORT).show();
+                }
+                return true;
+            }
 
             if (FileSystemUtils.isEquals(connectorType, GeoChatConnector.CONNECTOR_TYPE)) {
                 // Reachable: defer to ATAK's default GeoChatConnectorHandler.
@@ -158,5 +177,103 @@ public class UVProContactHandler extends
     @Override
     public String getDescription() {
         return "UV-PRO Contact Handler";
+    }
+
+    public static boolean promoteMeshFavoriteContactByUid(String contactUid, String currentName) {
+        if (contactUid == null || contactUid.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            final String uid = contactUid.trim();
+            final Contacts contacts = Contacts.getInstance();
+            final String favoriteName = formatMeshFavoriteName(currentName, uid);
+            Contact existing = contacts.getContactByUuid(uid);
+            MapItem item = existing instanceof IndividualContact
+                    ? ((IndividualContact) existing).getMapItem()
+                    : null;
+
+            if (existing != null) {
+                contacts.removeContact(existing);
+            }
+            IndividualContact favored = new IndividualContact(
+                    favoriteName,
+                    uid,
+                    item,
+                    buildNativeConnectorSeed(favoriteName));
+            applyMeshContactConnectors(favored);
+            contacts.addContact(favored);
+            contacts.updateTotalUnreadCount();
+            return true;
+        } catch (Exception e) {
+            Log.w("UVPro.Handler", "promoteMeshFavoriteContact failed", e);
+            return false;
+        }
+    }
+
+    private static void applyMeshContactConnectors(IndividualContact contact) {
+        if (contact == null) {
+            return;
+        }
+        try {
+            contact.removeConnector(PositionOnlyConnector.CONNECTOR_TYPE);
+        } catch (Exception ignored) {
+        }
+        try {
+            if (contact.getConnector(MeshFavoriteConnector.CONNECTOR_TYPE) == null) {
+                contact.addConnector(new MeshFavoriteConnector());
+            }
+            if (contact.getConnector(MeshSendMessageConnector.CONNECTOR_TYPE) == null) {
+                contact.addConnector(new MeshSendMessageConnector());
+            }
+            if (contact.getConnector(GeoChatConnector.CONNECTOR_TYPE) == null) {
+                contact.addConnector(new GeoChatConnector(
+                        buildNativeConnectorSeed(contact.getName())));
+            }
+            writeDefaultConnectorPref(contact.getUID(), MeshSendMessageConnector.CONNECTOR_TYPE);
+            contact.dispatchChangeEvent();
+        } catch (Exception e) {
+            Log.w("UVPro.Handler", "applyMeshContactConnectors failed", e);
+        }
+    }
+
+    public static String formatMeshFavoriteName(String currentName, String uid) {
+        String base = currentName != null ? currentName.trim() : "";
+        if (base.isEmpty()) {
+            base = uid != null ? uid.trim() : "node";
+        }
+        if (base.startsWith("#")) {
+            base = base.substring(1);
+        }
+        if (base.toLowerCase().endsWith("-mesh")) {
+            base = base.substring(0, base.length() - 5);
+        }
+        base = base.trim();
+        if (base.isEmpty()) {
+            base = "node";
+        }
+        return base + "-mesh";
+    }
+
+    private static NetConnectString buildNativeConnectorSeed(String callsign) {
+        NetConnectString ncs = new NetConnectString("stcp", "*", -1);
+        if (callsign != null && !callsign.trim().isEmpty()) {
+            ncs.setCallsign(callsign.trim().toUpperCase());
+        }
+        return ncs;
+    }
+
+    private static void writeDefaultConnectorPref(String contactUid, String connectorType) {
+        try {
+            com.atakmap.android.maps.MapView mv = com.atakmap.android.maps.MapView.getMapView();
+            if (mv == null || contactUid == null || contactUid.trim().isEmpty()) {
+                return;
+            }
+            AtakPreferences prefs = new AtakPreferences(mv.getContext());
+            String uid = contactUid.trim();
+            prefs.set("contact.connector.default." + uid, connectorType);
+            prefs.set("contact.connector.default." + uid.toUpperCase(), connectorType);
+            prefs.set("contact.connector.default." + uid.toLowerCase(), connectorType);
+        } catch (Exception ignored) {
+        }
     }
 }

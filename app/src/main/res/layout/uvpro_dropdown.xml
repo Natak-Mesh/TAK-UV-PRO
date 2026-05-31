@@ -35,7 +35,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:background="#FF2D2D2D"
+            android:background="@drawable/bg_uvpro_connection_section"
             android:padding="12dp"
             android:layout_marginBottom="8dp">
 
@@ -141,7 +141,7 @@
                     android:layout_weight="1"
                     android:text="SCAN &amp; CONNECT"
                     android:layout_marginEnd="4dp"
-                    android:backgroundTint="#FF00BCD4" />
+                    android:background="@drawable/bg_uvpro_connection_button" />
 
                 <Button
                     android:id="@+id/btn_disconnect"
@@ -151,7 +151,7 @@
                     android:layout_weight="1"
                     android:text="DISCONNECT"
                     android:enabled="false"
-                    android:backgroundTint="#FFF44336" />
+                    android:background="@drawable/bg_uvpro_connection_button" />
             </LinearLayout>
 
             <LinearLayout
@@ -238,7 +238,7 @@
                     android:layout_weight="1"
                     android:text="SCAN &amp; CONNECT"
                     android:layout_marginEnd="4dp"
-                    android:backgroundTint="#FF00BCD4" />
+                    android:background="@drawable/bg_uvpro_connection_button_connect" />
 
                 <Button
                     android:id="@+id/btn_mesh_disconnect"
@@ -248,7 +248,7 @@
                     android:layout_weight="1"
                     android:text="DISCONNECT"
                     android:enabled="false"
-                    android:backgroundTint="#FFF44336" />
+                    android:background="@drawable/bg_uvpro_connection_button" />
             </LinearLayout>
 
             <LinearLayout
@@ -315,28 +315,6 @@
             </LinearLayout>
 
             <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:paddingTop="10dp">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Enable MeshCore GPS"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp" />
-
-                <Switch
-                    android:id="@+id/switch_mesh_enable_gps"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:enabled="false" />
-            </LinearLayout>
-
-            <LinearLayout
                 android:id="@+id/row_augment_gps_from_meshcore"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -367,8 +345,7 @@
                 android:layout_marginTop="8dp"
                 android:text="Update GPS from MeshCore"
                 android:enabled="false"
-                android:visibility="gone"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_connection_button" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -409,7 +386,7 @@
                 android:layout_marginTop="8dp"
                 android:text="Update GPS from Radio"
                 android:enabled="false"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_connection_button" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -571,7 +548,7 @@
                     android:layout_height="wrap_content"
                     android:text="SET"
                     android:textSize="11sp"
-                    android:backgroundTint="#FFFF9800"
+                    android:background="@drawable/bg_uvpro_connection_button"
                     android:minWidth="60dp" />
             </LinearLayout>
 
@@ -591,7 +568,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:background="#FF2D2D2D"
+            android:background="@drawable/bg_uvpro_channel_section"
             android:padding="12dp"
             android:layout_marginBottom="8dp">
 
@@ -611,7 +588,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
                 android:text="Long Press for Radio Silence"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_channel_button" />
 
             <TextView
                 android:layout_width="match_parent"
@@ -644,7 +621,7 @@
                     android:layout_height="wrap_content"
                     android:text="Load Selected Repeater"
                     android:enabled="false"
-                    android:backgroundTint="#FF455A64" />
+                    android:background="@drawable/bg_uvpro_channel_button" />
             </LinearLayout>
 
             <LinearLayout
@@ -663,7 +640,7 @@
                     android:layout_marginEnd="8dp"
                     android:text="TX Power LOW"
                     android:enabled="false"
-                    android:backgroundTint="#FF455A64" />
+                    android:background="@drawable/bg_uvpro_channel_button" />
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -770,7 +747,7 @@
                     android:lineSpacingExtra="2dp"
                     android:gravity="center"
                     android:text="Group&#10;1"
-                    android:backgroundTint="#FF455A64" />
+                    android:background="@drawable/bg_uvpro_channel_button" />
 
                 <Button
                     android:id="@+id/btn_import_channels"
@@ -785,7 +762,7 @@
                     android:lineSpacingExtra="2dp"
                     android:gravity="center"
                     android:text="Import\nChannels"
-                    android:backgroundTint="#FF455A64" />
+                    android:background="@drawable/bg_uvpro_channel_button" />
 
                 <Button
                     android:id="@+id/btn_export_channels"
@@ -800,7 +777,7 @@
                     android:lineSpacingExtra="2dp"
                     android:gravity="center"
                     android:text="Export\nChannels"
-                    android:backgroundTint="#FF455A64" />
+                    android:background="@drawable/bg_uvpro_channel_button" />
             </LinearLayout>
 
             <LinearLayout
@@ -862,7 +839,7 @@
                     android:gravity="start|center_vertical"
                     android:paddingStart="10dp"
                     android:layout_marginEnd="4dp"
-                    android:backgroundTint="#FF00695C" />
+                    android:background="@drawable/bg_uvpro_channel_button" />
 
                 <Button
                     android:id="@+id/btn_vfo_b"
@@ -875,7 +852,7 @@
                     android:gravity="start|center_vertical"
                     android:paddingStart="10dp"
                     android:layout_marginEnd="4dp"
-                    android:backgroundTint="#FF2E7D32"
+                    android:background="@drawable/bg_uvpro_channel_button"
                     android:visibility="gone" />
 
                 <Button
@@ -886,7 +863,7 @@
                     android:layout_weight="1"
                     android:text="Digital"
                     android:textSize="15sp"
-                    android:backgroundTint="#FF005A8D" />
+                    android:background="@drawable/bg_uvpro_channel_button" />
             </LinearLayout>
 
             <GridLayout
@@ -904,7 +881,7 @@
                 android:layout_marginTop="8dp"
                 android:text="DIGITAL ONLY MODE"
                 android:enabled="false"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_channel_button" />
         </LinearLayout>
 
         <!-- ==================== BEACON (interval display) ==================== -->
@@ -1169,7 +1146,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:background="#FF2D2D2D"
+            android:background="@drawable/bg_uvpro_mesh_section"
             android:padding="12dp"
             android:layout_marginBottom="8dp">
 
@@ -1252,10 +1229,32 @@
                 android:paddingBottom="6dp">
 
                 <TextView
+                    android:id="@+id/text_mesh_use_callsign_location"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Enable Meshcore GPS"
+                    android:text="Use UNKNOWN location for position"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_mesh_use_callsign_location"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingBottom="6dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Use Meschore GPS for position"
                     android:textColor="#FFFFFFFF"
                     android:textSize="13sp" />
 
@@ -1267,21 +1266,31 @@
             </LinearLayout>
 
             <Button
-                android:id="@+id/btn_meshcore_channels"
+                android:id="@+id/btn_meshcore_set_node_position_map"
                 style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="8dp"
-                android:text="Channels"
-                android:backgroundTint="#FF455A64" />
+                android:text="Set Node Position on Map"
+                android:background="@drawable/bg_uvpro_mesh_button" />
 
             <Button
                 android:id="@+id/btn_meshcore_send_advert"
                 style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
                 android:text="Send Advert"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_mesh_button" />
+
+            <Button
+                android:id="@+id/btn_meshcore_channels"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:text="Channels"
+                android:background="@drawable/bg_uvpro_mesh_button" />
 
             <Button
                 android:id="@+id/btn_clear_mesh_contacts"
@@ -1290,7 +1299,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="Clear All Mesh Contacts"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_mesh_button" />
 
             <Button
                 android:id="@+id/btn_mesh_node_settings"
@@ -1299,7 +1308,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:text="Node Settings"
-                android:backgroundTint="#FF455A64" />
+                android:background="@drawable/bg_uvpro_mesh_button" />
         </LinearLayout>
 
         <!-- ==================== ACTIONS ==================== -->

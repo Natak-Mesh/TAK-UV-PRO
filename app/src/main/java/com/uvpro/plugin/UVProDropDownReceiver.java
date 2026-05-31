@@ -54,6 +54,9 @@ import com.atakmap.android.contact.Contacts;
 import com.atakmap.android.maps.MapGroup;
 import com.atakmap.android.maps.MapItem;
 import com.atakmap.android.maps.MapView;
+import com.atakmap.android.toolbar.ToolManagerBroadcastReceiver;
+import com.atakmap.android.user.MapClickTool;
+import com.atakmap.android.toolbar.widgets.TextContainer;
 
 import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.beacon.SmartBeacon;
@@ -112,6 +115,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
             "com.uvpro.plugin.SHOW_PLUGIN";
     public static final String SHOW_PLUGIN_CHANNEL_CONTROL =
             "com.uvpro.plugin.SHOW_PLUGIN_CHANNEL_CONTROL";
+    private static final String EXTRA_MESH_NODE_POSITION_PICK_RESULT =
+            "mesh_node_position_pick_result";
 
     private static final String TAG = "UVPro.UI";
     private static final int MAX_LOG_LINES = 50;
@@ -131,6 +136,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private static final int COLOR_PILL_BUTTON_PRIMARY = 0xFF455A64;
     private static final int COLOR_REPEATER_LOAD_FILL = COLOR_PILL_BUTTON_PRIMARY;
     private static final int COLOR_REPEATER_LOAD_ARMED_STROKE = 0xFFFFEB3B;
+    private static final int COLOR_CHANNEL_SECTION_STROKE = 0xFF4CAF50;
+    private static final int CHANNEL_SECTION_STROKE_DP = 2;
     private static final String LABEL_LOAD_REPEATER = "Load Selected Repeater";
     private static final String LABEL_SELECT_CHANNEL = "Select Channel";
     private static final String LABEL_DIGITAL_ONLY = "DIGITAL ONLY MODE";
@@ -160,6 +167,18 @@ public class UVProDropDownReceiver extends DropDownReceiver
             "uvpro_mesh_repeater_cache_v1";
     private static final String PREF_MESH_NODE_CACHE =
             "uvpro_mesh_node_cache_v1";
+    private static final String PREF_MESH_SEND_POSITION_WITH_ADVERT =
+            "uvpro_mesh_send_position_with_advert";
+    private static final String PREF_MESH_USE_GPS_FOR_POSITION =
+            "uvpro_mesh_use_gps_for_position";
+    private static final String PREF_MESH_USE_CALLSIGN_LOCATION_FOR_POSITION =
+            "uvpro_mesh_use_callsign_location_for_position";
+    private static final String PREF_MESH_MAP_SET_POSITION_LAT =
+            "uvpro_mesh_map_set_position_lat";
+    private static final String PREF_MESH_MAP_SET_POSITION_LON =
+            "uvpro_mesh_map_set_position_lon";
+    private static final long MESH_CALLSIGN_POSITION_PUSH_INTERVAL_MS = 15_000L;
+    private static final String MESH_NODE_MAP_POSITION_UID = "MESHCORE-NODE-MAP-POSITION";
     private static final String MESH_NODE_UID_PREFIX = "MESHCORE-NODE-";
     private static final String MESH_RPTR_UID_PREFIX = "MESHCORE-RPTR-";
     private static final String ANDROID_MESH_NODE_UID_PREFIX = "ANDROID-MESHCORE-NODE-";
@@ -226,6 +245,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Switch switchMeshShowNodes;
     private Switch switchMeshSendPositionWithAdvert;
     private Button btnMeshcoreChannels;
+    private Button btnMeshcoreSetNodePositionMap;
     private Button btnMeshcoreSendAdvert;
     private Button btnClearMeshContacts;
     private Button btnMeshNodeSettings;
@@ -261,6 +281,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Switch switchWifiTransmit;
     private Switch switchMeshEnableGps;
     private Switch switchMeshEnableGpsMeshcore;
+    private Switch switchMeshUseCallsignLocation;
+    private TextView textMeshUseCallsignLocation;
 
     private TextView favoritesLabel;
     private HorizontalScrollView favoritesScroll;
@@ -373,6 +395,16 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private boolean meshChannelHistoryLoaded = false;
     private final Runnable meshQueuedStatusTimeoutRunnable = this::applyMeshQueuedStatusTimeouts;
     private final AtomicBoolean meshGpsAugmentUpdateInFlight = new AtomicBoolean(false);
+    private final Runnable meshCallsignPositionSyncRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                pushPhoneLocationToMeshNodeIfNeeded(false);
+            } finally {
+                scheduleMeshCallsignPositionSync();
+            }
+        }
+    };
     private final Runnable meshGpsAugmentRunnable = new Runnable() {
         @Override
         public void run() {
@@ -460,9 +492,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
                             : "MeshCore";
                     meshConnected = true;
                     meshGpsEnabledState = null;
-                    meshGpsEnableRequested = false;
+                    meshGpsEnableRequested =
+                            getMeshUseGpsForPositionPreference(getMapView().getContext());
                     meshSendPositionWithAdvertState = null;
-                    meshSendPositionWithAdvertRequested = false;
+                    meshSendPositionWithAdvertRequested =
+                            getMeshSendPositionWithAdvertPreference(getMapView().getContext());
                     meshNodeSettingsState = null;
                     if (device != null) {
                         Context ctx = getMapView().getContext();
@@ -478,19 +512,28 @@ public class UVProDropDownReceiver extends DropDownReceiver
                         refreshFavoriteStrip();
                         updateMeshScanButtonText();
                         scheduleMeshGpsAugmentTick();
+                        scheduleMeshCallsignPositionSync();
                     });
                     meshBtManager.queryMeshGpsEnabled();
                     meshBtManager.requestSelfInfo();
                     meshBtManager.requestAllChannelInfo();
+                    if (meshGpsEnableRequested) {
+                        meshBtManager.setMeshGpsEnabled(true);
+                    }
+                    if (meshSendPositionWithAdvertRequested) {
+                        meshBtManager.setSendPositionWithAdvertEnabled(true);
+                    }
                 }
 
                 @Override
                 public void onDisconnected(String reason) {
                     meshConnected = false;
                     meshGpsEnabledState = null;
-                    meshGpsEnableRequested = false;
+                    meshGpsEnableRequested =
+                            getMeshUseGpsForPositionPreference(getMapView().getContext());
                     meshSendPositionWithAdvertState = null;
-                    meshSendPositionWithAdvertRequested = false;
+                    meshSendPositionWithAdvertRequested =
+                            getMeshSendPositionWithAdvertPreference(getMapView().getContext());
                     meshNodeSettingsState = null;
                     getMapView().post(() -> {
                         stopMeshConnectButtonPulse(true);
@@ -500,6 +543,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                         updateMeshChannelButtonLabel();
                         updateMeshScanButtonText();
                         scheduleMeshGpsAugmentTick();
+                        scheduleMeshCallsignPositionSync();
                     });
                 }
 
@@ -540,9 +584,15 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     meshGpsEnabledState = enabled;
                     meshGpsEnableRequested = enabled;
                     getMapView().post(() -> {
+                        setMeshUseGpsForPositionPreference(enabled);
                         updateMeshGpsControlsUi();
-                        appendLog("MeshCore GPS " + (enabled ? "enabled" : "disabled"));
+                        appendLog("Use Meschore GPS for position "
+                                + (enabled ? "enabled" : "disabled"));
+                        if (enabled) {
+                            removeMeshNodeMapPositionMarker(true);
+                        }
                         scheduleMeshGpsAugmentTick();
+                        scheduleMeshCallsignPositionSync();
                     });
                 }
 
@@ -551,16 +601,21 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     meshSendPositionWithAdvertState = enabled;
                     meshSendPositionWithAdvertRequested = enabled;
                     getMapView().post(() -> {
+                        setMeshSendPositionWithAdvertPreference(enabled);
                         updateMeshGpsControlsUi();
                         appendLog("Send Position With Advert "
                                 + (enabled ? "enabled" : "disabled"));
+                        scheduleMeshCallsignPositionSync();
                     });
                 }
 
                 @Override
                 public void onMeshNodeSettingsUpdated(MeshBtConnectionManager.MeshNodeSettings settings) {
                     meshNodeSettingsState = settings;
-                    getMapView().post(() -> refreshMeshNodeSettingsDialogFromState(false));
+                    getMapView().post(() -> {
+                        refreshMeshNodeSettingsDialogFromState(false);
+                        updateMeshNodeMapPositionMarkerLabel();
+                    });
                 }
 
                 @Override
@@ -614,6 +669,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
     @Override
     public void onReceive(Context context, Intent intent) {
         final String action = intent.getAction();
+        if (SHOW_PLUGIN.equals(action)
+                && intent.getBooleanExtra(EXTRA_MESH_NODE_POSITION_PICK_RESULT, false)) {
+            handleMeshNodePositionPickResult(intent);
+            return;
+        }
         if (SHOW_PLUGIN.equals(action) || SHOW_PLUGIN_CHANNEL_CONTROL.equals(action)) {
             pendingOpenToChannelControl = SHOW_PLUGIN_CHANNEL_CONTROL.equals(action);
             showDropDown(createView(),
@@ -654,22 +714,35 @@ public class UVProDropDownReceiver extends DropDownReceiver
             meshConnected = true;
             updateMeshConnectionUI(true, meshBtManager.getConnectedDeviceName());
             meshGpsEnabledState = meshBtManager.getMeshGpsEnabled();
-            meshGpsEnableRequested = Boolean.TRUE.equals(meshGpsEnabledState);
+            if (meshGpsEnabledState == null) {
+                meshGpsEnableRequested = getMeshUseGpsForPositionPreference(getMapView().getContext());
+            } else {
+                meshGpsEnableRequested = Boolean.TRUE.equals(meshGpsEnabledState);
+            }
             meshSendPositionWithAdvertState = meshBtManager.getSendPositionWithAdvertEnabled();
-            meshSendPositionWithAdvertRequested =
-                    Boolean.TRUE.equals(meshSendPositionWithAdvertState);
+            if (meshSendPositionWithAdvertState == null) {
+                meshSendPositionWithAdvertRequested =
+                        getMeshSendPositionWithAdvertPreference(getMapView().getContext());
+            } else {
+                meshSendPositionWithAdvertRequested =
+                        Boolean.TRUE.equals(meshSendPositionWithAdvertState);
+            }
             meshNodeSettingsState = meshBtManager.getLatestNodeSettings();
             meshBtManager.queryMeshGpsEnabled();
             meshBtManager.requestSelfInfo();
             meshBtManager.requestAllChannelInfo();
             meshChannelNames.putAll(meshBtManager.getKnownChannelNamesSnapshot());
+            if (meshGpsEnableRequested) {
+                meshBtManager.setMeshGpsEnabled(true);
+            }
             stopMeshConnectButtonPulse(true);
         } else {
             meshConnected = false;
             meshGpsEnabledState = null;
-            meshGpsEnableRequested = false;
+            meshGpsEnableRequested = getMeshUseGpsForPositionPreference(getMapView().getContext());
             meshSendPositionWithAdvertState = null;
-            meshSendPositionWithAdvertRequested = false;
+            meshSendPositionWithAdvertRequested =
+                    getMeshSendPositionWithAdvertPreference(getMapView().getContext());
             meshNodeSettingsState = null;
             updateMeshConnectionUI(false, null);
             if (meshBtManager != null && meshBtManager.isConnecting()) {
@@ -695,6 +768,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (callsignText != null) {
             callsignText.setText(callsign);
         }
+        updateMeshUseCallsignLocationLabel(callsign);
 
         // Make log scrollable inside the outer ScrollView
         if (logText != null) {
@@ -716,6 +790,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         // Now attach change listeners so user interactions are wired
         setupListeners();
         scheduleMeshGpsAugmentTick();
+        scheduleMeshCallsignPositionSync();
         updateDigitalEditGuardUi();
         updateDigitalOnlyButtonUi();
         updateTxPowerButtonUi();
@@ -774,7 +849,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
         switchMeshShowNodes = rootView.findViewById(getId("switch_mesh_show_nodes"));
         switchMeshSendPositionWithAdvert = rootView.findViewById(
                 getId("switch_mesh_send_position_with_advert"));
+        switchMeshUseCallsignLocation = rootView.findViewById(
+                getId("switch_mesh_use_callsign_location"));
+        textMeshUseCallsignLocation = rootView.findViewById(
+                getId("text_mesh_use_callsign_location"));
         btnMeshcoreChannels = rootView.findViewById(getId("btn_meshcore_channels"));
+        btnMeshcoreSetNodePositionMap = rootView.findViewById(getId("btn_meshcore_set_node_position_map"));
         btnMeshcoreSendAdvert = rootView.findViewById(getId("btn_meshcore_send_advert"));
         btnClearMeshContacts = rootView.findViewById(getId("btn_clear_mesh_contacts"));
         btnMeshNodeSettings = rootView.findViewById(getId("btn_mesh_node_settings"));
@@ -841,11 +921,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnMeshcoreChannels != null) {
             btnMeshcoreChannels.setOnClickListener(v -> onMeshcoreChannelsClicked());
         }
+        if (btnMeshcoreSetNodePositionMap != null) {
+            btnMeshcoreSetNodePositionMap.setOnClickListener(v -> startMeshNodePositionMapPick());
+        }
         if (btnMeshcoreSendAdvert != null) {
             btnMeshcoreSendAdvert.setOnClickListener(v -> onMeshcoreSendAdvertClicked());
         }
         if (btnClearMeshContacts != null) {
-            btnClearMeshContacts.setOnClickListener(v -> clearAllMeshContacts());
+            btnClearMeshContacts.setOnClickListener(v -> confirmClearAllMeshContacts());
         }
         if (btnMeshNodeSettings != null) {
             btnMeshNodeSettings.setOnClickListener(v -> showMeshNodeSettingsDialog());
@@ -961,8 +1044,31 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 updateMeshGpsControlsUi();
                 appendLog("Setting Send Position With Advert "
                         + (isChecked ? "ON..." : "OFF..."));
+                setMeshSendPositionWithAdvertPreference(isChecked);
                 meshBtManager.setSendPositionWithAdvertEnabled(isChecked);
+                scheduleMeshCallsignPositionSync();
+                if (isChecked) {
+                    pushPhoneLocationToMeshNodeIfNeeded(true);
+                }
                 meshBtManager.requestSelfInfo();
+            });
+        }
+        if (switchMeshUseCallsignLocation != null) {
+            switchMeshUseCallsignLocation.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (!buttonView.isPressed()) {
+                    return;
+                }
+                setMeshUseCallsignLocationPreference(isChecked);
+                appendLog(isChecked
+                        ? "Node advert position source: ATAK callsign location (dynamic)."
+                        : "Node advert position source: node GPS -> map-set position -> none.");
+                if (isChecked) {
+                    removeMeshNodeMapPositionMarker(true);
+                }
+                scheduleMeshCallsignPositionSync();
+                if (isChecked) {
+                    pushPhoneLocationToMeshNodeIfNeeded(true);
+                }
             });
         }
 
@@ -1363,6 +1469,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     "Connect to a MeshCore node first.", Toast.LENGTH_SHORT).show();
             return;
         }
+        pushPhoneLocationToMeshNodeIfNeeded(false);
         if (!meshBtManager.sendSelfAdvert()) {
             Toast.makeText(getMapView().getContext(),
                     "Could not send MeshCore advert.", Toast.LENGTH_SHORT).show();
@@ -1371,6 +1478,234 @@ public class UVProDropDownReceiver extends DropDownReceiver
         appendLog("MeshCore advert sent (flood).");
         Toast.makeText(getMapView().getContext(),
                 "MeshCore advert sent.", Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * Advert position priority when node GPS is OFF:
+     * 1) dynamic ATAK self/callsign location if enabled, else
+     * 2) map-picked node position, else
+     * 3) no advert position override.
+     */
+    private boolean pushPhoneLocationToMeshNodeIfNeeded(boolean verboseSkipLog) {
+        if (meshBtManager == null || !meshBtManager.isConnected()) {
+            return false;
+        }
+        boolean advertPosOn = meshSendPositionWithAdvertRequested
+                || Boolean.TRUE.equals(meshSendPositionWithAdvertState);
+        if (!advertPosOn) {
+            if (verboseSkipLog) {
+                appendLog("Advert position override skipped (Send Position With Advert is OFF).");
+            }
+            return false;
+        }
+        boolean nodeGpsOn = meshGpsEnableRequested || Boolean.TRUE.equals(meshGpsEnabledState);
+        if (nodeGpsOn) {
+            if (verboseSkipLog) {
+                appendLog("Advert position source: node GPS.");
+            }
+            return false;
+        }
+
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        boolean useCallsign = isMeshUseCallsignLocationPreferenceEnabled(ctx);
+        com.atakmap.coremap.maps.coords.GeoPoint gp = null;
+        String source = null;
+        if (useCallsign) {
+            gp = getAtakSelfGeoPoint();
+            source = "callsign location";
+        } else {
+            gp = getMeshMapSetPosition(ctx);
+            source = "map-set node position";
+        }
+        if (gp == null || !gp.isValid()) {
+            if (verboseSkipLog) {
+                appendLog("Advert position source unavailable (" + source + ").");
+            }
+            return false;
+        }
+        boolean ok = meshBtManager.setAdvertLatLon(
+                gp.getLatitude(), gp.getLongitude(), gp.getAltitude());
+        if (ok) {
+            appendLog(String.format(Locale.US,
+                    "Pushed %s to node advert: %.5f, %.5f",
+                    source, gp.getLatitude(), gp.getLongitude()));
+        } else if (verboseSkipLog) {
+            appendLog("Advert position push failed.");
+        }
+        return ok;
+    }
+
+    private com.atakmap.coremap.maps.coords.GeoPoint getAtakSelfGeoPoint() {
+        MapView mv = getMapView();
+        if (mv == null || mv.getSelfMarker() == null
+                || !(mv.getSelfMarker() instanceof com.atakmap.android.maps.PointMapItem)) {
+            return null;
+        }
+        return ((com.atakmap.android.maps.PointMapItem) mv.getSelfMarker()).getPoint();
+    }
+
+    private void scheduleMeshCallsignPositionSync() {
+        MapView mv = getMapView();
+        if (mv == null) {
+            return;
+        }
+        mv.removeCallbacks(meshCallsignPositionSyncRunnable);
+        Context ctx = mv.getContext();
+        boolean shouldRun = meshConnected
+                && isMeshUseCallsignLocationPreferenceEnabled(ctx)
+                && (meshSendPositionWithAdvertRequested
+                || Boolean.TRUE.equals(meshSendPositionWithAdvertState))
+                && !(meshGpsEnableRequested || Boolean.TRUE.equals(meshGpsEnabledState));
+        if (shouldRun) {
+            mv.postDelayed(meshCallsignPositionSyncRunnable, MESH_CALLSIGN_POSITION_PUSH_INTERVAL_MS);
+        }
+    }
+
+    private void startMeshNodePositionMapPick() {
+        if (meshBtManager == null || !meshBtManager.isConnected()) {
+            Toast.makeText(getMapView().getContext(),
+                    "Connect to a MeshCore node first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Intent callback = new Intent(SHOW_PLUGIN);
+        callback.putExtra(EXTRA_MESH_NODE_POSITION_PICK_RESULT, true);
+        Intent begin = new Intent(ToolManagerBroadcastReceiver.BEGIN_TOOL);
+        begin.putExtra("tool", MapClickTool.TOOL_NAME);
+        begin.putExtra("callback", callback);
+        begin.putExtra("prompt", "Select node position on map");
+        AtakBroadcast.getInstance().sendBroadcast(begin);
+        appendLog("Pick a map location for node advert position...");
+    }
+
+    private void handleMeshNodePositionPickResult(Intent intent) {
+        com.atakmap.coremap.maps.coords.GeoPoint gp = parseGeoPointFromIntent(intent);
+        if (gp == null || !gp.isValid()) {
+            return;
+        }
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        setMeshMapSetPosition(ctx, gp);
+        createOrUpdateMeshNodeMapPositionMarker(gp);
+        appendLog(String.format(Locale.US, "Saved node map position: %.5f, %.5f",
+                gp.getLatitude(), gp.getLongitude()));
+        if (!isMeshUseCallsignLocationPreferenceEnabled(ctx)
+                && !(meshGpsEnableRequested || Boolean.TRUE.equals(meshGpsEnabledState))) {
+            pushPhoneLocationToMeshNodeIfNeeded(true);
+        }
+        try {
+            TextContainer.getTopInstance().closePrompt("Select node position on map");
+        } catch (Exception ignored) {
+        }
+    }
+
+    private com.atakmap.coremap.maps.coords.GeoPoint parseGeoPointFromIntent(Intent intent) {
+        if (intent == null) {
+            return null;
+        }
+        String point = intent.getStringExtra("point");
+        if (point == null || point.trim().isEmpty()) {
+            return null;
+        }
+        String[] parts = point.split(",");
+        if (parts.length < 2) {
+            return null;
+        }
+        try {
+            double lat = Double.parseDouble(parts[0].trim());
+            double lon = Double.parseDouble(parts[1].trim());
+            return new com.atakmap.coremap.maps.coords.GeoPoint(lat, lon);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void createOrUpdateMeshNodeMapPositionMarker(com.atakmap.coremap.maps.coords.GeoPoint gp) {
+        MapView mv = getMapView();
+        if (mv == null || mv.getRootGroup() == null || gp == null || !gp.isValid()) {
+            return;
+        }
+        removeMeshNodeMapPositionMarker(false);
+        com.atakmap.android.maps.Marker marker = new com.atakmap.android.maps.Marker(gp, MESH_NODE_MAP_POSITION_UID);
+        marker.setType("b-m-p-s-p-i");
+        String nodeLabel = resolveMeshNodeDisplayName();
+        marker.setTitle(nodeLabel);
+        marker.setMetaString("callsign", nodeLabel);
+        marker.setMetaBoolean("editable", true);
+        marker.setMetaBoolean("movable", false);
+        mv.getRootGroup().addItem(marker);
+    }
+
+    private String resolveMeshNodeDisplayName() {
+        String name = null;
+        if (meshNodeSettingsState != null && meshNodeSettingsState.nodeName != null) {
+            name = meshNodeSettingsState.nodeName.trim();
+        }
+        if (name == null || name.isEmpty()) {
+            name = "Mesh Node";
+        }
+        return name;
+    }
+
+    private void removeMeshNodeMapPositionMarker(boolean clearStoredPosition) {
+        MapView mv = getMapView();
+        if (mv != null && mv.getRootGroup() != null) {
+            removeMapItemByUidRecursive(mv.getRootGroup(), MESH_NODE_MAP_POSITION_UID);
+        }
+        if (clearStoredPosition) {
+            Context ctx = mv != null ? mv.getContext() : pluginContext;
+            clearMeshMapSetPosition(ctx);
+        }
+    }
+
+    private boolean removeMapItemByUidRecursive(MapGroup group, String uid) {
+        if (group == null || uid == null || uid.trim().isEmpty()) {
+            return false;
+        }
+        for (MapItem item : new ArrayList<>(group.getItems())) {
+            if (item != null && uid.equals(item.getUID())) {
+                group.removeItem(item);
+                return true;
+            }
+        }
+        for (MapGroup child : group.getChildGroups()) {
+            if (removeMapItemByUidRecursive(child, uid)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void updateMeshNodeMapPositionMarkerLabel() {
+        MapView mv = getMapView();
+        if (mv == null || mv.getRootGroup() == null) {
+            return;
+        }
+        String label = resolveMeshNodeDisplayName();
+        updateMapItemTitleByUidRecursive(mv.getRootGroup(), MESH_NODE_MAP_POSITION_UID, label);
+    }
+
+    private boolean updateMapItemTitleByUidRecursive(MapGroup group, String uid, String title) {
+        if (group == null || uid == null || uid.trim().isEmpty()) {
+            return false;
+        }
+        for (MapItem item : new ArrayList<>(group.getItems())) {
+            if (item == null || !uid.equals(item.getUID())) {
+                continue;
+            }
+            if (item instanceof com.atakmap.android.maps.Marker) {
+                com.atakmap.android.maps.Marker marker = (com.atakmap.android.maps.Marker) item;
+                marker.setTitle(title);
+                marker.setMetaString("callsign", title);
+            } else {
+                item.setMetaString("callsign", title);
+            }
+            return true;
+        }
+        for (MapGroup child : group.getChildGroups()) {
+            if (updateMapItemTitleByUidRecursive(child, uid, title)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void showMeshNodeSettingsDialog() {
@@ -2230,7 +2565,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         int known = 0;
         for (int i = 0; i < 8; i++) {
             String n = meshChannelNames.get(i);
-            if (n != null && !n.trim().isEmpty()) {
+            if (n != null && !n.trim().isEmpty()
+                    && !"ATAK_DATA".equalsIgnoreCase(n.trim())) {
                 known++;
             }
         }
@@ -2770,29 +3106,28 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnMeshDisconnect != null) {
             btnMeshDisconnect.setEnabled(connected);
         }
+        if (btnMeshcoreSetNodePositionMap != null) {
+            btnMeshcoreSetNodePositionMap.setEnabled(connected);
+        }
         updateMeshScanButtonText();
         updateMeshGpsControlsUi();
         scheduleMeshGpsAugmentTick();
+        scheduleMeshCallsignPositionSync();
         MeshStatusOverlay.setConnected(connected);
     }
 
     private void updateMeshGpsControlsUi() {
-        if (switchMeshEnableGps != null) {
-            suppressMeshGpsSwitchCallbacks = true;
-            try {
-                switchMeshEnableGps.setEnabled(meshConnected);
-                switchMeshEnableGps.setChecked(meshGpsEnableRequested
-                        || Boolean.TRUE.equals(meshGpsEnabledState));
-            } finally {
-                suppressMeshGpsSwitchCallbacks = false;
-            }
-        }
         if (switchMeshEnableGpsMeshcore != null) {
             suppressMeshGpsSwitchCallbacks = true;
             try {
-                switchMeshEnableGpsMeshcore.setEnabled(meshConnected);
-                switchMeshEnableGpsMeshcore.setChecked(meshGpsEnableRequested
-                        || Boolean.TRUE.equals(meshGpsEnabledState));
+                boolean gpsCapabilityKnown = meshGpsEnabledState != null;
+                switchMeshEnableGpsMeshcore.setEnabled(meshConnected && gpsCapabilityKnown);
+                switchMeshEnableGpsMeshcore.setAlpha(
+                        (meshConnected && gpsCapabilityKnown) ? 1f : 0.45f);
+                switchMeshEnableGpsMeshcore.setChecked(
+                        gpsCapabilityKnown
+                                && (meshGpsEnableRequested
+                                || Boolean.TRUE.equals(meshGpsEnabledState)));
             } finally {
                 suppressMeshGpsSwitchCallbacks = false;
             }
@@ -2808,19 +3143,23 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 suppressMeshSendPositionWithAdvertSwitchCallbacks = false;
             }
         }
+        if (switchMeshUseCallsignLocation != null) {
+            switchMeshUseCallsignLocation.setEnabled(meshConnected);
+        }
+        boolean meshGpsOn = meshGpsEnableRequested || Boolean.TRUE.equals(meshGpsEnabledState);
+        boolean gpsDrivenActionsEnabled = meshConnected && meshGpsOn;
         if (switchAugmentGpsFromMeshcore != null) {
-            switchAugmentGpsFromMeshcore.setEnabled(meshConnected);
+            switchAugmentGpsFromMeshcore.setEnabled(gpsDrivenActionsEnabled);
+            switchAugmentGpsFromMeshcore.setAlpha(gpsDrivenActionsEnabled ? 1f : 0.45f);
         }
         if (rowAugmentGpsFromMeshcore != null) {
-            boolean showMeshAugment = meshConnected
-                    && (meshGpsEnableRequested || Boolean.TRUE.equals(meshGpsEnabledState));
-            rowAugmentGpsFromMeshcore.setVisibility(showMeshAugment ? View.VISIBLE : View.GONE);
+            rowAugmentGpsFromMeshcore.setVisibility(View.VISIBLE);
+            rowAugmentGpsFromMeshcore.setAlpha(gpsDrivenActionsEnabled ? 1f : 0.55f);
         }
         if (btnUpdateGpsFromMeshcore != null) {
-            boolean show = meshConnected
-                    && (meshGpsEnableRequested || Boolean.TRUE.equals(meshGpsEnabledState));
-            btnUpdateGpsFromMeshcore.setVisibility(show ? View.VISIBLE : View.GONE);
-            btnUpdateGpsFromMeshcore.setEnabled(show);
+            btnUpdateGpsFromMeshcore.setVisibility(View.VISIBLE);
+            btnUpdateGpsFromMeshcore.setEnabled(gpsDrivenActionsEnabled);
+            btnUpdateGpsFromMeshcore.setAlpha(gpsDrivenActionsEnabled ? 1f : 0.45f);
         }
     }
 
@@ -2828,14 +3167,26 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (meshBtManager == null || !meshBtManager.isConnected()) {
             return;
         }
+        if (meshGpsEnabledState == null) {
+            updateMeshGpsControlsUi();
+            return;
+        }
         meshGpsEnableRequested = isChecked;
+        setMeshUseGpsForPositionPreference(isChecked);
         if (!isChecked) {
             meshGpsEnabledState = Boolean.FALSE;
         }
         updateMeshGpsControlsUi();
-        appendLog("Setting MeshCore GPS " + (isChecked ? "ON..." : "OFF..."));
+        appendLog("Setting Use Meschore GPS for position " + (isChecked ? "ON..." : "OFF..."));
+        if (isChecked) {
+            removeMeshNodeMapPositionMarker(true);
+        }
+        scheduleMeshCallsignPositionSync();
         meshBtManager.setMeshGpsEnabled(isChecked);
         meshBtManager.queryMeshGpsEnabled();
+        if (!isChecked) {
+            pushPhoneLocationToMeshNodeIfNeeded(false);
+        }
     }
 
     private void syncTransmitSwitchesUi() {
@@ -3195,6 +3546,21 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (switchMeshShowNodes != null) {
             switchMeshShowNodes.setChecked(isMeshShowNodesPreferenceEnabled(ctx));
         }
+        if (switchMeshSendPositionWithAdvert != null) {
+            switchMeshSendPositionWithAdvert.setChecked(
+                    getMeshSendPositionWithAdvertPreference(ctx));
+        }
+        if (switchMeshEnableGpsMeshcore != null) {
+            switchMeshEnableGpsMeshcore.setChecked(getMeshUseGpsForPositionPreference(ctx));
+        }
+        if (switchMeshUseCallsignLocation != null) {
+            switchMeshUseCallsignLocation.setChecked(
+                    isMeshUseCallsignLocationPreferenceEnabled(ctx));
+        }
+        if (isMeshUseCallsignLocationPreferenceEnabled(ctx)
+                || (meshGpsEnableRequested || Boolean.TRUE.equals(meshGpsEnabledState))) {
+            removeMeshNodeMapPositionMarker(true);
+        }
 
         // Team color (ATAK preference)
         try {
@@ -3207,6 +3573,16 @@ public class UVProDropDownReceiver extends DropDownReceiver
         updateRadioSilenceButtonUi();
         updateAprsSectionUi();
         updateChannelGroupButtonUi();
+    }
+
+    private void updateMeshUseCallsignLocationLabel(String callsign) {
+        if (textMeshUseCallsignLocation == null) {
+            return;
+        }
+        String safe = (callsign == null || callsign.trim().isEmpty())
+                ? "UNKNOWN"
+                : callsign.trim();
+        textMeshUseCallsignLocation.setText("Use " + safe + " location for position");
     }
 
     private void requestManualRadioGpsUpdate() {
@@ -3330,6 +3706,100 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
         return prefs.getBoolean(PREF_MESH_SHOW_NODES, false);
+    }
+
+    private boolean getMeshSendPositionWithAdvertPreference(Context ctx) {
+        if (ctx == null) {
+            return true;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        return prefs.getBoolean(PREF_MESH_SEND_POSITION_WITH_ADVERT, true);
+    }
+
+    private void setMeshSendPositionWithAdvertPreference(boolean enabled) {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        prefs.edit().putBoolean(PREF_MESH_SEND_POSITION_WITH_ADVERT, enabled).apply();
+    }
+
+    private boolean getMeshUseGpsForPositionPreference(Context ctx) {
+        if (ctx == null) {
+            return false;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        return prefs.getBoolean(PREF_MESH_USE_GPS_FOR_POSITION, false);
+    }
+
+    private void setMeshUseGpsForPositionPreference(boolean enabled) {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        prefs.edit().putBoolean(PREF_MESH_USE_GPS_FOR_POSITION, enabled).apply();
+    }
+
+    private boolean isMeshUseCallsignLocationPreferenceEnabled(Context ctx) {
+        if (ctx == null) {
+            return false;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        return prefs.getBoolean(PREF_MESH_USE_CALLSIGN_LOCATION_FOR_POSITION, false);
+    }
+
+    private void setMeshUseCallsignLocationPreference(boolean enabled) {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        prefs.edit().putBoolean(PREF_MESH_USE_CALLSIGN_LOCATION_FOR_POSITION, enabled).apply();
+    }
+
+    private void setMeshMapSetPosition(Context ctx, com.atakmap.coremap.maps.coords.GeoPoint gp) {
+        if (ctx == null || gp == null || !gp.isValid()) {
+            return;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        prefs.edit()
+                .putString(PREF_MESH_MAP_SET_POSITION_LAT, Double.toString(gp.getLatitude()))
+                .putString(PREF_MESH_MAP_SET_POSITION_LON, Double.toString(gp.getLongitude()))
+                .apply();
+    }
+
+    private com.atakmap.coremap.maps.coords.GeoPoint getMeshMapSetPosition(Context ctx) {
+        if (ctx == null) {
+            return null;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        String latStr = prefs.getString(PREF_MESH_MAP_SET_POSITION_LAT, null);
+        String lonStr = prefs.getString(PREF_MESH_MAP_SET_POSITION_LON, null);
+        if (latStr == null || lonStr == null) {
+            return null;
+        }
+        try {
+            double lat = Double.parseDouble(latStr);
+            double lon = Double.parseDouble(lonStr);
+            com.atakmap.coremap.maps.coords.GeoPoint gp =
+                    new com.atakmap.coremap.maps.coords.GeoPoint(lat, lon);
+            return gp.isValid() ? gp : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private void clearMeshMapSetPosition(Context ctx) {
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        prefs.edit()
+                .remove(PREF_MESH_MAP_SET_POSITION_LAT)
+                .remove(PREF_MESH_MAP_SET_POSITION_LON)
+                .apply();
     }
 
     private void setMeshShowRepeatersPreference(boolean enabled) {
@@ -4011,8 +4481,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnRadioSilence.setBackgroundTintList(null);
         GradientDrawable bg = buildVfoButtonBackground(
                 COLOR_PILL_BUTTON_PRIMARY,
-                enabled ? COLOR_EDIT_SELECTION_BORDER : 0x00000000,
-                enabled ? EDIT_SELECTION_STROKE_DP : 0);
+                COLOR_CHANNEL_SECTION_STROKE,
+                CHANNEL_SECTION_STROKE_DP);
         btnRadioSilence.setBackground(bg);
         btnRadioSilence.setText(enabled
                 ? "Long Press for Radio Silence (ACTIVE)"
@@ -4116,8 +4586,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnTxPower.setEnabled(connected);
         btnTxPower.setText("TX Power "
                 + UVProRadioControlManager.txPowerLabel(currentTxPowerLevel));
-        btnTxPower.setBackgroundTintList(
-                android.content.res.ColorStateList.valueOf(COLOR_PILL_BUTTON_PRIMARY));
+        btnTxPower.setBackgroundTintList(null);
+        btnTxPower.setBackground(buildVfoButtonBackground(
+                COLOR_PILL_BUTTON_PRIMARY,
+                COLOR_CHANNEL_SECTION_STROKE,
+                CHANNEL_SECTION_STROKE_DP));
     }
 
     private void updateSelectedRepeaterUi() {
@@ -4493,7 +4966,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnVfoA == null) {
             return;
         }
-        final int subduedStroke = 0x55777777;
+        final int subduedStroke = COLOR_CHANNEL_SECTION_STROKE;
         final boolean activeDigital = selectedTarget == TARGET_DIGITAL;
         boolean activeA = selectedTarget == TARGET_A;
         boolean activeB = selectedTarget == TARGET_B;
@@ -4510,8 +4983,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnVfoA.setMaxLines(1);
         GradientDrawable aBg = buildVfoButtonBackground(
                 activeA ? COLOR_A_ACTIVE : COLOR_A_SUBDUED,
-                activeA ? COLOR_EDIT_SELECTION_BORDER : subduedStroke,
-                activeA ? EDIT_SELECTION_STROKE_DP : 1);
+                activeA ? COLOR_CHANNEL_SECTION_STROKE : subduedStroke,
+                activeA ? CHANNEL_SECTION_STROKE_DP : CHANNEL_SECTION_STROKE_DP);
         btnVfoA.setBackground(aBg);
         btnVfoA.setBackgroundTintList(null);
         btnVfoA.setTextColor(0xFFFFFFFF);
@@ -4530,8 +5003,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 btnVfoB.setMaxLines(1);
                 GradientDrawable bBg = buildVfoButtonBackground(
                         activeB ? COLOR_B_ACTIVE : COLOR_B_SUBDUED,
-                        activeB ? COLOR_EDIT_SELECTION_BORDER : subduedStroke,
-                        activeB ? EDIT_SELECTION_STROKE_DP : 1);
+                        activeB ? COLOR_CHANNEL_SECTION_STROKE : subduedStroke,
+                        activeB ? CHANNEL_SECTION_STROKE_DP : CHANNEL_SECTION_STROKE_DP);
                 btnVfoB.setBackground(bBg);
                 btnVfoB.setBackgroundTintList(null);
                 btnVfoB.setTextColor(0xFFFFFFFF);
@@ -4552,8 +5025,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
             btnDigital.setText(dText);
             GradientDrawable dBg = buildVfoButtonBackground(
                     (digitalArmed && activeDigital) ? COLOR_DIGITAL_ACTIVE : COLOR_DIGITAL_SUBDUED,
-                    (digitalArmed && activeDigital) ? COLOR_EDIT_SELECTION_BORDER : subduedStroke,
-                    (digitalArmed && activeDigital) ? EDIT_SELECTION_STROKE_DP : 1);
+                    COLOR_CHANNEL_SECTION_STROKE,
+                    CHANNEL_SECTION_STROKE_DP);
             btnDigital.setBackground(dBg);
             btnDigital.setBackgroundTintList(null);
             btnDigital.setTextColor(0xFFFFFFFF);
@@ -5006,11 +5479,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         d.setShape(GradientDrawable.RECTANGLE);
         d.setCornerRadius(dip(getMapView().getContext(), PILL_CORNER_RADIUS_DP));
         d.setColor(COLOR_REPEATER_LOAD_FILL);
-        if (digitalOnlyArmed) {
-            d.setStroke(dip(getMapView().getContext(), 3), COLOR_REPEATER_LOAD_ARMED_STROKE);
-        } else {
-            d.setStroke(dip(getMapView().getContext(), 1), 0x00000000);
-        }
+        d.setStroke(
+                dip(getMapView().getContext(), CHANNEL_SECTION_STROKE_DP),
+                COLOR_CHANNEL_SECTION_STROKE);
         btnDigitalOnlyMode.setBackgroundTintList(null);
         btnDigitalOnlyMode.setBackground(d);
     }
@@ -5157,11 +5628,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         d.setShape(GradientDrawable.RECTANGLE);
         d.setCornerRadius(dip(getMapView().getContext(), PILL_CORNER_RADIUS_DP));
         d.setColor(COLOR_REPEATER_LOAD_FILL);
-        if (repeaterLoadArmed) {
-            d.setStroke(dip(getMapView().getContext(), 3), COLOR_REPEATER_LOAD_ARMED_STROKE);
-        } else {
-            d.setStroke(dip(getMapView().getContext(), 1), 0x00000000);
-        }
+        d.setStroke(
+                dip(getMapView().getContext(), CHANNEL_SECTION_STROKE_DP),
+                COLOR_CHANNEL_SECTION_STROKE);
         btnLoadSelectedRepeater.setBackgroundTintList(null);
         btnLoadSelectedRepeater.setBackground(d);
     }
@@ -5528,7 +5997,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         scanConnectPulseDrawable = null;
         if (restoreBackground && btnScan != null) {
-            applyPillButtonBackground(btnScan, COLOR_PILL_BUTTON_PRIMARY);
+            int bgId = pluginContext.getResources().getIdentifier(
+                    "bg_uvpro_connection_button", "drawable", pluginContext.getPackageName());
+            if (bgId != 0) {
+                btnScan.setBackgroundResource(bgId);
+            } else {
+                applyPillButtonBackground(btnScan, COLOR_PILL_BUTTON_PRIMARY);
+            }
         }
     }
 
@@ -5850,6 +6325,17 @@ public class UVProDropDownReceiver extends DropDownReceiver
         });
     }
 
+    private void confirmClearAllMeshContacts() {
+        MapView mv = getMapView();
+        Context ctx = mv != null ? mv.getContext() : pluginContext;
+        new AlertDialog.Builder(ctx)
+                .setTitle("Clear All Mesh Contacts")
+                .setMessage("This will delete all repeaters and nodes from your map. Are you sure?")
+                .setPositiveButton("Yes", (d, w) -> clearAllMeshContacts())
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     private void clearAllMeshContacts() {
         MapView mv = getMapView();
         if (mv == null || mv.getRootGroup() == null) {
@@ -5865,6 +6351,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                             .edit()
                             .remove(PREF_MESH_REPEATER_CACHE)
                             .remove(PREF_MESH_NODE_CACHE)
+                            .remove(PREF_MESH_MAP_SET_POSITION_LAT)
+                            .remove(PREF_MESH_MAP_SET_POSITION_LON)
                             .apply();
                 } catch (Exception ignored) {
                 }
@@ -5887,7 +6375,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
             if (item == null) {
                 continue;
             }
-            if (CotBridge.isUvproMeshMarker(item)) {
+            if (CotBridge.isUvproMeshMarker(item)
+                    || MESH_NODE_MAP_POSITION_UID.equals(item.getUID())) {
                 group.removeItem(item);
                 removed++;
             }
@@ -6106,6 +6595,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     public void onDropDownClose() {
         if (getMapView() != null) {
             getMapView().removeCallbacks(meshQueuedStatusTimeoutRunnable);
+            getMapView().removeCallbacks(meshCallsignPositionSyncRunnable);
         }
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
@@ -6159,6 +6649,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (getMapView() != null) {
             getMapView().removeCallbacks(meshGpsAugmentRunnable);
             getMapView().removeCallbacks(meshQueuedStatusTimeoutRunnable);
+            getMapView().removeCallbacks(meshCallsignPositionSyncRunnable);
         }
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);

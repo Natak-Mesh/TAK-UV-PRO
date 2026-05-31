@@ -69,6 +69,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private static final byte CMD_APP_START = 0x01;
     private static final byte CMD_SEND_SELF_ADVERT = 0x07;
     private static final byte CMD_SET_ADVERT_NAME = 0x08;
+    private static final byte CMD_SET_ADVERT_LATLON = 0x0E;
     private static final byte CMD_SET_RADIO_PARAMS = 0x0B;
     private static final byte CMD_SET_RADIO_TX_POWER = 0x0C;
     private static final byte CMD_SEND_TXT_MSG = 0x02;
@@ -942,6 +943,28 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             return false;
         }
         enqueueCommand(new byte[]{CMD_SEND_SELF_ADVERT});
+        return true;
+    }
+
+    public boolean setAdvertLatLon(double latitude, double longitude, double altitudeMeters) {
+        if (!connected.get()) {
+            return false;
+        }
+        if (Double.isNaN(latitude) || Double.isNaN(longitude)
+                || latitude < -90.0 || latitude > 90.0
+                || longitude < -180.0 || longitude > 180.0) {
+            return false;
+        }
+        int latE6 = (int) Math.round(latitude * 1_000_000.0);
+        int lonE6 = (int) Math.round(longitude * 1_000_000.0);
+        int alt = Double.isNaN(altitudeMeters) ? 0 : (int) Math.round(altitudeMeters);
+        byte[] out = new byte[13];
+        ByteBuffer bb = ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN);
+        bb.put(CMD_SET_ADVERT_LATLON);
+        bb.putInt(latE6);
+        bb.putInt(lonE6);
+        bb.putInt(alt);
+        enqueueCommand(out);
         return true;
     }
 

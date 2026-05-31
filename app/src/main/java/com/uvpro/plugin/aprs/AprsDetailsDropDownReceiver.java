@@ -93,6 +93,10 @@ public class AprsDetailsDropDownReceiver extends DropDownReceiver
         }
         titleView.setText(callsign);
         refreshBody(uid);
+        if (sendMessageButton != null) {
+            boolean isRepeater = item.getMetaBoolean(CotBridge.META_UVPRO_MESH_REPEATER, false);
+            sendMessageButton.setVisibility(isRepeater ? View.GONE : View.VISIBLE);
+        }
         wireSendMessageButton(callsign);
         wireDeleteContactButton(uid, callsign);
 

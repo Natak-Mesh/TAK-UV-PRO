@@ -21,6 +21,7 @@ import android.preference.PreferenceManager;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.style.ReplacementSpan;
+import android.util.Base64;
 import android.util.Log;
 import android.text.InputType;
 import android.text.method.ScrollingMovementMethod;
@@ -142,6 +143,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
             "uvpro_augment_gps_from_meshcore";
     private static final String PREF_ATAK_WIFI_TRANSMIT =
             "uvpro_atak_wifi_transmit";
+    private static final String PREF_MESH_CHANNEL_HISTORY =
+            "uvpro_mesh_channel_history_v1";
 
     private final Context pluginContext;
     private final BtConnectionManager btManager;
@@ -191,6 +194,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Button btnSendAprsBeacon;
     private Button btnClearAprsContacts;
     private Button btnEditAprsSettings;
+    private Button btnMeshcoreChannels;
     private TextView teamColorText;
     private Button btnScan;
     private Button btnDisconnect;
@@ -309,6 +313,17 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Boolean meshGpsEnabledState = null;
     private boolean meshGpsEnableRequested = false;
     private boolean suppressMeshGpsSwitchCallbacks = false;
+    private final Map<Integer, String> meshChannelNames = new HashMap<>();
+    private final Map<Integer, LinkedList<MeshBtConnectionManager.MeshChannelMessage>>
+            meshChannelMessages = new HashMap<>();
+    private AlertDialog meshChannelChatDialog;
+    private TextView meshChannelChatLogView;
+    private TextView meshChannelChatTitleView;
+    private int meshChannelChatActiveIndex = -1;
+    private static final int MAX_MESH_CHANNEL_MESSAGES = 120;
+    private static final long MESH_CHANNEL_QUEUE_TIMEOUT_MS = 8000L;
+    private boolean meshChannelHistoryLoaded = false;
+    private final Runnable meshQueuedStatusTimeoutRunnable = this::applyMeshQueuedStatusTimeouts;
     private final AtomicBoolean meshGpsAugmentUpdateInFlight = new AtomicBoolean(false);
     private final Runnable meshGpsAugmentRunnable = new Runnable() {
         @Override
@@ -343,6 +358,34 @@ public class UVProDropDownReceiver extends DropDownReceiver
             }
         }
     };
+    private final MeshBtConnectionManager.MeshChannelListener meshChannelListener =
+            new MeshBtConnectionManager.MeshChannelListener() {
+                @Override
+                public void onChannelInfo(MeshBtConnectionManager.MeshChannelInfo info) {
+                    if (info == null) {
+                        return;
+                    }
+                    getMapView().post(() -> {
+                        meshChannelNames.put(info.index, info.name);
+                        persistMeshChannelHistory();
+                        updateMeshChannelButtonLabel();
+                    });
+                }
+
+                @Override
+                public void onChannelMessage(MeshBtConnectionManager.MeshChannelMessage message) {
+                    if (message == null) {
+                        return;
+                    }
+                    getMapView().post(() -> {
+                        appendMeshChannelMessage(message);
+                        if (meshChannelChatDialog != null && meshChannelChatDialog.isShowing()
+                                && meshChannelChatActiveIndex == message.channelIndex) {
+                            renderMeshChannelChatLog(message.channelIndex);
+                        }
+                    });
+                }
+            };
 
     public UVProDropDownReceiver(MapView mapView,
                                      Context pluginContext,
@@ -360,6 +403,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btManager.addBeforeDisconnectHook(digitalOnlyDisconnectHook);
         contactTracker.setListener(this);
         if (meshBtManager != null) {
+            meshBtManager.addMeshChannelListener(meshChannelListener);
             meshBtManager.addListener(new BtConnectionManager.ConnectionListener() {
                 @Override
                 public void onConnected(BluetoothDevice device) {
@@ -386,6 +430,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     });
                     meshBtManager.queryMeshGpsEnabled();
                     meshBtManager.requestSelfInfo();
+                    meshBtManager.requestAllChannelInfo();
                 }
 
                 @Override
@@ -398,6 +443,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                         updateMeshConnectionUI(false, null);
                         applyPreferredTransmitModeForConnectionState(false);
                         appendLog("MeshCore disconnected: " + reason);
+                        updateMeshChannelButtonLabel();
                         updateMeshScanButtonText();
                         scheduleMeshGpsAugmentTick();
                     });
@@ -523,6 +569,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         // Bind views
         bindViews();
+        loadMeshChannelHistoryIfNeeded();
         // Fallback path: ensure MeshCore map icon installs when panel is opened.
         MeshStatusOverlay.install(pluginContext);
 
@@ -539,6 +586,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
             meshGpsEnableRequested = Boolean.TRUE.equals(meshGpsEnabledState);
             meshBtManager.queryMeshGpsEnabled();
             meshBtManager.requestSelfInfo();
+            meshBtManager.requestAllChannelInfo();
+            meshChannelNames.putAll(meshBtManager.getKnownChannelNamesSnapshot());
             stopMeshConnectButtonPulse(true);
         } else {
             meshConnected = false;
@@ -589,6 +638,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         refreshFavoriteStrip();
         updateScanButtonText();
         updateMeshScanButtonText();
+        updateMeshChannelButtonLabel();
         updateSelectedRepeaterUi();
         refreshChannelGridFullAsync();
         refreshLogView();
@@ -636,6 +686,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnSendAprsBeacon = rootView.findViewById(getId("btn_send_aprs_beacon"));
         btnClearAprsContacts = rootView.findViewById(getId("btn_clear_aprs_contacts"));
         btnEditAprsSettings = rootView.findViewById(getId("btn_edit_aprs_settings"));
+        btnMeshcoreChannels = rootView.findViewById(getId("btn_meshcore_channels"));
         teamColorText = rootView.findViewById(getId("text_team_color"));
         btnScan = rootView.findViewById(getId("btn_scan"));
         btnDisconnect = rootView.findViewById(getId("btn_disconnect"));
@@ -694,6 +745,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         if (btnMeshDisconnect != null) {
             btnMeshDisconnect.setOnClickListener(v -> onMeshDisconnectClicked());
+        }
+        if (btnMeshcoreChannels != null) {
+            btnMeshcoreChannels.setOnClickListener(v -> onMeshcoreChannelsClicked());
         }
         if (switchMeshTransmit != null) {
             switchMeshTransmit.setOnCheckedChangeListener((buttonView, isChecked) -> {
@@ -1149,6 +1203,740 @@ public class UVProDropDownReceiver extends DropDownReceiver
         } else {
             btnMeshScan.setText("SCAN & CONNECT");
         }
+    }
+
+    private void onMeshcoreChannelsClicked() {
+        if (meshBtManager == null || !meshBtManager.isConnected()) {
+            Toast.makeText(getMapView().getContext(),
+                    "Connect to a MeshCore node first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        meshBtManager.requestAllChannelInfo();
+        Map<Integer, String> snapshot = meshBtManager.getKnownChannelNamesSnapshot();
+        if (!snapshot.isEmpty()) {
+            meshChannelNames.putAll(snapshot);
+            persistMeshChannelHistory();
+        }
+        updateMeshChannelButtonLabel();
+        showMeshChannelPickerDialog();
+    }
+
+    private void showMeshChannelPickerDialog() {
+        Context ctx = getMapView().getContext();
+        List<Integer> indices = new ArrayList<>();
+        List<String> labels = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            String name = meshChannelNames.get(i);
+            if (name != null && !name.trim().isEmpty()) {
+                indices.add(i);
+                labels.add("#" + i + "  " + name);
+            }
+        }
+        if (indices.isEmpty()) {
+            Toast.makeText(ctx, "Channel list is still loading. Tap again in a moment.",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new AlertDialog.Builder(ctx)
+                .setTitle("MeshCore Channels")
+                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+                    if (which < 0 || which >= indices.size()) {
+                        return;
+                    }
+                    openMeshChannelChatDialog(indices.get(which));
+                })
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void openMeshChannelChatDialog(int channelIndex) {
+        Context ctx = getMapView().getContext();
+        String channelName = meshChannelNames.get(channelIndex);
+        if (channelName == null || channelName.trim().isEmpty()) {
+            channelName = "Channel";
+        }
+        meshChannelChatActiveIndex = channelIndex;
+
+        LinearLayout root = new LinearLayout(ctx);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int pad = dip(ctx, 12);
+        root.setPadding(pad, pad, pad, pad);
+
+        TextView title = new TextView(ctx);
+        title.setText("Channel #" + channelIndex + " - " + channelName);
+        title.setTextColor(0xFFFFFFFF);
+        title.setTextSize(15f);
+        root.addView(title);
+        meshChannelChatTitleView = title;
+
+        TextView status = new TextView(ctx);
+        status.setText("Status shown from MeshCore message metadata when available.");
+        status.setTextColor(0xFF90A4AE);
+        status.setTextSize(11f);
+        LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        statusLp.bottomMargin = dip(ctx, 8);
+        root.addView(status, statusLp);
+
+        ScrollView scroll = new ScrollView(ctx);
+        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0);
+        scrollLp.weight = 1f;
+        TextView log = new TextView(ctx);
+        log.setTextColor(0xFFE0E0E0);
+        log.setTextSize(15f);
+        log.setMovementMethod(new ScrollingMovementMethod());
+        log.setPadding(dip(ctx, 8), dip(ctx, 8), dip(ctx, 8), dip(ctx, 8));
+        log.setBackgroundColor(0xFF1E1E1E);
+        scroll.addView(log, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(scroll, scrollLp);
+        meshChannelChatLogView = log;
+
+        EditText input = new EditText(ctx);
+        input.setHint("Type message");
+        input.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        inputLp.topMargin = dip(ctx, 8);
+        root.addView(input, inputLp);
+
+        AlertDialog dialog = new AlertDialog.Builder(ctx)
+                .setTitle("MeshCore Channel Chat")
+                .setView(root)
+                .setPositiveButton("Send", null)
+                .setNegativeButton("Close", (d, which) -> {
+                    meshChannelChatActiveIndex = -1;
+                    meshChannelChatDialog = null;
+                    meshChannelChatLogView = null;
+                    meshChannelChatTitleView = null;
+                })
+                .create();
+        dialog.setOnShowListener(d -> {
+            Button send = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (send != null) {
+                send.setOnClickListener(v -> {
+                    String text = input.getText() != null ? input.getText().toString().trim() : "";
+                    if (text.isEmpty()) {
+                        return;
+                    }
+                    if (!meshBtManager.sendChannelText(channelIndex, text)) {
+                        Toast.makeText(ctx, "Failed to send over MeshCore channel.",
+                                Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    input.setText("");
+                });
+            }
+            renderMeshChannelChatLog(channelIndex);
+        });
+        dialog.show();
+        meshChannelChatDialog = dialog;
+    }
+
+    private void appendMeshChannelMessage(MeshBtConnectionManager.MeshChannelMessage message) {
+        if (message == null) {
+            return;
+        }
+        int channelIndex = message.channelIndex;
+        if (message.outbound && message.statusText != null
+                && !message.statusText.trim().isEmpty()
+                && !"queued".equalsIgnoreCase(message.statusText.trim())
+                && tryUpgradeQueuedOutboundFromOutboundStatus(message)) {
+            persistMeshChannelHistory();
+            return;
+        }
+        if (!message.outbound && tryUpgradeQueuedOutboundMessage(message)) {
+            persistMeshChannelHistory();
+            return;
+        }
+        if (!message.outbound && tryUpgradeMostRecentQueuedOutboundAnyChannel(message)) {
+            persistMeshChannelHistory();
+            return;
+        }
+        if (channelIndex < 0 || channelIndex > 7) {
+            // Some firmware variants omit/shift channel index in channel message pushes.
+            // We still attempt queued-upgrade paths above; if none matched, skip storing.
+            return;
+        }
+        LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket = meshChannelMessages.get(channelIndex);
+        if (bucket == null) {
+            bucket = new LinkedList<>();
+            meshChannelMessages.put(channelIndex, bucket);
+        }
+        bucket.add(message);
+        while (bucket.size() > MAX_MESH_CHANNEL_MESSAGES) {
+            bucket.removeFirst();
+        }
+        persistMeshChannelHistory();
+        if (message.outbound && isRepeatStatusAwaitingEvidence(message.statusText)) {
+            scheduleMeshQueuedStatusTimeout();
+        }
+    }
+
+    /**
+     * Mesh channel TX has no explicit send-confirm packet for this UI path.
+     * Promote the latest matching queued outbound row when the same channel text
+     * is observed on RX with path metadata.
+     */
+    private boolean tryUpgradeQueuedOutboundMessage(MeshBtConnectionManager.MeshChannelMessage inbound) {
+        if (inbound == null || inbound.outbound) {
+            return false;
+        }
+        String inboundNorm = normalizeChannelMessageText(inbound.text);
+        if (inboundNorm.isEmpty()) {
+            return false;
+        }
+        int channelIndex = inbound.channelIndex;
+        if (channelIndex < 0 || channelIndex > 7) {
+            channelIndex = findMostRecentQueuedChannelIndex();
+            if (channelIndex < 0) {
+                return false;
+            }
+        }
+        LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket = meshChannelMessages.get(channelIndex);
+        if (bucket == null || bucket.isEmpty()) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        int fallbackQueuedIndex = -1;
+        for (int i = bucket.size() - 1; i >= 0; i--) {
+            MeshBtConnectionManager.MeshChannelMessage existing = bucket.get(i);
+            if (!existing.outbound) {
+                continue;
+            }
+            String status = existing.statusText != null ? existing.statusText.trim().toLowerCase(Locale.US) : "";
+            if (!isRepeatStatusAwaitingEvidence(status)) {
+                continue;
+            }
+            long ageMs = (now - existing.receivedAtMs);
+            if (ageMs > 20_000L) {
+                continue;
+            }
+            int repeats = Math.max(0, (inbound.pathLen != null ? inbound.pathLen : 0));
+            String heardStatus = outboundStatusFromRepeats(repeats);
+            String existingNorm = normalizeChannelMessageText(existing.text);
+            boolean textMatches = !existingNorm.isEmpty()
+                    && !inboundNorm.isEmpty()
+                    && (existingNorm.equals(inboundNorm)
+                    || inboundNorm.contains(existingNorm)
+                    || existingNorm.contains(inboundNorm));
+            if (!textMatches) {
+                continue;
+            }
+            if (fallbackQueuedIndex < 0) {
+                fallbackQueuedIndex = i;
+            }
+            if (textMatches) {
+                MeshBtConnectionManager.MeshChannelMessage upgraded =
+                        new MeshBtConnectionManager.MeshChannelMessage(
+                                existing.channelIndex,
+                                existing.text,
+                                existing.receivedAtMs,
+                                true,
+                                heardStatus,
+                                inbound.snrQuarterDb,
+                                inbound.pathLen,
+                                inbound.senderTimestampSec);
+                bucket.set(i, upgraded);
+                Log.d(TAG, "Mesh channel status upgraded by text match ch=" + channelIndex
+                        + " status=" + heardStatus);
+                return true;
+            }
+        }
+        if (fallbackQueuedIndex >= 0) {
+            MeshBtConnectionManager.MeshChannelMessage existing = bucket.get(fallbackQueuedIndex);
+            int repeats = Math.max(0, (inbound.pathLen != null ? inbound.pathLen : 0));
+            String heardStatus = outboundStatusFromRepeats(repeats);
+            MeshBtConnectionManager.MeshChannelMessage upgraded =
+                    new MeshBtConnectionManager.MeshChannelMessage(
+                            existing.channelIndex,
+                            existing.text,
+                            existing.receivedAtMs,
+                            true,
+                            heardStatus,
+                            inbound.snrQuarterDb,
+                            inbound.pathLen,
+                            inbound.senderTimestampSec);
+            bucket.set(fallbackQueuedIndex, upgraded);
+            Log.d(TAG, "Mesh channel status upgraded by fallback ch=" + channelIndex
+                    + " status=" + heardStatus);
+            return true;
+        }
+        return false;
+    }
+
+    private int findMostRecentQueuedChannelIndex() {
+        long newestMs = -1L;
+        int bestChannel = -1;
+        for (Map.Entry<Integer, LinkedList<MeshBtConnectionManager.MeshChannelMessage>> e
+                : meshChannelMessages.entrySet()) {
+            LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket = e.getValue();
+            if (bucket == null || bucket.isEmpty()) {
+                continue;
+            }
+            for (int i = bucket.size() - 1; i >= 0; i--) {
+                MeshBtConnectionManager.MeshChannelMessage m = bucket.get(i);
+                if (!m.outbound) {
+                    continue;
+                }
+                String status = m.statusText != null ? m.statusText.trim().toLowerCase(Locale.US) : "";
+                if (!isRepeatStatusAwaitingEvidence(status)) {
+                    continue;
+                }
+                if (m.receivedAtMs > newestMs) {
+                    newestMs = m.receivedAtMs;
+                    bestChannel = e.getKey();
+                }
+                break;
+            }
+        }
+        return bestChannel;
+    }
+
+    private boolean tryUpgradeMostRecentQueuedOutboundAnyChannel(
+            MeshBtConnectionManager.MeshChannelMessage inbound) {
+        if (inbound == null || inbound.outbound) {
+            return false;
+        }
+        String inboundNorm = normalizeChannelMessageText(inbound.text);
+        if (inboundNorm.isEmpty()) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        int bestChannel = -1;
+        int bestIndex = -1;
+        long newestMs = -1L;
+        for (Map.Entry<Integer, LinkedList<MeshBtConnectionManager.MeshChannelMessage>> e
+                : meshChannelMessages.entrySet()) {
+            LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket = e.getValue();
+            if (bucket == null || bucket.isEmpty()) {
+                continue;
+            }
+            for (int i = bucket.size() - 1; i >= 0; i--) {
+                MeshBtConnectionManager.MeshChannelMessage m = bucket.get(i);
+                if (!m.outbound) {
+                    continue;
+                }
+                String status = m.statusText != null ? m.statusText.trim().toLowerCase(Locale.US) : "";
+                if (!isRepeatStatusAwaitingEvidence(status)) {
+                    continue;
+                }
+                long ageMs = (now - m.receivedAtMs);
+                if (ageMs > 20_000L) {
+                    continue;
+                }
+                String queuedNorm = normalizeChannelMessageText(m.text);
+                boolean textMatches = !queuedNorm.isEmpty()
+                        && (queuedNorm.equals(inboundNorm)
+                        || inboundNorm.contains(queuedNorm)
+                        || queuedNorm.contains(inboundNorm));
+                if (!textMatches) {
+                    continue;
+                }
+                if (m.receivedAtMs > newestMs) {
+                    newestMs = m.receivedAtMs;
+                    bestChannel = e.getKey();
+                    bestIndex = i;
+                }
+                break;
+            }
+        }
+        if (bestChannel < 0 || bestIndex < 0) {
+            return false;
+        }
+        LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket = meshChannelMessages.get(bestChannel);
+        if (bucket == null || bestIndex >= bucket.size()) {
+            return false;
+        }
+        MeshBtConnectionManager.MeshChannelMessage existing = bucket.get(bestIndex);
+        int repeats = Math.max(0, (inbound.pathLen != null ? inbound.pathLen : 0));
+        String heardStatus = outboundStatusFromRepeats(repeats);
+        MeshBtConnectionManager.MeshChannelMessage upgraded =
+                new MeshBtConnectionManager.MeshChannelMessage(
+                        existing.channelIndex,
+                        existing.text,
+                        existing.receivedAtMs,
+                        true,
+                        heardStatus,
+                        inbound.snrQuarterDb,
+                        inbound.pathLen,
+                        inbound.senderTimestampSec);
+        bucket.set(bestIndex, upgraded);
+        Log.d(TAG, "Mesh channel queued status upgraded by global fallback channel="
+                + bestChannel + " status=" + heardStatus);
+        return true;
+    }
+
+    private boolean tryUpgradeQueuedOutboundFromOutboundStatus(
+            MeshBtConnectionManager.MeshChannelMessage update) {
+        if (update == null || !update.outbound) {
+            return false;
+        }
+        int channelIndex = update.channelIndex;
+        LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket = meshChannelMessages.get(channelIndex);
+        if (bucket == null || bucket.isEmpty()) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        for (int i = bucket.size() - 1; i >= 0; i--) {
+            MeshBtConnectionManager.MeshChannelMessage existing = bucket.get(i);
+            if (!existing.outbound) {
+                continue;
+            }
+            String status = existing.statusText != null ? existing.statusText.trim().toLowerCase(Locale.US) : "";
+            if (!isRepeatStatusAwaitingEvidence(status)) {
+                continue;
+            }
+            if ((now - existing.receivedAtMs) > 120_000L) {
+                continue;
+            }
+            String existingNorm = normalizeChannelMessageText(existing.text);
+            String updateNorm = normalizeChannelMessageText(update.text);
+            if (!existingNorm.isEmpty() && !updateNorm.isEmpty() && !existingNorm.equals(updateNorm)) {
+                continue;
+            }
+            MeshBtConnectionManager.MeshChannelMessage upgraded =
+                    new MeshBtConnectionManager.MeshChannelMessage(
+                            existing.channelIndex,
+                            existing.text,
+                            existing.receivedAtMs,
+                            true,
+                            update.statusText,
+                            update.snrQuarterDb,
+                            update.pathLen,
+                            update.senderTimestampSec);
+            bucket.set(i, upgraded);
+            Log.d(TAG, "Mesh channel queued status upgraded from TX confirm ch=" + channelIndex
+                    + " status=" + update.statusText);
+            return true;
+        }
+        return false;
+    }
+
+    private static String normalizeChannelMessageText(String text) {
+        if (text == null) {
+            return "";
+        }
+        String t = text.trim().toLowerCase(Locale.US);
+        t = t.replace('\n', ' ').replace('\r', ' ');
+        while (t.contains("  ")) {
+            t = t.replace("  ", " ");
+        }
+        return t;
+    }
+
+    private static boolean isRepeatStatusAwaitingEvidence(String statusRaw) {
+        if (statusRaw == null) {
+            return false;
+        }
+        String status = statusRaw.trim().toLowerCase(Locale.US);
+        if (status.equals("queued") || status.equals("sent")) {
+            return true;
+        }
+        if (status.startsWith("heard 0 repeats")) {
+            return true;
+        }
+        return status.startsWith("heard (repeat count pending");
+    }
+
+    private static String outboundStatusFromRepeats(int repeats) {
+        if (repeats <= 0) {
+            return "Sent";
+        }
+        return "heard " + repeats + " repeats";
+    }
+
+    private void scheduleMeshQueuedStatusTimeout() {
+        if (getMapView() == null) {
+            return;
+        }
+        getMapView().removeCallbacks(meshQueuedStatusTimeoutRunnable);
+        getMapView().postDelayed(meshQueuedStatusTimeoutRunnable, MESH_CHANNEL_QUEUE_TIMEOUT_MS);
+    }
+
+    private void applyMeshQueuedStatusTimeouts() {
+        long now = System.currentTimeMillis();
+        boolean changed = false;
+        for (Map.Entry<Integer, LinkedList<MeshBtConnectionManager.MeshChannelMessage>> e
+                : meshChannelMessages.entrySet()) {
+            LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket = e.getValue();
+            if (bucket == null || bucket.isEmpty()) {
+                continue;
+            }
+            for (int i = bucket.size() - 1; i >= 0; i--) {
+                MeshBtConnectionManager.MeshChannelMessage m = bucket.get(i);
+                if (!m.outbound) {
+                    continue;
+                }
+                if (!isRepeatStatusAwaitingEvidence(m.statusText)) {
+                    continue;
+                }
+                if ((now - m.receivedAtMs) < MESH_CHANNEL_QUEUE_TIMEOUT_MS) {
+                    continue;
+                }
+                MeshBtConnectionManager.MeshChannelMessage upgraded =
+                        new MeshBtConnectionManager.MeshChannelMessage(
+                                m.channelIndex,
+                                m.text,
+                                m.receivedAtMs,
+                                true,
+                                "Sent",
+                                m.snrQuarterDb,
+                                0,
+                                m.senderTimestampSec);
+                bucket.set(i, upgraded);
+                changed = true;
+            }
+        }
+        if (changed) {
+            persistMeshChannelHistory();
+            if (meshChannelChatDialog != null && meshChannelChatDialog.isShowing()
+                    && meshChannelChatActiveIndex >= 0) {
+                renderMeshChannelChatLog(meshChannelChatActiveIndex);
+            }
+        }
+    }
+
+    private void renderMeshChannelChatLog(int channelIndex) {
+        if (meshChannelChatLogView == null) {
+            return;
+        }
+        LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket = meshChannelMessages.get(channelIndex);
+        StringBuilder sb = new StringBuilder();
+        if (bucket != null) {
+            for (MeshBtConnectionManager.MeshChannelMessage m : bucket) {
+                String ts = new SimpleDateFormat("HH:mm:ss", Locale.US)
+                        .format(new Date(m.receivedAtMs));
+                sb.append("[").append(ts).append("] ");
+                sb.append(m.outbound ? "Me" : "Node").append(": ").append(m.text);
+                String meta = buildMeshChannelMetaLine(m);
+                if (!meta.isEmpty()) {
+                    sb.append("\n   ").append(meta);
+                }
+                sb.append("\n\n");
+            }
+        }
+        if (sb.length() == 0) {
+            sb.append("No messages yet for this channel.");
+        }
+        meshChannelChatLogView.setText(sb.toString());
+        if (meshChannelChatTitleView != null) {
+            String channelName = meshChannelNames.get(channelIndex);
+            if (channelName == null || channelName.trim().isEmpty()) {
+                channelName = "Channel";
+            }
+            meshChannelChatTitleView.setText("Channel #" + channelIndex + " - " + channelName);
+        }
+    }
+
+    private void updateMeshChannelButtonLabel() {
+        if (btnMeshcoreChannels == null) {
+            return;
+        }
+        int known = 0;
+        for (int i = 0; i < 8; i++) {
+            String n = meshChannelNames.get(i);
+            if (n != null && !n.trim().isEmpty()) {
+                known++;
+            }
+        }
+        if (meshBtManager != null && meshBtManager.isConnected()) {
+            btnMeshcoreChannels.setText(
+                    known > 0 ? "Channels (" + known + ")" : "Channels");
+        } else {
+            btnMeshcoreChannels.setText("Channels");
+        }
+    }
+
+    private String buildMeshChannelMetaLine(MeshBtConnectionManager.MeshChannelMessage m) {
+        List<String> parts = new ArrayList<>();
+        if (m.senderTimestampSec != null && m.senderTimestampSec > 0) {
+            long ms = (m.senderTimestampSec.longValue() & 0xffffffffL) * 1000L;
+            String senderTs = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date(ms));
+            parts.add("sender " + senderTs);
+        }
+        if (m.pathLen != null) {
+            if (m.pathLen <= 0) {
+                if (!m.outbound) {
+                    parts.add("direct");
+                }
+            } else {
+                parts.add("heard " + m.pathLen + " repeats");
+            }
+        }
+        if (m.snrQuarterDb != null) {
+            parts.add(String.format(Locale.US, "SNR %.2f dB", m.snrQuarterDb / 4.0f));
+        }
+        if (m.statusText != null && !m.statusText.trim().isEmpty()) {
+            parts.add(m.statusText.trim());
+        }
+        if (parts.isEmpty()) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder("status: ");
+        for (int i = 0; i < parts.size(); i++) {
+            if (i > 0) out.append(" | ");
+            out.append(parts.get(i));
+        }
+        return out.toString();
+    }
+
+    private void loadMeshChannelHistoryIfNeeded() {
+        if (meshChannelHistoryLoaded) {
+            return;
+        }
+        meshChannelHistoryLoaded = true;
+        try {
+            SharedPreferences prefs = PreferenceManager
+                    .getDefaultSharedPreferences(getMapView().getContext());
+            String raw = prefs.getString(PREF_MESH_CHANNEL_HISTORY, "");
+            if (raw == null || raw.isEmpty()) {
+                return;
+            }
+            String[] lines = raw.split("\n");
+            for (String line : lines) {
+                if (line == null || line.trim().isEmpty()) {
+                    continue;
+                }
+                String[] parts = line.split("\\|", 10);
+                if (parts.length < 10) {
+                    continue;
+                }
+                int channel = parseIntSafe(parts[0], -1);
+                long recvMs = parseLongSafe(parts[1], 0L);
+                boolean outbound = "1".equals(parts[2]);
+                Integer snrQ = parseNullableInt(parts[3]);
+                Integer pathLen = parseNullableInt(parts[4]);
+                Integer senderTs = parseNullableInt(parts[5]);
+                String status = decodeB64(parts[6]);
+                String text = decodeB64(parts[7]);
+                String channelName = decodeB64(parts[8]);
+                if (channel < 0 || channel > 7 || text.isEmpty()) {
+                    continue;
+                }
+                if (!channelName.isEmpty()) {
+                    meshChannelNames.put(channel, channelName);
+                }
+                appendMeshChannelMessageNoPersist(new MeshBtConnectionManager.MeshChannelMessage(
+                        channel,
+                        text,
+                        recvMs > 0 ? recvMs : System.currentTimeMillis(),
+                        outbound,
+                        status,
+                        snrQ,
+                        pathLen,
+                        senderTs));
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to load Mesh channel history", e);
+        }
+    }
+
+    private void appendMeshChannelMessageNoPersist(MeshBtConnectionManager.MeshChannelMessage message) {
+        if (message == null) {
+            return;
+        }
+        int channelIndex = message.channelIndex;
+        if (channelIndex < 0 || channelIndex > 7) {
+            return;
+        }
+        LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket = meshChannelMessages.get(channelIndex);
+        if (bucket == null) {
+            bucket = new LinkedList<>();
+            meshChannelMessages.put(channelIndex, bucket);
+        }
+        bucket.add(message);
+        while (bucket.size() > MAX_MESH_CHANNEL_MESSAGES) {
+            bucket.removeFirst();
+        }
+    }
+
+    private void persistMeshChannelHistory() {
+        try {
+            StringBuilder sb = new StringBuilder();
+            for (int channel = 0; channel < 8; channel++) {
+                LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket =
+                        meshChannelMessages.get(channel);
+                if (bucket == null) {
+                    continue;
+                }
+                String channelName = meshChannelNames.get(channel);
+                for (MeshBtConnectionManager.MeshChannelMessage m : bucket) {
+                    sb.append(channel).append("|")
+                            .append(m.receivedAtMs).append("|")
+                            .append(m.outbound ? "1" : "0").append("|")
+                            .append(nullableIntToken(m.snrQuarterDb)).append("|")
+                            .append(nullableIntToken(m.pathLen)).append("|")
+                            .append(nullableIntToken(m.senderTimestampSec)).append("|")
+                            .append(encodeB64(m.statusText)).append("|")
+                            .append(encodeB64(m.text)).append("|")
+                            .append(encodeB64(channelName)).append("|")
+                            .append("v1")
+                            .append("\n");
+                }
+            }
+            SharedPreferences prefs = PreferenceManager
+                    .getDefaultSharedPreferences(getMapView().getContext());
+            prefs.edit().putString(PREF_MESH_CHANNEL_HISTORY, sb.toString()).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to persist Mesh channel history", e);
+        }
+    }
+
+    private static String encodeB64(String in) {
+        if (in == null || in.isEmpty()) {
+            return "";
+        }
+        return Base64.encodeToString(in.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                Base64.NO_WRAP);
+    }
+
+    private static String decodeB64(String in) {
+        if (in == null || in.isEmpty()) {
+            return "";
+        }
+        try {
+            byte[] out = Base64.decode(in, Base64.NO_WRAP);
+            return new String(out, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static int parseIntSafe(String s, int d) {
+        try {
+            return Integer.parseInt(s);
+        } catch (Exception ignored) {
+            return d;
+        }
+    }
+
+    private static long parseLongSafe(String s, long d) {
+        try {
+            return Long.parseLong(s);
+        } catch (Exception ignored) {
+            return d;
+        }
+    }
+
+    private static Integer parseNullableInt(String s) {
+        if (s == null || s.isEmpty() || "-".equals(s)) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(s);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static String nullableIntToken(Integer v) {
+        return v == null ? "-" : Integer.toString(v);
     }
 
     private void refreshFavoriteStrip() {
@@ -4620,6 +5408,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     @Override
     public void onDropDownClose() {
+        if (getMapView() != null) {
+            getMapView().removeCallbacks(meshQueuedStatusTimeoutRunnable);
+        }
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
         stopScanConnectButtonPulse(true);
@@ -4632,6 +5423,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnLoadSelectedRepeater != null) {
             btnLoadSelectedRepeater.setAlpha(1f);
         }
+        if (meshChannelChatDialog != null && meshChannelChatDialog.isShowing()) {
+            meshChannelChatDialog.dismiss();
+        }
+        meshChannelChatDialog = null;
+        meshChannelChatLogView = null;
+        meshChannelChatTitleView = null;
+        meshChannelChatActiveIndex = -1;
     }
 
     @Override
@@ -4657,10 +5455,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
     public void disposeImpl() {
         // Unregister listeners
         btManager.removeListener(this);
+        if (meshBtManager != null) {
+            meshBtManager.removeMeshChannelListener(meshChannelListener);
+        }
         contactTracker.setListener(null);
         radioGpsAugmentController.shutdown();
         if (getMapView() != null) {
             getMapView().removeCallbacks(meshGpsAugmentRunnable);
+            getMapView().removeCallbacks(meshQueuedStatusTimeoutRunnable);
         }
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);

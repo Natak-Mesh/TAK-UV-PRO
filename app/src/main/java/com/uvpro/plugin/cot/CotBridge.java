@@ -81,6 +81,8 @@ public class CotBridge {
 
     /** Multi-line APRS packet metadata for {@link com.uvpro.plugin.aprs.AprsDetailsDropDownReceiver}. */
     public static final String META_UVPRO_APRS_DETAILS = "uvpro_aprs_details";
+    /** Marker flag for MeshCore repeater advert points (not APRS contacts/messages). */
+    public static final String META_UVPRO_MESH_REPEATER = "uvpro_mesh_repeater";
     private static final long STALE_GRACE_MS = 30_000L;
     private static final long MIN_CONTACT_STALE_MS = 60_000L;
     /** Inbound APRS / radio peers: ATAK uses CoT stale as marker TTL; keep ≥ 2h for sparse beacons. */
@@ -1553,7 +1555,9 @@ public class CotBridge {
      * True for map markers injected from inbound APRS (see {@link #META_UVPRO_APRS}).
      */
     public static boolean isUvproAprsMarker(com.atakmap.android.maps.MapItem item) {
-        return item != null && item.getMetaBoolean(META_UVPRO_APRS, false);
+        return item != null
+                && item.getMetaBoolean(META_UVPRO_APRS, false)
+                && !item.getMetaBoolean(META_UVPRO_MESH_REPEATER, false);
     }
 
     /**
@@ -1645,6 +1649,30 @@ public class CotBridge {
         }
     }
 
+    /** Tag marker as Mesh repeater so APRS-only UI/actions are suppressed. */
+    public void markMeshRepeaterMapItem(String uid) {
+        if (uid == null || uid.isEmpty() || this.mapView == null) {
+            return;
+        }
+        Runnable tag = () -> {
+            try {
+                com.atakmap.android.maps.MapItem item =
+                        this.mapView.getRootGroup().deepFindUID(uid);
+                if (item != null) {
+                    item.setMetaBoolean(META_UVPRO_MESH_REPEATER, true);
+                    item.setMetaBoolean(META_UVPRO_APRS, false);
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "markMeshRepeaterMapItem failed uid=" + uid, e);
+            }
+        };
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            tag.run();
+        } else {
+            this.mapView.post(tag);
+        }
+    }
+
     /**
      * After CoT import: APRS usericon markers get label bounds and a minimal pinwheel whose
      * Details action opens CoT Info (remarks), not the TAK contact-card menu.
@@ -1660,6 +1688,10 @@ public class CotBridge {
                 return;
             }
             String iconPath = item.getMetaString(UserIcon.IconsetPath, "");
+            if (item.getMetaBoolean(META_UVPRO_MESH_REPEATER, false)
+                    || isMeshRepeaterIconPath(iconPath)) {
+                return;
+            }
             boolean aprs = item.getMetaBoolean(META_UVPRO_APRS, false)
                     || (!iconPath.isEmpty()
                     && iconPath.startsWith(AprsSymbolMapper.ICONSET_UID));
@@ -1678,6 +1710,13 @@ public class CotBridge {
         } catch (Exception e) {
             Log.w(TAG, "applyAprsMarkerPresentation failed uid=" + uid, e);
         }
+    }
+
+    private boolean isMeshRepeaterIconPath(String iconPath) {
+        if (iconPath == null || iconPath.isEmpty()) {
+            return false;
+        }
+        return iconPath.endsWith("/meshcore.png") || iconPath.endsWith("/meschore.png");
     }
 
     /**

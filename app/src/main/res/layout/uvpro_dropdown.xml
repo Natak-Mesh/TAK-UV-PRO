@@ -1164,6 +1164,33 @@
                 android:backgroundTint="#FF455A64" />
         </LinearLayout>
 
+        <!-- ==================== MESHCORE ==================== -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="#FF2D2D2D"
+            android:padding="12dp"
+            android:layout_marginBottom="8dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="MESHCORE"
+                android:textColor="#FF00BCD4"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:paddingBottom="4dp" />
+
+            <Button
+                android:id="@+id/btn_meshcore_channels"
+                style="@style/UvproPillButton.Beacon"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Channels"
+                android:backgroundTint="#FF455A64" />
+        </LinearLayout>
+
         <!-- ==================== ACTIONS ==================== -->
         <LinearLayout
             android:layout_width="match_parent"

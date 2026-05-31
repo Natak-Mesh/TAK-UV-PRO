@@ -283,6 +283,7 @@ try {
                     '>',
                     remarks,
                     mapUid);
+            cotBridge.markMeshRepeaterMapItem(mapUid);
         };
         meshBtConnectionManager.addRepeaterAdvertListener(repeaterAdvertListener);
         radioControlManager = new UVProRadioControlManager(btConnectionManager);

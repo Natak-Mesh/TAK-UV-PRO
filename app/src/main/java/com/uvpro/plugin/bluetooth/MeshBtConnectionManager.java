@@ -70,6 +70,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private static final byte CMD_GET_NEXT_MSG = 0x0A;
     private static final byte CMD_DEVICE_QUERY = 0x16;
     private static final byte CMD_DEVICE_QUERY_ARG = 0x03;
+    private static final byte CMD_GET_CONTACT_BY_KEY = 0x1E;
     private static final byte CMD_GET_CHANNEL = 0x1F;
     private static final byte CMD_SET_CHANNEL = 0x20;
     private static final byte CMD_GET_GPS_STATE = 0x28;
@@ -87,6 +88,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private static final byte RESP_CHANNEL_DATA_RECV = 0x1B;
     private static final byte RESP_NO_MORE_MSGS = 0x0A;
     private static final byte PUSH_MESSAGES_WAITING = (byte) 0x83;
+    private static final byte PUSH_CODE_SEND_CONFIRMED = (byte) 0x82;
+    private static final byte PUSH_CODE_LOG_RX_DATA = (byte) 0x88;
     private static final byte PUSH_CODE_ADVERT = (byte) 0x80;
     private static final byte PUSH_CODE_NEW_ADVERT = (byte) 0x8A;
     private static final byte RESP_CODE_CONTACT = 0x03;
@@ -131,10 +134,15 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<RepeaterAdvertListener> repeaterAdvertListeners =
             new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<MeshChannelListener> meshChannelListeners =
+            new CopyOnWriteArrayList<>();
     private final Map<String, Long> repeaterToastDedupByPubKeyTs = new ConcurrentHashMap<>();
+    private final Map<String, Long> contactQueryThrottleMsByPubKey = new ConcurrentHashMap<>();
+    private final Map<Integer, String> meshChannelNamesByIndex = new ConcurrentHashMap<>();
 
     private final Map<Integer, ChunkAccumulator> chunkBuffers = new ConcurrentHashMap<>();
     private final ArrayDeque<byte[]> writeQueue = new ArrayDeque<>();
+    private final ArrayDeque<PendingChannelText> pendingChannelTextSends = new ArrayDeque<>();
     private boolean writeInFlight = false;
 
     private BluetoothAdapter btAdapter;
@@ -238,6 +246,58 @@ public class MeshBtConnectionManager extends BtConnectionManager {
                     && latitude >= -90.0 && latitude <= 90.0
                     && longitude >= -180.0 && longitude <= 180.0
                     && !(Math.abs(latitude) < 0.000001 && Math.abs(longitude) < 0.000001);
+        }
+    }
+
+    public interface MeshChannelListener {
+        void onChannelInfo(MeshChannelInfo info);
+        void onChannelMessage(MeshChannelMessage message);
+    }
+
+    public static final class MeshChannelInfo {
+        public final int index;
+        public final String name;
+
+        public MeshChannelInfo(int index, String name) {
+            this.index = index;
+            this.name = name;
+        }
+    }
+
+    public static final class MeshChannelMessage {
+        public final int channelIndex;
+        public final String text;
+        public final long receivedAtMs;
+        public final boolean outbound;
+        public final String statusText;
+        public final Integer snrQuarterDb;
+        public final Integer pathLen;
+        public final Integer senderTimestampSec;
+
+        public MeshChannelMessage(int channelIndex, String text, long receivedAtMs,
+                                  boolean outbound, String statusText,
+                                  Integer snrQuarterDb, Integer pathLen,
+                                  Integer senderTimestampSec) {
+            this.channelIndex = channelIndex;
+            this.text = text;
+            this.receivedAtMs = receivedAtMs;
+            this.outbound = outbound;
+            this.statusText = statusText;
+            this.snrQuarterDb = snrQuarterDb;
+            this.pathLen = pathLen;
+            this.senderTimestampSec = senderTimestampSec;
+        }
+    }
+
+    private static final class PendingChannelText {
+        final int channelIndex;
+        final String text;
+        final long queuedAtMs;
+
+        PendingChannelText(int channelIndex, String text, long queuedAtMs) {
+            this.channelIndex = channelIndex;
+            this.text = text;
+            this.queuedAtMs = queuedAtMs;
         }
     }
 
@@ -624,6 +684,62 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         repeaterAdvertListeners.remove(listener);
     }
 
+    public void addMeshChannelListener(MeshChannelListener listener) {
+        if (listener != null) {
+            meshChannelListeners.addIfAbsent(listener);
+        }
+    }
+
+    public void removeMeshChannelListener(MeshChannelListener listener) {
+        meshChannelListeners.remove(listener);
+    }
+
+    public Map<Integer, String> getKnownChannelNamesSnapshot() {
+        return new ConcurrentHashMap<>(meshChannelNamesByIndex);
+    }
+
+    public void requestAllChannelInfo() {
+        if (!connected.get()) {
+            return;
+        }
+        for (int i = 0; i < 8; i++) {
+            enqueueCommand(buildGetChannelInfoCommand(i));
+        }
+    }
+
+    public boolean sendChannelText(int channelIndex, String text) {
+        if (!connected.get()) {
+            return false;
+        }
+        if (text == null) {
+            return false;
+        }
+        String trimmed = text.trim();
+        if (trimmed.isEmpty()) {
+            return false;
+        }
+        synchronized (pendingChannelTextSends) {
+            pendingChannelTextSends.addLast(new PendingChannelText(
+                    Math.max(0, Math.min(7, channelIndex)),
+                    trimmed,
+                    System.currentTimeMillis()));
+            while (pendingChannelTextSends.size() > 64) {
+                pendingChannelTextSends.removeFirst();
+            }
+        }
+        enqueueCommand(buildSendChannelMessageCommand(channelIndex, trimmed));
+        notifyMeshChannelMessage(new MeshChannelMessage(
+                Math.max(0, Math.min(7, channelIndex)),
+                trimmed,
+                System.currentTimeMillis(),
+                true,
+                "queued",
+                null,
+                null,
+                null));
+        return true;
+    }
+
     public Boolean getMeshGpsEnabled() {
         return meshGpsEnabled;
     }
@@ -710,6 +826,24 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         for (RepeaterAdvertListener l : repeaterAdvertListeners) {
             try {
                 l.onRepeaterAdvert(advert);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void notifyMeshChannelInfo(MeshChannelInfo info) {
+        for (MeshChannelListener l : meshChannelListeners) {
+            try {
+                l.onChannelInfo(info);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void notifyMeshChannelMessage(MeshChannelMessage message) {
+        for (MeshChannelListener l : meshChannelListeners) {
+            try {
+                l.onChannelMessage(message);
             } catch (Exception ignored) {
             }
         }
@@ -1006,12 +1140,21 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             enqueueCommand(buildGetNextMessageCommand());
             return;
         }
+        if (t == PUSH_CODE_LOG_RX_DATA) {
+            handleLogRxData(pkt);
+            return;
+        }
+        if (t == PUSH_CODE_SEND_CONFIRMED) {
+            handleSendConfirmed(pkt);
+            return;
+        }
         if (t == PUSH_CODE_NEW_ADVERT || t == PUSH_CODE_ADVERT || t == RESP_CODE_CONTACT) {
+            if (t == PUSH_CODE_ADVERT) {
+                requestFullContactForAdvertRefresh(pkt);
+            }
             RepeaterAdvert advert = parseRepeaterAdvert(pkt);
             if (advert != null) {
-                if (t == PUSH_CODE_NEW_ADVERT) {
-                    maybeToastRepeaterDiscovery(advert);
-                }
+                maybeToastRepeaterDiscovery(advert);
                 notifyRepeaterAdvert(advert);
             }
             if (t == PUSH_CODE_NEW_ADVERT || t == PUSH_CODE_ADVERT) {
@@ -1030,6 +1173,19 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             message = extractContactText(pkt, true);
         }
         if (message != null) {
+            if (t == RESP_CHANNEL_MSG || t == RESP_CHANNEL_MSG_V3) {
+                ChannelMessageMeta meta = extractChannelMessageMeta(pkt, t == RESP_CHANNEL_MSG_V3);
+                String statusText = extractChannelStatusText(message);
+                notifyMeshChannelMessage(new MeshChannelMessage(
+                        meta.channelIndex,
+                        message,
+                        System.currentTimeMillis(),
+                        false,
+                        statusText,
+                        meta.snrQuarterDb,
+                        meta.pathLen,
+                        meta.senderTimestampSec));
+            }
             String routed = extractRoutableEnvelope(message);
             if (routed != null) {
                 handleMeshMessage(routed);
@@ -1073,6 +1229,28 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         }
     }
 
+    private void requestFullContactForAdvertRefresh(byte[] pkt) {
+        if (pkt == null || pkt.length < 33) {
+            return;
+        }
+        try {
+            String pubKeyHex = bytesToHex(pkt, 1, 32);
+            if (pubKeyHex.isEmpty()) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            Long last = contactQueryThrottleMsByPubKey.get(pubKeyHex);
+            if (last != null && (now - last) < 1500L) {
+                return;
+            }
+            contactQueryThrottleMsByPubKey.put(pubKeyHex, now);
+            enqueueCommand(buildGetContactByKeyCommand(pkt));
+            Log.d(TAG, "Advert refresh 0x80 → requesting full contact for pubkey=" + pubKeyHex);
+        } catch (Exception e) {
+            Log.w(TAG, "Failed to request full contact for advert refresh", e);
+        }
+    }
+
     private void maybeToastRepeaterDiscovery(RepeaterAdvert advert) {
         if (advert == null || context == null) {
             return;
@@ -1086,8 +1264,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         main.post(() -> {
             try {
                 String text = advert.hasValidPosition()
-                        ? "Repeater discovered: " + advert.name + " (position)"
-                        : "Repeater discovered: " + advert.name;
+                        ? "New repeater discovered, #" + advert.name
+                        : "New repeater discovered, #" + advert.name;
                 Toast.makeText(context, text, Toast.LENGTH_SHORT).show();
             } catch (Exception ignored) {
             }
@@ -1107,6 +1285,13 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             out[j++] = hex[v & 0x0F];
         }
         return new String(out);
+    }
+
+    private byte[] buildGetContactByKeyCommand(byte[] advertFrame) {
+        byte[] out = new byte[1 + 32];
+        out[0] = CMD_GET_CONTACT_BY_KEY;
+        System.arraycopy(advertFrame, 1, out, 1, 32);
+        return out;
     }
 
     private void logSelfInfo(byte[] pkt) {
@@ -1195,6 +1380,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         String raw = new String(pkt, 2, 32, StandardCharsets.UTF_8);
         int nul = raw.indexOf('\0');
         String name = (nul >= 0 ? raw.substring(0, nul) : raw).trim();
+        meshChannelNamesByIndex.put(idx, name);
+        notifyMeshChannelInfo(new MeshChannelInfo(idx, name));
         if (idx == ATAK_CHANNEL_INDEX) {
             Log.i(TAG, "ATAK channel slot " + idx + " name='" + name + "'");
         }
@@ -1221,10 +1408,202 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         }
     }
 
+    private void handleSendConfirmed(byte[] pkt) {
+        long tripMs = 0L;
+        try {
+            if (pkt != null && pkt.length >= 9) {
+                tripMs = ((long) ByteBuffer.wrap(pkt, 5, 4)
+                        .order(ByteOrder.LITTLE_ENDIAN).getInt()) & 0xffffffffL;
+            }
+        } catch (Exception ignored) {
+            tripMs = 0L;
+        }
+        PendingChannelText pending = null;
+        synchronized (pendingChannelTextSends) {
+            while (!pendingChannelTextSends.isEmpty()) {
+                PendingChannelText first = pendingChannelTextSends.removeFirst();
+                if ((System.currentTimeMillis() - first.queuedAtMs) <= 120_000L) {
+                    pending = first;
+                    break;
+                }
+            }
+        }
+        if (pending != null) {
+            String status = tripMs > 0L
+                    ? ("heard (repeat count pending, ack " + tripMs + "ms)")
+                    : "heard (repeat count pending)";
+            notifyMeshChannelMessage(new MeshChannelMessage(
+                    pending.channelIndex,
+                    pending.text,
+                    System.currentTimeMillis(),
+                    true,
+                    status,
+                    null,
+                    null,
+                    null));
+            Log.d(TAG, "TX confirm ch=" + pending.channelIndex + " tripMs=" + tripMs);
+        } else {
+            Log.d(TAG, "TX confirm with no pending channel text");
+        }
+    }
+
+    private void handleLogRxData(byte[] pkt) {
+        if (pkt == null || pkt.length < 4) {
+            return;
+        }
+        Integer repeats = extractRepeatsFromLogRawPacket(pkt, 3, pkt.length - 3);
+        if (repeats == null) {
+            return;
+        }
+        int snrQ = (int) pkt[1];
+        PendingChannelText pending = null;
+        synchronized (pendingChannelTextSends) {
+            long now = System.currentTimeMillis();
+            while (!pendingChannelTextSends.isEmpty()) {
+                PendingChannelText first = pendingChannelTextSends.peekFirst();
+                if (first == null) {
+                    pendingChannelTextSends.removeFirst();
+                    continue;
+                }
+                if ((now - first.queuedAtMs) > 20_000L) {
+                    pendingChannelTextSends.removeFirst();
+                    continue;
+                }
+                pending = pendingChannelTextSends.removeFirst();
+                break;
+            }
+        }
+        if (pending == null) {
+            return;
+        }
+        String status = "heard " + Math.max(0, repeats) + " repeats";
+        notifyMeshChannelMessage(new MeshChannelMessage(
+                pending.channelIndex,
+                pending.text,
+                System.currentTimeMillis(),
+                true,
+                status,
+                snrQ,
+                repeats,
+                null));
+        Log.d(TAG, "TX log-rx confirm ch=" + pending.channelIndex + " status=" + status
+                + " snrQ=" + snrQ);
+    }
+
+    private Integer extractRepeatsFromLogRawPacket(byte[] src, int offset, int len) {
+        if (src == null || len <= 1 || offset < 0 || (offset + len) > src.length) {
+            return null;
+        }
+        // Raw packet blob is mesh::Packet::writeTo(): [header][optional transport(4)][path_len][path...][payload...]
+        // Try both common layouts (with/without transport codes).
+        int[] pathLenOffsets = {1, 5};
+        for (int pathOff : pathLenOffsets) {
+            if (len <= pathOff) {
+                continue;
+            }
+            int idx = offset + pathOff;
+            int pathLen = src[idx] & 0xFF;
+            int hashCount = pathLen & 0x3F;
+            int hashSize = ((pathLen >> 6) & 0x03) + 1;
+            int pathBytes = hashCount * hashSize;
+            if (hashCount > 63) {
+                continue;
+            }
+            if (pathBytes < 0 || pathBytes > 64) {
+                continue;
+            }
+            if ((pathOff + 1 + pathBytes) > len) {
+                continue;
+            }
+            return hashCount;
+        }
+        return null;
+    }
+
     private String extractChannelText(byte[] pkt, boolean v3) {
         int off = v3 ? 11 : 8;
         if (pkt.length < off) return null;
         return new String(pkt, off, pkt.length - off, StandardCharsets.UTF_8);
+    }
+
+    private static final class ChannelMessageMeta {
+        final int channelIndex;
+        final Integer snrQuarterDb;
+        final Integer pathLen;
+        final Integer senderTimestampSec;
+
+        ChannelMessageMeta(int channelIndex, Integer snrQuarterDb, Integer pathLen,
+                           Integer senderTimestampSec) {
+            this.channelIndex = channelIndex;
+            this.snrQuarterDb = snrQuarterDb;
+            this.pathLen = pathLen;
+            this.senderTimestampSec = senderTimestampSec;
+        }
+    }
+
+    private ChannelMessageMeta extractChannelMessageMeta(byte[] pkt, boolean v3) {
+        if (pkt == null) {
+            return new ChannelMessageMeta(-1, null, null, null);
+        }
+        try {
+            if (v3) {
+                if (pkt.length < 11) {
+                    return new ChannelMessageMeta(-1, null, null, null);
+                }
+                int snrQ = (int) pkt[1];
+                int idx = pkt[4] & 0xFF;   // expected v3 layout
+                int path = pkt[5] & 0xFF;
+                int ts = ByteBuffer.wrap(pkt, 7, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
+                // Firmware variants can occasionally shift this layout.
+                // Fallback to legacy-style offsets if parsed index is invalid.
+                if (idx < 0 || idx > 7) {
+                    int altIdx = pkt[1] & 0xFF;
+                    int altPath = pkt.length > 2 ? (pkt[2] & 0xFF) : 0xFF;
+                    Integer altTs = null;
+                    if (pkt.length >= 8) {
+                        altTs = ByteBuffer.wrap(pkt, 4, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
+                    }
+                    if (altIdx >= 0 && altIdx <= 7) {
+                        idx = altIdx;
+                        path = altPath;
+                        ts = altTs != null ? altTs : ts;
+                    }
+                }
+                return new ChannelMessageMeta(
+                        (idx >= 0 && idx <= 7) ? idx : -1,
+                        snrQ,
+                        path == 0xFF ? null : path,
+                        ts);
+            } else {
+                if (pkt.length < 8) {
+                    return new ChannelMessageMeta(-1, null, null, null);
+                }
+                int idx = pkt[1] & 0xFF;
+                int path = pkt[2] & 0xFF;
+                int ts = ByteBuffer.wrap(pkt, 4, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
+                return new ChannelMessageMeta(
+                        (idx >= 0 && idx <= 7) ? idx : -1,
+                        null,
+                        path == 0xFF ? null : path,
+                        ts);
+            }
+        } catch (Exception ignored) {
+            return new ChannelMessageMeta(-1, null, null, null);
+        }
+    }
+
+    private String extractChannelStatusText(String text) {
+        if (text == null) {
+            return "";
+        }
+        String lower = text.toLowerCase(java.util.Locale.US);
+        int heard = lower.indexOf("heard");
+        int repeat = lower.indexOf("repeat");
+        if (heard >= 0 && repeat > heard) {
+            int end = Math.min(text.length(), repeat + "repeat".length() + 3);
+            return text.substring(heard, end).trim();
+        }
+        return "";
     }
 
     private String extractContactText(byte[] pkt, boolean v3) {

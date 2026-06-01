@@ -2965,19 +2965,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
             return;
         }
         String addr = device != null ? device.getAddress() : null;
-        if (scanForNewRadioOnly && device != null) {
-            int bondState = BluetoothDevice.BOND_NONE;
-            try {
-                bondState = device.getBondState();
-            } catch (Exception ignored) {
-            }
-            if (bondState != BluetoothDevice.BOND_NONE) {
-                final String display = resolveDeviceDisplayName(getMapView().getContext(), device);
-                getMapView().post(() ->
-                        appendLog("Skipping bonded radio during new-pair scan: " + display));
-                return;
-            }
-        }
         if (addr != null) {
             for (BluetoothDevice existing : foundDevices) {
                 if (existing != null && addr.equalsIgnoreCase(existing.getAddress())) {
@@ -2988,9 +2975,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         foundDevices.add(device);
         String name = device != null ? device.getName() : "Unknown";
         final String display = addr != null ? (name + " [" + addr + "]") : name;
-        getMapView().post(() -> {
-            appendLog("Found: " + display);
-        });
+        getMapView().post(() -> appendLog("Found: " + display));
     }
 
     @Override

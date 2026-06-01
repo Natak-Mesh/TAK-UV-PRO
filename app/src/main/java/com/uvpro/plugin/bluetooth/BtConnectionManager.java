@@ -138,7 +138,6 @@ public class BtConnectionManager {
         this.kissDecoder = new KissFrameDecoder();
         this.kissEncoder = new KissFrameEncoder();
         this.btAdapter = BluetoothAdapter.getDefaultAdapter();
-        registerBondReceiver();
     }
 
     public void setReconnectBlocker(ReconnectBlocker blocker) {
@@ -146,8 +145,10 @@ public class BtConnectionManager {
     }
 
     /**
-     * Scan for UV-PRO radios from both bonded and discoverable devices.
-     * This allows first-time pairing directly from the plugin UI.
+     * Scan for already-paired UV-PRO radios.
+     * Emits bonded radios immediately, then runs discovery to surface any
+     * bonded radios not yet cached by the adapter.
+     * Pairing must be done in Android Bluetooth settings before using Scan & Connect.
      */
     public void startScan() {
         if (btAdapter == null) {
@@ -170,8 +171,9 @@ public class BtConnectionManager {
             seenScanAddresses.clear();
         }
 
-        // Scan & Connect should prefer fresh pairing candidates from active discovery.
-        // Do not pre-populate with bonded radios (they can steal selection from new devices).
+        // Emit already-bonded UV-PRO radios immediately so the picker always
+        // shows paired radios even if discovery is slow or unavailable.
+        emitBondedRadioCandidates();
 
         registerDiscoveryReceiverIfNeeded();
         boolean started = false;
@@ -181,11 +183,24 @@ public class BtConnectionManager {
             Log.w(TAG, "startDiscovery failed", e);
         }
         if (!started) {
-            notifyError("Bluetooth discovery unavailable. Showing paired radios only.");
             notifyScanCompleteOnce();
             return;
         }
         scheduleScanTimeout();
+    }
+
+    private void emitBondedRadioCandidates() {
+        try {
+            Set<BluetoothDevice> bonded = btAdapter.getBondedDevices();
+            if (bonded == null) return;
+            for (BluetoothDevice device : bonded) {
+                if (isLikelyUvProDevice(device) && markSeenIfNew(device.getAddress())) {
+                    notifyDeviceFound(device);
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not enumerate bonded radios", e);
+        }
     }
 
     /** Stores a probe socket that connect() can reuse to avoid a double-connect. */
@@ -255,6 +270,7 @@ public class BtConnectionManager {
 
     /**
      * Connect to a specific Bluetooth device.
+     * The device must already be paired via Android Bluetooth settings.
      * Tries multiple socket strategies to handle various Android BT quirks.
      */
     public void connect(BluetoothDevice device) {
@@ -274,29 +290,14 @@ public class BtConnectionManager {
         shouldReconnect.set(true);
         reconnectAttempts = 0;
 
-        // If the radio is not paired yet, request bond and connect automatically
-        // once pairing succeeds.
         int bondState = BluetoothDevice.BOND_NONE;
         try {
             bondState = device.getBondState();
         } catch (Exception ignored) {
         }
         if (bondState != BluetoothDevice.BOND_BONDED) {
-            pendingBondDevice = device;
-            boolean requested = false;
-            try {
-                requested = device.createBond();
-            } catch (Exception e) {
-                Log.w(TAG, "createBond failed for " + resolveName(device), e);
-            }
-            if (requested || bondState == BluetoothDevice.BOND_BONDING) {
-                notifyError("Pairing requested for " + resolveName(device)
-                        + ". Accept the Bluetooth pair prompt.");
-                return;
-            }
-            notifyError("Pairing could not be started for " + resolveName(device));
+            notifyError(resolveName(device) + " is not paired. Pair it in Android Bluetooth settings first.");
             connecting.set(false);
-            pendingBondDevice = null;
             return;
         }
 
@@ -441,8 +442,7 @@ public class BtConnectionManager {
         connecting.set(false);
         connected.set(false);
         pendingBondDevice = null;
-        stopDiscoveryIfRunning();
-        cancelScanTimeout();
+        stopDiscoveryIfRunning();        cancelScanTimeout();
         cleanup();
         clearProbeSockets();
         notifyDisconnected("Connection attempt cancelled");
@@ -720,18 +720,19 @@ public class BtConnectionManager {
                     if (device == null || !isLikelyUvProDevice(device)) {
                         return;
                     }
+                    String address = device.getAddress();
+                    if (!markSeenIfNew(address)) {
+                        return;
+                    }
+                    // Only emit bonded radios — user must pair via Android BT settings.
                     int bondState = BluetoothDevice.BOND_NONE;
                     try {
                         bondState = device.getBondState();
                     } catch (Exception ignored) {
                     }
-                    if (bondState == BluetoothDevice.BOND_BONDED) {
-                        Log.d(TAG, "Ignoring bonded UV-PRO during scan: " + resolveName(device)
-                                + " [" + device.getAddress() + "]");
-                        return;
-                    }
-                    String address = device.getAddress();
-                    if (!markSeenIfNew(address)) {
+                    if (bondState != BluetoothDevice.BOND_BONDED) {
+                        Log.d(TAG, "Ignoring unpaired UV-PRO during scan (pair in Android BT settings): "
+                                + resolveName(device));
                         return;
                     }
                     notifyDeviceFound(device);

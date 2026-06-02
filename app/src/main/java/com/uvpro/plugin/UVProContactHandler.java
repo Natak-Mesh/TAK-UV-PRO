@@ -135,18 +135,20 @@ public class UVProContactHandler extends
                 return true;
             }
 
-            if (FileSystemUtils.isEquals(connectorType, GeoChatConnector.CONNECTOR_TYPE)) {
-                // Reachable: defer to ATAK's default GeoChatConnectorHandler.
-                return false;
+            if (FileSystemUtils.isEquals(connectorType, GeoChatConnector.CONNECTOR_TYPE)
+                    || FileSystemUtils.isEquals(connectorType, MeshSendMessageConnector.CONNECTOR_TYPE)) {
+                clearUnread(contactUID);
+                try {
+                    android.content.Intent markRead = new android.content.Intent(
+                            "com.atakmap.chat.markmessageread");
+                    markRead.putExtra("conversationId", contactUID);
+                    com.atakmap.android.ipc.AtakBroadcast.getInstance().sendBroadcast(markRead);
+                } catch (Exception ignored) {
+                }
+                ChatManagerMapComponent.getInstance().openConversation(ic, false);
+                Log.i("BTRelay", "Contact selected for chat: " + contactUID);
+                return true;
             }
-
-            // Open chat UI
-            ChatManagerMapComponent.getInstance().openConversation(
-                    ic, true);
-
-            // User is viewing this contact; clear unread badge.
-            clearUnread(contactUID);
-            Log.i("BTRelay", "Contact selected for chat: " + contactUID);
         }
 
         return true;
@@ -275,7 +277,7 @@ public class UVProContactHandler extends
                 contact.addConnector(new GeoChatConnector(
                         buildNativeConnectorSeed(contact.getName())));
             }
-            writeDefaultConnectorPref(contact.getUID(), MeshSendMessageConnector.CONNECTOR_TYPE);
+            writeDefaultConnectorPref(contact.getUID(), GeoChatConnector.CONNECTOR_TYPE);
             contact.dispatchChangeEvent();
         } catch (Exception e) {
             Log.w("UVPro.Handler", "applyMeshContactConnectors failed", e);
@@ -324,7 +326,7 @@ public class UVProContactHandler extends
     }
 
     private static NetConnectString buildNativeConnectorSeed(String callsign) {
-        NetConnectString ncs = new NetConnectString("stcp", "*", -1);
+        NetConnectString ncs = new NetConnectString("stcp", "127.0.0.1", 4242);
         if (callsign != null && !callsign.trim().isEmpty()) {
             ncs.setCallsign(callsign.trim().toUpperCase());
         }

@@ -32,6 +32,14 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
 
+### 2026-06-02 Progress Update (v1.9.60)
+
+- **Fixed contact icon revert to blue radio on inbound MESHCORE-* DM:** `UVProContactHandler.repairAtakPeerConnectorDefault` (new method) re-stamps `GeoChatConnector` as the default connector after `GeoChatService.onCotEvent` overwrites the preference. A 600ms delayed `dispatchChangeEvent` (main thread) refreshes the contacts-list icon to the chat bubble without triggering a duplicate message reload.
+- **Fixed double notification badge on MESHCORE-* contacts:** `getFeature(NotificationCount)` now returns 0 for all contacts. ATAK's `ContactConnectorManager` sums all registered handler results — returning a plugin count alongside ATAK's built-in `GeoChatConnectorHandler` produced "Geo Chat: 1 + Send Message: 1" = 2 badges. Native `GeoChatConnector` tracking is now the sole badge source.
+- **Fixed blue radio icon / broken tap action:** `applyMeshContactConnectors` now sets `GeoChatConnector` as the default (was `MeshSendMessageConnector`). `handleContact` intercepts both `GeoChatConnector` and `MeshSendMessageConnector` taps, sends `markmessageread` to clear the native badge, and calls `openConversation(ic, false)` to open the chat panel directly (was returning `false` for `GeoChatConnector` and calling `openConversation(true)` for `MeshSendMessageConnector`, both of which showed a contact card or did nothing).
+- **Fixed `ArrayIndexOutOfBoundsException` in NetConnectString:** `buildNativeConnectorSeed` now uses `127.0.0.1:4242` instead of `*:-1`. ATAK's `NetConnectString.isMulticast()` parser threw on the wildcard host, preventing conversation fragments from opening.
+- **`clearNativeGeoChatUnread` added to CotBridge:** Broadcasts `markmessageread` (300ms delayed, main thread) for MESHCORE-* senders after `GeoChatService.onCotEvent`, clearing ATAK's native unread count before the user sees it.
+
 ### 2026-06-01 Progress Update (v1.9.59)
 
 - **MeshCore position source controls:** Added a third source toggle, `Use Custom Node Position`, directly below `Use Meschore GPS for position`.

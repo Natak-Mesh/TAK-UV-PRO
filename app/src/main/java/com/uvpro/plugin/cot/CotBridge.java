@@ -194,6 +194,7 @@ public class CotBridge {
 
     /** Set after {@link ChatBridge} construction; used to send compact TYPE_CHAT with wire ACK ids. */
     private volatile ChatBridge chatBridge;
+    private volatile boolean wifiTransmitEnabled = true;
 
     private void markInboundInjectSkipOutboundRelay(String cotUid) {
         if (cotUid == null || cotUid.isEmpty()) return;
@@ -247,6 +248,10 @@ public class CotBridge {
 
     public void setChatBridge(ChatBridge chatBridge) {
         this.chatBridge = chatBridge;
+    }
+
+    public void setWifiTransmitEnabled(boolean enabled) {
+        wifiTransmitEnabled = enabled;
     }
 
     /**
@@ -2525,6 +2530,10 @@ public class CotBridge {
 
     public boolean dispatchRfPeerSaToTakNetwork(CotEvent event) {
         if (event == null) {
+            return false;
+        }
+        if (!wifiTransmitEnabled) {
+            Log.d(TAG, "RF -> TAK uplink suppressed (ATAK WiFi transmit disabled)");
             return false;
         }
         if (!isRfToTakUplinkEnabled()) {

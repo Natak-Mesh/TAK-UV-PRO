@@ -1265,6 +1265,27 @@
                     android:enabled="false" />
             </LinearLayout>
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingBottom="6dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Use Custom Node Position"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_mesh_use_custom_node_position"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
             <Button
                 android:id="@+id/btn_meshcore_set_node_position_map"
                 style="@style/UvproPillButton.Beacon"

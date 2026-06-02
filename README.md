@@ -32,6 +32,14 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
 
+### 2026-06-01 Progress Update (v1.9.59)
+
+- **MeshCore position source controls:** Added a third source toggle, `Use Custom Node Position`, directly below `Use Meschore GPS for position`.
+- **Dependent toggle gating:** `Use UNKNOWN location for position`, `Use Meschore GPS for position`, and `Use Custom Node Position` now all grey out when `Send Postion With Advert` is OFF, while preserving their stored ON/OFF values.
+- **Mutual exclusion for position source toggles:** Only one source toggle can be enabled at a time. Turning one ON automatically turns the other two OFF.
+- **Custom map position button gating:** `Set Node Position on Map` now follows `Use Custom Node Position` and is greyed out when that toggle is OFF.
+- **ATAK WiFi transmit enforcement + default OFF:** `ATAK WIFI Transmit` now actively controls RF->TAK uplink dispatch (disabled means no uplink send), and the default preference state is now OFF.
+
 ### 2026-06-01 Progress Update (v1.9.58)
 
 - **Silent iconset auto-install:** APRS and MeshCore iconsets now install automatically on first ATAK launch with no user interaction. The plugin stages the bundled zips to `/sdcard/atak/tools/import/` then sends the `com.atakmap.android.icons.ADD_ICONSET` broadcast directly to ATAK's `IconsMapAdapter`. No notification, no dialog, and no manual Point Dropper → Add Iconset step required. Install is idempotent — skipped if the iconset UID is already present in `iconsets.sqlite`.

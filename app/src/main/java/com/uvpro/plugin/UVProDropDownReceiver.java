@@ -175,6 +175,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
             "uvpro_mesh_use_gps_for_position";
     private static final String PREF_MESH_USE_CALLSIGN_LOCATION_FOR_POSITION =
             "uvpro_mesh_use_callsign_location_for_position";
+    private static final String PREF_MESH_USE_CUSTOM_NODE_POSITION =
+            "uvpro_mesh_use_custom_node_position";
     private static final String PREF_MESH_MAP_SET_POSITION_LAT =
             "uvpro_mesh_map_set_position_lat";
     private static final String PREF_MESH_MAP_SET_POSITION_LON =
@@ -284,6 +286,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Switch switchMeshEnableGps;
     private Switch switchMeshEnableGpsMeshcore;
     private Switch switchMeshUseCallsignLocation;
+    private Switch switchMeshUseCustomNodePosition;
     private TextView textMeshUseCallsignLocation;
 
     private TextView favoritesLabel;
@@ -367,7 +370,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private boolean pendingOpenToChannelControl = false;
     private boolean meshConnected = false;
     private boolean meshTransmitEnabled = false;
-    private boolean wifiTransmitEnabled = true;
+    private boolean wifiTransmitEnabled = false;
     private boolean suppressTransportSwitchCallbacks = false;
     private Boolean meshGpsEnabledState = null;
     private boolean meshGpsEnableRequested = false;
@@ -636,6 +639,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     public void setCotBridge(CotBridge cotBridge) {
         this.cotBridge = cotBridge;
+        if (this.cotBridge != null) {
+            this.cotBridge.setWifiTransmitEnabled(wifiTransmitEnabled);
+        }
         applyActiveTransmitTransport();
     }
 
@@ -890,6 +896,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         switchWifiTransmit = rootView.findViewById(getId("switch_wifi_transmit"));
         switchMeshEnableGps = rootView.findViewById(getId("switch_mesh_enable_gps"));
         switchMeshEnableGpsMeshcore = rootView.findViewById(getId("switch_mesh_enable_gps_meshcore"));
+        switchMeshUseCustomNodePosition = rootView.findViewById(
+                getId("switch_mesh_use_custom_node_position"));
         switchAugmentGpsFromMeshcore = rootView.findViewById(getId("switch_augment_gps_from_meshcore"));
         rowAugmentGpsFromMeshcore = rootView.findViewById(getId("row_augment_gps_from_meshcore"));
 
@@ -986,6 +994,16 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 if (suppressMeshGpsSwitchCallbacks || !buttonView.isPressed()) {
                     return;
                 }
+                if (isChecked) {
+                    setMeshUseCallsignLocationPreference(false);
+                    if (switchMeshUseCallsignLocation != null) {
+                        switchMeshUseCallsignLocation.setChecked(false);
+                    }
+                    setMeshUseCustomNodePositionPreference(false);
+                    if (switchMeshUseCustomNodePosition != null) {
+                        switchMeshUseCustomNodePosition.setChecked(false);
+                    }
+                }
                 onMeshGpsToggleChanged(isChecked);
             });
         }
@@ -1060,6 +1078,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 if (!buttonView.isPressed()) {
                     return;
                 }
+                if (isChecked) {
+                    setMeshUseCustomNodePositionPreference(false);
+                    if (switchMeshUseCustomNodePosition != null) {
+                        switchMeshUseCustomNodePosition.setChecked(false);
+                    }
+                    forceDisableMeshGpsPositionSource();
+                }
                 setMeshUseCallsignLocationPreference(isChecked);
                 appendLog(isChecked
                         ? "Node advert position source: ATAK callsign location (dynamic)."
@@ -1071,6 +1096,25 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 if (isChecked) {
                     pushPhoneLocationToMeshNodeIfNeeded(true);
                 }
+            });
+        }
+        if (switchMeshUseCustomNodePosition != null) {
+            switchMeshUseCustomNodePosition.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (!buttonView.isPressed()) {
+                    return;
+                }
+                if (isChecked) {
+                    setMeshUseCallsignLocationPreference(false);
+                    if (switchMeshUseCallsignLocation != null) {
+                        switchMeshUseCallsignLocation.setChecked(false);
+                    }
+                    forceDisableMeshGpsPositionSource();
+                }
+                setMeshUseCustomNodePositionPreference(isChecked);
+                updateMeshGpsControlsUi();
+                appendLog(isChecked
+                        ? "Custom node position controls enabled."
+                        : "Custom node position controls disabled.");
             });
         }
 
@@ -3095,9 +3139,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnMeshDisconnect != null) {
             btnMeshDisconnect.setEnabled(connected);
         }
-        if (btnMeshcoreSetNodePositionMap != null) {
-            btnMeshcoreSetNodePositionMap.setEnabled(connected);
-        }
         updateMeshScanButtonText();
         updateMeshGpsControlsUi();
         scheduleMeshGpsAugmentTick();
@@ -3106,13 +3147,23 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void updateMeshGpsControlsUi() {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        boolean advertPositionEnabled = meshSendPositionWithAdvertRequested
+                || Boolean.TRUE.equals(meshSendPositionWithAdvertState);
+        boolean customNodePositionEnabled = isMeshUseCustomNodePositionPreferenceEnabled(ctx);
         if (switchMeshEnableGpsMeshcore != null) {
             suppressMeshGpsSwitchCallbacks = true;
             try {
                 boolean gpsCapabilityKnown = meshGpsEnabledState != null;
-                switchMeshEnableGpsMeshcore.setEnabled(meshConnected && gpsCapabilityKnown);
-                switchMeshEnableGpsMeshcore.setAlpha(
-                        (meshConnected && gpsCapabilityKnown) ? 1f : 0.45f);
+                boolean meshGpsToggleEnabled = meshConnected
+                        && gpsCapabilityKnown
+                        && advertPositionEnabled;
+                switchMeshEnableGpsMeshcore.setEnabled(meshGpsToggleEnabled);
+                switchMeshEnableGpsMeshcore.setAlpha(meshGpsToggleEnabled ? 1f : 0.45f);
+                View meshGpsRow = (View) switchMeshEnableGpsMeshcore.getParent();
+                if (meshGpsRow != null) {
+                    meshGpsRow.setAlpha(meshGpsToggleEnabled ? 1f : 0.55f);
+                }
                 switchMeshEnableGpsMeshcore.setChecked(
                         gpsCapabilityKnown
                                 && (meshGpsEnableRequested
@@ -3133,7 +3184,30 @@ public class UVProDropDownReceiver extends DropDownReceiver
             }
         }
         if (switchMeshUseCallsignLocation != null) {
-            switchMeshUseCallsignLocation.setEnabled(meshConnected);
+            boolean callsignToggleEnabled = meshConnected && advertPositionEnabled;
+            switchMeshUseCallsignLocation.setEnabled(callsignToggleEnabled);
+            switchMeshUseCallsignLocation.setAlpha(callsignToggleEnabled ? 1f : 0.45f);
+            View callsignRow = (View) switchMeshUseCallsignLocation.getParent();
+            if (callsignRow != null) {
+                callsignRow.setAlpha(callsignToggleEnabled ? 1f : 0.55f);
+            }
+        }
+        if (switchMeshUseCustomNodePosition != null) {
+            boolean customNodeToggleEnabled = meshConnected && advertPositionEnabled;
+            switchMeshUseCustomNodePosition.setEnabled(customNodeToggleEnabled);
+            switchMeshUseCustomNodePosition.setAlpha(customNodeToggleEnabled ? 1f : 0.45f);
+            switchMeshUseCustomNodePosition.setChecked(customNodePositionEnabled);
+            View customNodeRow = (View) switchMeshUseCustomNodePosition.getParent();
+            if (customNodeRow != null) {
+                customNodeRow.setAlpha(customNodeToggleEnabled ? 1f : 0.55f);
+            }
+        }
+        boolean customNodePositionActionsEnabled = meshConnected
+                && advertPositionEnabled
+                && customNodePositionEnabled;
+        if (btnMeshcoreSetNodePositionMap != null) {
+            btnMeshcoreSetNodePositionMap.setEnabled(customNodePositionActionsEnabled);
+            btnMeshcoreSetNodePositionMap.setAlpha(customNodePositionActionsEnabled ? 1f : 0.45f);
         }
         boolean meshGpsOn = meshGpsEnableRequested || Boolean.TRUE.equals(meshGpsEnabledState);
         boolean gpsDrivenActionsEnabled = meshConnected && meshGpsOn;
@@ -3178,6 +3252,24 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
     }
 
+    private void forceDisableMeshGpsPositionSource() {
+        meshGpsEnableRequested = false;
+        meshGpsEnabledState = Boolean.FALSE;
+        setMeshUseGpsForPositionPreference(false);
+        if (switchMeshEnableGpsMeshcore != null) {
+            suppressMeshGpsSwitchCallbacks = true;
+            try {
+                switchMeshEnableGpsMeshcore.setChecked(false);
+            } finally {
+                suppressMeshGpsSwitchCallbacks = false;
+            }
+        }
+        if (meshBtManager != null && meshBtManager.isConnected()) {
+            meshBtManager.setMeshGpsEnabled(false);
+            meshBtManager.queryMeshGpsEnabled();
+        }
+    }
+
     private void syncTransmitSwitchesUi() {
         suppressTransportSwitchCallbacks = true;
         try {
@@ -3208,6 +3300,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private void setWifiTransmitEnabled(boolean enabled, boolean logChange) {
         wifiTransmitEnabled = enabled;
         setWifiTransmitPreference(enabled);
+        if (cotBridge != null) {
+            cotBridge.setWifiTransmitEnabled(enabled);
+        }
         syncTransmitSwitchesUi();
         if (logChange) {
             appendLog(enabled
@@ -3615,6 +3710,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
             switchMeshUseCallsignLocation.setChecked(
                     isMeshUseCallsignLocationPreferenceEnabled(ctx));
         }
+        if (switchMeshUseCustomNodePosition != null) {
+            switchMeshUseCustomNodePosition.setChecked(
+                    isMeshUseCustomNodePositionPreferenceEnabled(ctx));
+        }
         if (isMeshUseCallsignLocationPreferenceEnabled(ctx)
                 || (meshGpsEnableRequested || Boolean.TRUE.equals(meshGpsEnabledState))) {
             removeMeshNodeMapPositionMarker(true);
@@ -3808,6 +3907,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
         return prefs.getBoolean(PREF_MESH_USE_CALLSIGN_LOCATION_FOR_POSITION, false);
     }
 
+    private boolean isMeshUseCustomNodePositionPreferenceEnabled(Context ctx) {
+        if (ctx == null) {
+            return true;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        return prefs.getBoolean(PREF_MESH_USE_CUSTOM_NODE_POSITION, true);
+    }
+
     private void setMeshUseCallsignLocationPreference(boolean enabled) {
         Context ctx = getMapView() != null ? getMapView().getContext() : null;
         if (ctx == null) {
@@ -3815,6 +3922,15 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
         prefs.edit().putBoolean(PREF_MESH_USE_CALLSIGN_LOCATION_FOR_POSITION, enabled).apply();
+    }
+
+    private void setMeshUseCustomNodePositionPreference(boolean enabled) {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+        prefs.edit().putBoolean(PREF_MESH_USE_CUSTOM_NODE_POSITION, enabled).apply();
     }
 
     private void setMeshMapSetPosition(Context ctx, com.atakmap.coremap.maps.coords.GeoPoint gp) {
@@ -3880,10 +3996,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private boolean isWifiTransmitPreferenceEnabled(Context ctx) {
         if (ctx == null) {
-            return true;
+            return false;
         }
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
-        return prefs.getBoolean(PREF_ATAK_WIFI_TRANSMIT, true);
+        return prefs.getBoolean(PREF_ATAK_WIFI_TRANSMIT, false);
     }
 
     private void setWifiTransmitPreference(boolean enabled) {

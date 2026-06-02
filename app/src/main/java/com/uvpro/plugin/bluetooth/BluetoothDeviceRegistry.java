@@ -162,6 +162,15 @@ public final class BluetoothDeviceRegistry {
         }
     }
 
+    /** Clear all device records and connect targets from prefs. */
+    public static void clearAll(Context context) {
+        synchronized (BluetoothDeviceRegistry.class) {
+            saveAll(context, new java.util.ArrayList<>());
+            setConnectTargetAddress(context, "");
+            setMeshConnectTargetAddress(context, "");
+        }
+    }
+
     public static void remove(Context context, @NonNull String address) {
         String norm = normalizeAddress(address);
         synchronized (BluetoothDeviceRegistry.class) {

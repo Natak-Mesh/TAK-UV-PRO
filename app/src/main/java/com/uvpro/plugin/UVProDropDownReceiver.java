@@ -1,6 +1,8 @@
 package com.uvpro.plugin;
 
 import android.app.AlertDialog;
+import com.uvpro.plugin.bluetooth.MeshBluetoothForgetAll;
+import com.uvpro.plugin.bluetooth.MeshBleDeviceMatcher;
 import android.animation.ArgbEvaluator;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
@@ -1360,6 +1362,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
             appendLog("MeshCore transport unavailable");
             return;
         }
+        // User is taking manual control — cancel any background auto-connect timeout.
+        meshBtManager.cancelAutoConnectTimeout();
         if (meshBtManager.isConnected()) {
             appendLog("MeshCore already connected");
             updateMeshConnectionUI(true, meshBtManager.getConnectedDeviceName());
@@ -3279,34 +3283,103 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private void showMeshDevicePicker() {
         if (meshFoundDevices.isEmpty()) {
             appendLog("No MeshCore devices found");
+            meshBtManager.endScanPickerSession();
             return;
         }
         Context ctx = getMapView().getContext();
 
-        final String[] names = new String[meshFoundDevices.size()];
-        for (int i = 0; i < meshFoundDevices.size(); i++) {
-            names[i] = resolveDeviceDisplayName(ctx, meshFoundDevices.get(i));
+        final int count = meshFoundDevices.size();
+        final String[] names = new String[count];
+        final int[] dotColors = new int[count];
+        final int DOT_UNSEEN = 0xFFAAAAAA;   // grey
+        final int DOT_AVAILABLE = 0xFF4CAF50; // green
+        final int DOT_BUSY = 0xFFF44336;      // red
+
+        for (int i = 0; i < count; i++) {
+            BluetoothDevice dev = meshFoundDevices.get(i);
+            names[i] = resolveDeviceDisplayName(ctx, dev);
+            dotColors[i] = meshBtManager.isLiveScanDevice(dev) ? DOT_UNSEEN : DOT_UNSEEN;
         }
+
+        android.widget.ArrayAdapter<String> adapter = new android.widget.ArrayAdapter<String>(
+                ctx, android.R.layout.select_dialog_singlechoice, names) {
+            @Override
+            public android.view.View getView(int pos, android.view.View convertView,
+                                             android.view.ViewGroup parent) {
+                android.view.View v = super.getView(pos, convertView, parent);
+                android.widget.TextView tv = v instanceof android.widget.TextView
+                        ? (android.widget.TextView) v
+                        : v.findViewById(android.R.id.text1);
+                if (tv != null) {
+                    int color = dotColors[pos];
+                    android.graphics.drawable.GradientDrawable dot =
+                            new android.graphics.drawable.GradientDrawable();
+                    dot.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+                    dot.setColor(color);
+                    int dp8 = (int) (8 * ctx.getResources().getDisplayMetrics().density);
+                    dot.setSize(dp8, dp8);
+                    tv.setCompoundDrawablesWithIntrinsicBounds(dot, null, null, null);
+                    tv.setCompoundDrawablePadding(dp8);
+                }
+                return v;
+            }
+        };
+
         try {
-            new AlertDialog.Builder(ctx)
+            android.app.AlertDialog dialog = new android.app.AlertDialog.Builder(ctx)
                     .setTitle("Select MeshCore")
-                    .setItems(names, (dialog, which) -> {
-                        if (which < 0 || which >= meshFoundDevices.size()) {
-                            return;
-                        }
+                    .setAdapter(adapter, (d, which) -> {
+                        if (which < 0 || which >= meshFoundDevices.size()) return;
                         BluetoothDevice selected = meshFoundDevices.get(which);
-                        BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx, selected.getAddress());
+                        BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx,
+                                selected.getAddress());
                         appendLog("Connecting MeshCore to " + names[which] + "...");
                         updateMeshScanButtonText();
                         startMeshConnectButtonPulse();
-                        meshBtManager.connect(selected);
+                        meshBtManager.connectUserSelected(selected);
                     })
-                    .setNegativeButton("Cancel", null)
+                    .setNeutralButton("Forget All", (d, w) -> onMeshForgetAllClicked())
+                    .setNegativeButton("Cancel", (d, w) -> meshBtManager.endScanPickerSession())
+                    .setOnCancelListener(d -> meshBtManager.endScanPickerSession())
                     .show();
+
+            // Kick off availability probes for each device
+            meshBtManager.prepareForAvailabilityProbes();
+            for (int i = 0; i < count; i++) {
+                final int idx = i;
+                BluetoothDevice dev = meshFoundDevices.get(i);
+                if (!meshBtManager.isLiveScanDevice(dev)) {
+                    dotColors[idx] = DOT_UNSEEN;
+                    adapter.notifyDataSetChanged();
+                }
+                meshBtManager.probeDeviceAvailabilityForPicker(dev, availability ->
+                        getMapView().post(() -> {
+                            dotColors[idx] = (availability == MeshBtConnectionManager.AVAIL_AVAILABLE)
+                                    ? DOT_AVAILABLE : DOT_BUSY;
+                            adapter.notifyDataSetChanged();
+                        }));
+            }
         } catch (Exception e) {
             Log.e(TAG, "Error showing MeshCore picker", e);
             appendLog("Error showing MeshCore picker");
+            meshBtManager.endScanPickerSession();
         }
+    }
+
+    private void onMeshForgetAllClicked() {
+        Context ctx = getMapView().getContext();
+        android.bluetooth.BluetoothAdapter adapter =
+                android.bluetooth.BluetoothAdapter.getDefaultAdapter();
+        MeshBluetoothForgetAll.Result result =
+                MeshBluetoothForgetAll.forgetAll(ctx, adapter);
+        appendLog("MeshCore registry cleared (" + result.registryEntriesCleared + " entries).");
+        if (result.needsAndroidSettingsReminder()) {
+            appendLog("Some devices could not be unpaired automatically. "
+                    + "Remove them in Android Bluetooth settings if needed.");
+        }
+        meshBtManager.endScanPickerSession();
+        refreshFavoriteStrip();
+        updateMeshScanButtonText();
     }
 
     private void updateContactCount() {

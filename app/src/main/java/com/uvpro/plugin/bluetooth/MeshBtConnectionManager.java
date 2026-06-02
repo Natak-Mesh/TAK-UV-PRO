@@ -135,6 +135,28 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private final AtomicLong lastIoActivityMs = new AtomicLong(0L);
     private final AtomicInteger outboundMsgId = new AtomicInteger(1);
 
+    /** True while the Scan & Connect picker is open — all background auto-connects are blocked. */
+    private final AtomicBoolean scanPickerSessionActive = new AtomicBoolean(false);
+    /** One-shot: ensures boot auto-connect only runs once per process launch. */
+    private final AtomicBoolean savedTargetAutoConnectAttempted = new AtomicBoolean(false);
+    /** Incremented when Scan & Connect starts; stale auto-connect probe callbacks are ignored. */
+    private final AtomicInteger autoConnectGeneration = new AtomicInteger(0);
+    /** True only while connecting from an explicit picker row tap. */
+    private final AtomicBoolean userInitiatedConnect = new AtomicBoolean(false);
+    /** Addresses seen during the current live BLE scan (used for availability dot logic). */
+    private final Set<String> liveScanAddresses = new HashSet<>();
+
+    /** Availability result constants. */
+    public static final int AVAIL_AVAILABLE = BleMeshAvailabilityProber.AVAILABLE;
+    public static final int AVAIL_BUSY = BleMeshAvailabilityProber.BUSY;
+
+    /** Callback for availability probe results. */
+    public interface AvailabilityCallback {
+        void onResult(int availability);
+    }
+
+    private final BleMeshAvailabilityProber availabilityProber = new BleMeshAvailabilityProber();
+
     private final CopyOnWriteArrayList<ConnectionListener> listeners =
             new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<RawDataListener> rawDataListeners =
@@ -177,6 +199,23 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private volatile int cachedMultiAcks = 0;
     private int reconnectAttempts = 0;
     private static final int MAX_RECONNECT_ATTEMPTS = 5;
+    private Runnable autoConnectTimeoutRunnable = null;
+    private Runnable bootAutoConnectRunnable = null;
+
+    /** Named reconnect runnable so it can be cancelled by prepareForUserScan(). */
+    private final Runnable reconnectRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (scanPickerSessionActive.get()) {
+                Log.d(TAG, "Reconnect skipped: scan/picker session active");
+                return;
+            }
+            if (shouldReconnect.get() && !connected.get() && !connecting.get()
+                    && lastDevice != null) {
+                connectInternal(lastDevice);
+            }
+        }
+    };
 
     private final HandlerThread ioThread = new HandlerThread("UVPro-MeshBLE-IO");
     private Handler ioHandler;
@@ -397,6 +436,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     @Override
     public void startScan() {
+        prepareForUserScan();
         if (btAdapter == null) {
             notifyError("Bluetooth not available on this device");
             return;
@@ -415,7 +455,11 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         synchronized (seenScanAddresses) {
             seenScanAddresses.clear();
         }
+        synchronized (liveScanAddresses) {
+            liveScanAddresses.clear();
+        }
         emitBondedMeshCandidates();
+        emitRegistryMeshCandidates();
 
         bleScanner = btAdapter.getBluetoothLeScanner();
         if (bleScanner == null) {
@@ -430,7 +474,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             public void onScanResult(int callbackType, ScanResult result) {
                 BluetoothDevice device = result.getDevice();
                 if (device != null) {
-                    if (!isLikelyMeshDevice(result, device)) {
+                    if (!MeshBleDeviceMatcher.isMeshDevice(context, result, device)) {
                         return;
                     }
                     String address = device.getAddress();
@@ -441,6 +485,9 @@ public class MeshBtConnectionManager extends BtConnectionManager {
                                 seenScanAddresses.add(address);
                                 isNew = true;
                             }
+                        }
+                        synchronized (liveScanAddresses) {
+                            liveScanAddresses.add(address);
                         }
                     } else {
                         isNew = true;
@@ -460,7 +507,6 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             }
         };
         try {
-            // Use broad BLE scan so first-time/unpaired Mesh devices are discoverable.
             bleScanner.startScan(null, settings, scanCallback);
             ioHandler.postDelayed(() -> {
                 stopScanInternal();
@@ -477,18 +523,12 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     }
 
     private void emitBondedMeshCandidates() {
-        if (btAdapter == null) {
-            return;
-        }
+        if (btAdapter == null) return;
         try {
             Set<BluetoothDevice> bonded = btAdapter.getBondedDevices();
-            if (bonded == null || bonded.isEmpty()) {
-                return;
-            }
+            if (bonded == null || bonded.isEmpty()) return;
             for (BluetoothDevice device : bonded) {
-                if (device == null || !isLikelyMeshDevice(null, device)) {
-                    continue;
-                }
+                if (device == null || !MeshBleDeviceMatcher.isMeshDevice(context, device)) continue;
                 String address = device.getAddress();
                 boolean isNew = false;
                 if (address != null && !address.isEmpty()) {
@@ -501,12 +541,42 @@ public class MeshBtConnectionManager extends BtConnectionManager {
                 } else {
                     isNew = true;
                 }
-                if (isNew) {
-                    notifyDeviceFound(device);
-                }
+                if (isNew) notifyDeviceFound(device);
             }
         } catch (Exception e) {
             Log.w(TAG, "Could not enumerate bonded mesh devices", e);
+        }
+    }
+
+    private void emitRegistryMeshCandidates() {
+        try {
+            for (BluetoothDeviceRegistry.BtDeviceRecord r :
+                    BluetoothDeviceRegistry.getAllSortedForDisplay(context)) {
+                if (r == null || r.address == null || r.address.isEmpty()) continue;
+                String addr = r.address;
+                boolean isNew;
+                synchronized (seenScanAddresses) {
+                    isNew = !seenScanAddresses.contains(addr);
+                    if (isNew) seenScanAddresses.add(addr);
+                }
+                if (!isNew) continue;
+                try {
+                    BluetoothDevice device = btAdapter.getRemoteDevice(addr);
+                    if (device != null) notifyDeviceFound(device);
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "emitRegistryMeshCandidates failed", e);
+        }
+    }
+
+    /** Returns true if the device was seen during the current live BLE scan. */
+    public boolean isLiveScanDevice(BluetoothDevice device) {
+        if (device == null) return false;
+        String addr = device.getAddress();
+        if (addr == null) return false;
+        synchronized (liveScanAddresses) {
+            return liveScanAddresses.contains(addr);
         }
     }
 
@@ -564,7 +634,26 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     @Override
     public void connect(BluetoothDevice device) {
+        if (scanPickerSessionActive.get()) {
+            Log.i(TAG, "connect() ignored during scan/picker session (use connectUserSelected)");
+            return;
+        }
+        connectInternal(device);
+    }
+
+    /** Called from picker row taps — sets userInitiatedConnect flag and ends picker session. */
+    public void connectUserSelected(BluetoothDevice device) {
+        userInitiatedConnect.set(true);
+        endScanPickerSession();
+        connectInternal(device);
+    }
+
+    private void connectInternal(BluetoothDevice device) {
         if (device == null) return;
+        if (scanPickerSessionActive.get() && !userInitiatedConnect.get()) {
+            Log.i(TAG, "connectInternal blocked during scan/picker session");
+            return;
+        }
         stopScanInternal();
         if (connected.get()) {
             disconnect();
@@ -589,8 +678,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
                 Log.w(TAG, "createBond failed", e);
             }
             if (requested || bondState == BluetoothDevice.BOND_BONDING) {
-                notifyError("Pairing requested for " + resolveName(device)
-                        + ". Accept the Bluetooth pair prompt.");
+                notifyError(MeshBleDeviceMatcher.pairingHintMessage(device));
             } else {
                 notifyError("Pairing not initiated for " + resolveName(device)
                         + ". Attempting BLE connect...");
@@ -603,10 +691,181 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     @Override
     public void connectToLastDevice() {
+        if (scanPickerSessionActive.get()) {
+            Log.i(TAG, "connectToLastDevice skipped: scan/picker session active");
+            return;
+        }
         if (lastDevice != null) {
             connect(lastDevice);
         } else {
             startScan();
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Session management
+    // -------------------------------------------------------------------------
+
+    /**
+     * Called when the user taps Scan & Connect — aggressively stops all background auto-connect,
+     * reconnect, and probing activity so the picker has exclusive control.
+     */
+    public void prepareForUserScan() {
+        Log.i(TAG, "prepareForUserScan: Scan & Connect — blocking auto-connect");
+        scanPickerSessionActive.set(true);
+        autoConnectGeneration.incrementAndGet();
+        cancelBootAutoConnect();
+        cancelAutoConnectTimeout();
+        cancelPendingReconnect();
+        availabilityProber.cancelAll();
+        shouldReconnect.set(false);
+        reconnectAttempts = 0;
+        pendingBondDevice = null;
+        userInitiatedConnect.set(false);
+        if (connecting.get() || gatt != null) {
+            Log.i(TAG, "prepareForUserScan: aborting in-flight BLE connection");
+            connecting.set(false);
+            connected.set(false);
+            ioHandler.removeCallbacks(periodicMessagePoll);
+            ioHandler.post(this::closeGattInternal);
+        }
+    }
+
+    /** Call when the picker is dismissed or a device is selected. */
+    public void endScanPickerSession() {
+        scanPickerSessionActive.set(false);
+    }
+
+    public boolean isScanPickerSessionActive() {
+        return scanPickerSessionActive.get();
+    }
+
+    private void cancelPendingReconnect() {
+        ioHandler.removeCallbacks(reconnectRunnable);
+    }
+
+    // -------------------------------------------------------------------------
+    // Boot auto-connect
+    // -------------------------------------------------------------------------
+
+    /**
+     * Schedule a one-shot boot auto-connect attempt after a short startup delay.
+     * Cancelled immediately if the user opens Scan & Connect.
+     */
+    public void scheduleBootAutoConnect() {
+        cancelBootAutoConnect();
+        bootAutoConnectRunnable = () -> {
+            bootAutoConnectRunnable = null;
+            tryAutoConnectToSavedTarget();
+        };
+        ioHandler.postDelayed(bootAutoConnectRunnable, 2500L);
+    }
+
+    public void cancelBootAutoConnect() {
+        if (bootAutoConnectRunnable != null) {
+            ioHandler.removeCallbacks(bootAutoConnectRunnable);
+            bootAutoConnectRunnable = null;
+        }
+    }
+
+    /** Probe the saved target and silently connect if available. */
+    public void tryAutoConnectToSavedTarget() {
+        if (scanPickerSessionActive.get()) {
+            Log.i(TAG, "tryAutoConnectToSavedTarget: scan/picker active — skipping");
+            return;
+        }
+        if (connected.get() || connecting.get()) {
+            return;
+        }
+        if (!savedTargetAutoConnectAttempted.compareAndSet(false, true)) {
+            Log.d(TAG, "tryAutoConnectToSavedTarget: already attempted this session");
+            return;
+        }
+        if (!checkBtPermissions()) {
+            Log.i(TAG, "tryAutoConnectToSavedTarget: no BT permissions yet");
+            return;
+        }
+        String tgt = BluetoothDeviceRegistry.getMeshConnectTargetAddress(context);
+        if (tgt == null || tgt.isEmpty()) {
+            Log.d(TAG, "tryAutoConnectToSavedTarget: no saved mesh target");
+            return;
+        }
+        BluetoothDevice device;
+        try {
+            device = btAdapter != null ? btAdapter.getRemoteDevice(tgt) : null;
+        } catch (Exception e) {
+            Log.w(TAG, "tryAutoConnectToSavedTarget: bad address " + tgt, e);
+            return;
+        }
+        if (device == null) return;
+        final int probeGeneration = autoConnectGeneration.get();
+        Log.i(TAG, "Boot auto-connect: probing " + tgt);
+        scheduleAutoConnectTimeout(30_000);
+        AvailabilityCallback onProbeResult = availability -> {
+            if (probeGeneration != autoConnectGeneration.get()) {
+                Log.i(TAG, "Boot probe result stale — Scan & Connect started, ignoring");
+                cancelAutoConnectTimeout();
+                return;
+            }
+            if (availability == AVAIL_AVAILABLE) {
+                if (!scanPickerSessionActive.get() && !connected.get()) {
+                    Log.i(TAG, "Boot auto-connect: connecting to " + tgt);
+                    connectInternal(device);
+                }
+            } else {
+                cancelAutoConnectTimeout();
+                Log.i(TAG, "Boot auto-connect: target not available");
+            }
+        };
+        if (isSafeForAvailabilityProbe(device)) {
+            probeDeviceAvailability(device, onProbeResult);
+        } else {
+            probeDeviceAvailabilityLight(device, onProbeResult);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Availability probing
+    // -------------------------------------------------------------------------
+
+    public boolean isSafeForAvailabilityProbe(BluetoothDevice device) {
+        if (device == null) return false;
+        try {
+            return device.getBondState() == BluetoothDevice.BOND_BONDED;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public void prepareForAvailabilityProbes() {
+        availabilityProber.cancelAll();
+    }
+
+    public void cancelAvailabilityProbes() {
+        availabilityProber.cancelAll();
+    }
+
+    public void probeDeviceAvailability(BluetoothDevice device, AvailabilityCallback callback) {
+        availabilityProber.probe(context, ioHandler, device,
+                availability -> callback.onResult(availability));
+    }
+
+    public void probeDeviceAvailabilityLight(BluetoothDevice device,
+                                             AvailabilityCallback callback) {
+        availabilityProber.probeLight(context, ioHandler, device,
+                availability -> callback.onResult(availability));
+    }
+
+    /**
+     * Uses full probe for bonded devices (accurate busy detection) and light probe for
+     * unbonded devices (shows green without triggering pairing dialog).
+     */
+    public void probeDeviceAvailabilityForPicker(BluetoothDevice device,
+                                                 AvailabilityCallback callback) {
+        if (isSafeForAvailabilityProbe(device)) {
+            probeDeviceAvailability(device, callback);
+        } else {
+            probeDeviceAvailabilityLight(device, callback);
         }
     }
 
@@ -630,6 +889,10 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     @Override
     public void cancelConnectionAttempts() {
+        cancelAutoConnectTimeout();
+        cancelBootAutoConnect();
+        cancelPendingReconnect();
+        userInitiatedConnect.set(false);
         shouldReconnect.set(false);
         reconnectAttempts = 0;
         connecting.set(false);
@@ -645,6 +908,34 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             closeGattInternal();
         });
         notifyDisconnected("Connection attempt cancelled");
+    }
+
+    /**
+     * Schedule a hard stop for background auto-connect after {@code timeoutMs} milliseconds.
+     * If the device connects before the deadline the timeout is cancelled automatically.
+     * Call this immediately before a boot/background auto-connect attempt.
+     */
+    public void scheduleAutoConnectTimeout(long timeoutMs) {
+        cancelAutoConnectTimeout();
+        autoConnectTimeoutRunnable = () -> {
+            autoConnectTimeoutRunnable = null;
+            if (!connected.get()) {
+                Log.i(TAG, "Auto-connect timeout reached — giving up");
+                shouldReconnect.set(false);
+                connecting.set(false);
+                reconnectAttempts = 0;
+                notifyDisconnected("Auto-connect timed out");
+            }
+        };
+        ioHandler.postDelayed(autoConnectTimeoutRunnable, timeoutMs);
+    }
+
+    /** Cancel a pending auto-connect timeout scheduled by {@link #scheduleAutoConnectTimeout}. */
+    public void cancelAutoConnectTimeout() {
+        if (autoConnectTimeoutRunnable != null) {
+            ioHandler.removeCallbacks(autoConnectTimeoutRunnable);
+            autoConnectTimeoutRunnable = null;
+        }
     }
 
     @Override
@@ -717,6 +1008,10 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     }
 
     private void scheduleReconnect() {
+        if (scanPickerSessionActive.get()) {
+            Log.d(TAG, "scheduleReconnect skipped: scan/picker session active");
+            return;
+        }
         if (lastDevice == null) return;
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
             notifyError("Reconnect failed after " + MAX_RECONNECT_ATTEMPTS + " attempts.");
@@ -724,11 +1019,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         }
         reconnectAttempts++;
         int delaySec = 5 * reconnectAttempts;
-        ioHandler.postDelayed(() -> {
-            if (shouldReconnect.get() && !connected.get() && !connecting.get()) {
-                connect(lastDevice);
-            }
-        }, delaySec * 1000L);
+        ioHandler.postDelayed(reconnectRunnable, delaySec * 1000L);
     }
 
     @Override
@@ -1096,6 +1387,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     }
 
     private void notifyConnected(BluetoothDevice device) {
+        cancelAutoConnectTimeout();
+        userInitiatedConnect.set(false);
         for (ConnectionListener l : listeners) l.onConnected(device);
     }
 
@@ -1314,6 +1607,11 @@ public class MeshBtConnectionManager extends BtConnectionManager {
                     if (bondState == BluetoothDevice.BOND_BONDED) {
                         notifyError("Pairing complete for " + resolveName(device) + ". Connecting...");
                         pendingBondDevice = null;
+                        if (scanPickerSessionActive.get()) {
+                            Log.i(TAG, "Bond complete but scan/picker session active — not auto-connecting");
+                            connecting.set(false);
+                            return;
+                        }
                         connecting.set(true);
                         connectGattNow(device);
                     } else if (bondState == BluetoothDevice.BOND_NONE

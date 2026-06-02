@@ -426,7 +426,9 @@ try {
 
         // Auto-connect to last used radio after a short delay (let BT stack settle)
         view.postDelayed(() -> autoConnectLastRadio(context), 4000);
-        view.postDelayed(() -> autoConnectLastMesh(context), 4500);
+        if (meshBtConnectionManager != null) {
+            meshBtConnectionManager.scheduleBootAutoConnect();
+        }
 
         // Defer trust + prefs to the next frame and again on long delays so cert DB import wins races
         // with startup. Repo sync behavior remains one silent attempt per process (see
@@ -2376,6 +2378,7 @@ try {
             }
             android.bluetooth.BluetoothDevice device = adapter.getRemoteDevice(tgt);
             Log.i(TAG, "Auto-connecting to last mesh device: " + tgt);
+            meshBtConnectionManager.scheduleAutoConnectTimeout(30_000);
             meshBtConnectionManager.connect(device);
         } catch (Exception e) {
             Log.w(TAG, "Auto-connect mesh failed: " + e.getMessage());

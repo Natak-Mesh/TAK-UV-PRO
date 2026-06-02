@@ -1222,6 +1222,15 @@ public class CotBridge {
                     + " convo=" + GeoChatContactListHelper.extractConversationId(event)
                     + " sender=" + GeoChatContactListHelper.extractChatSenderUid(event)
                     + " hasHierarchy=" + GeoChatContactListHelper.cotHasContactHierarchy(event));
+            String inboundSenderUid = GeoChatContactListHelper.extractChatSenderUid(event);
+            com.uvpro.plugin.UVProContactHandler.repairAtakPeerConnectorDefault(inboundSenderUid);
+            if (inboundSenderUid != null
+                    && (inboundSenderUid.startsWith("MESHCORE-NODE-")
+                        || inboundSenderUid.startsWith("MESHCORE-RPTR-"))) {
+                final CotEvent eventForClear = event;
+                new android.os.Handler(android.os.Looper.getMainLooper())
+                        .postDelayed(() -> clearNativeGeoChatUnread(eventForClear), 300);
+            }
             if (groupSync) {
                 InboundGroupSyncApplier.applyAfterInboundGroupCot(event, contactListUpdate);
             }
@@ -1231,6 +1240,27 @@ public class CotBridge {
         } catch (Exception e) {
             Log.w(TAG, "GeoChatService.onCotEvent failed, fallback dispatch", e);
             dispatchCotEvent(event);
+        }
+    }
+
+    private void clearNativeGeoChatUnread(CotEvent event) {
+        try {
+            String convo = GeoChatContactListHelper.extractConversationId(event);
+            if (convo != null && !convo.trim().isEmpty()) {
+                android.content.Intent markRead = new android.content.Intent(
+                        "com.atakmap.chat.markmessageread");
+                markRead.putExtra("conversationId", convo.trim());
+                com.atakmap.android.ipc.AtakBroadcast.getInstance().sendBroadcast(markRead);
+            }
+            String senderUid = GeoChatContactListHelper.extractChatSenderUid(event);
+            if (senderUid != null && !senderUid.trim().isEmpty()
+                    && !senderUid.trim().equals(convo != null ? convo.trim() : "")) {
+                android.content.Intent markRead2 = new android.content.Intent(
+                        "com.atakmap.chat.markmessageread");
+                markRead2.putExtra("conversationId", senderUid.trim());
+                com.atakmap.android.ipc.AtakBroadcast.getInstance().sendBroadcast(markRead2);
+            }
+        } catch (Exception ignored) {
         }
     }
 

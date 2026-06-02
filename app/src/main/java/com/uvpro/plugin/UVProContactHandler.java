@@ -163,21 +163,47 @@ public class UVProContactHandler extends
                 + " uid=" + contactUID + " address=" + connectorAddress);
 
         if (feature == ContactConnectorManager.ConnectorFeature.NotificationCount) {
-            // ATAK sums counts across connector queries; only the plugin connector may report
-            // unread — all other addresses (including null) must return 0 or the UI shows 2.
-            if (connectorAddress == null
-                    || !PLUGIN_GEOCHAT_ACTION.equals(connectorAddress)) {
-                Log.i("UVPro.Handler", "NotificationCount uid=" + contactUID + " addr="
-                        + connectorAddress + " -> 0 (plugin-only)");
-                return 0;
-            }
-            Set<String> keys = unreadKeysByUid.get(contactUID != null ? contactUID.trim() : "");
-            int n = keys == null ? 0 : keys.size();
-            Log.i("UVPro.Handler", "NotificationCount uid=" + contactUID + " addr=" + connectorAddress + " -> " + n);
-            return n;
+            // Return 0 for all contacts — let ATAK's native GeoChatConnector be the sole badge
+            // source. ATAK's ContactConnectorManager sums return values across ALL registered
+            // handlers for the same connector type. Returning our own count here doubles the badge
+            // because ATAK's built-in GeoChatConnectorHandler also returns 1 for the same contact
+            // ("Geo Chat: 1 + Send Message: 1" = 2). Native tracking clears correctly when the
+            // user opens the conversation.
+            Log.i("UVPro.Handler", "NotificationCount uid=" + contactUID
+                    + " addr=" + connectorAddress + " -> 0 (native badge only)");
+            return 0;
         }
 
         return null;
+    }
+
+    /**
+     * Re-stamp GeoChatConnector as the default for this contact after GeoChatService.onCotEvent
+     * may have overwritten the preference. For MESHCORE-* contacts, also posts a 600ms delayed
+     * dispatchChangeEvent on the main thread so the contacts-list icon refreshes to the chat
+     * bubble without triggering a duplicate message reload.
+     */
+    public static void repairAtakPeerConnectorDefault(String uid) {
+        if (uid == null || uid.trim().isEmpty()) return;
+        try {
+            String u = uid.trim();
+            Contacts contacts = Contacts.getInstance();
+            Contact c = contacts.getContactByUuid(u);
+            if (!(c instanceof IndividualContact)) return;
+            IndividualContact ic = (IndividualContact) c;
+            if (ic.getConnector(MeshSendMessageConnector.CONNECTOR_TYPE) == null) {
+                ic.addConnector(new MeshSendMessageConnector());
+            }
+            writeDefaultConnectorPref(u, GeoChatConnector.CONNECTOR_TYPE);
+            if (u.startsWith("MESHCORE-NODE-") || u.startsWith("MESHCORE-RPTR-")) {
+                final IndividualContact finalIc = ic;
+                new android.os.Handler(android.os.Looper.getMainLooper())
+                        .postDelayed(() -> {
+                            try { finalIc.dispatchChangeEvent(); } catch (Exception ignored) {}
+                        }, 600);
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     @Override

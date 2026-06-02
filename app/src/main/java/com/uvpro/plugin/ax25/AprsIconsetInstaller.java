@@ -45,10 +45,6 @@ public final class AprsIconsetInstaller {
                 autoImportTriggered = false;
                 return false;
             }
-            if (!isAtakDataReady()) {
-                Log.d(TAG, "ATAK data directory not ready yet — deferring APRS iconset import");
-                return true;
-            }
             if (!autoImportTriggered) {
                 boolean staged = stageIconsetZip(pluginContext);
                 if (staged) {
@@ -67,16 +63,6 @@ public final class AprsIconsetInstaller {
             Log.w(TAG, "ensureStagedAndPromptIfMissing failed: " + e.getMessage(), e);
             return false;
         }
-    }
-
-    /**
-     * Returns true once ATAK has completed first-run setup and its data directory is usable.
-     * The presence of atak/config/ indicates ATAK has initialized storage; without it the
-     * ADD_ICONSET broadcast triggers ATAK's "Please set a data cache" warning.
-     */
-    private static boolean isAtakDataReady() {
-        File config = new File(Environment.getExternalStorageDirectory(), "atak/config");
-        return config.exists() && config.isDirectory();
     }
 
     /** No-op kept for backward compatibility with map component call sites. */

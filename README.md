@@ -32,6 +32,12 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
 
+### 2026-06-02 Progress Update (v1.9.61)
+
+- **CoT Minification:** Non-essential `<detail>` children (`link`, `creator`, `takv`, `precisionlocation`, `status`, `archive`, `height`, `track`, `uid`, `ce`, `le`, `_flow-tags_`) and XML declaration stripped before compression. Reduces typical waypoint from 3→2 fragments. Never-worse fallback — `version='2.0'` preserved (required by ATAK CoT parser).
+- **CoT Hop Count Threading:** MeshCore channel message `pathLen` (repeater hop count) now flows from `MeshBtConnectionManager` → `PacketRouter` → `CotBridge`. Logged on every received CoT (`"CoT received: type=... via N hops"`).
+- **CoT ACK/Retry System:** New `TYPE_COT_ACK (0x08)` packet type. Receiver sends ACK after successful CoT parse. Sender registers 30-second watchdog; retransmits at 15s intervals up to 5 times if no ACK. Immediate double-send at T+3s for RF collision resilience. GeoChat CoT (`b-t-f*`) excluded (uses existing chat retry). Executor shuts down cleanly on plugin dispose.
+
 ### 2026-06-02 Progress Update (v1.9.60)
 
 - **Fixed contact icon revert to blue radio on inbound MESHCORE-* DM:** `UVProContactHandler.repairAtakPeerConnectorDefault` (new method) re-stamps `GeoChatConnector` as the default connector after `GeoChatService.onCotEvent` overwrites the preference. A 600ms delayed `dispatchChangeEvent` (main thread) refreshes the contacts-list icon to the chat bubble without triggering a duplicate message reload.

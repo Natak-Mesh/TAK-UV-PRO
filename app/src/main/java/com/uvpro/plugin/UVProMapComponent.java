@@ -439,6 +439,7 @@ try {
 
         // Wire BT manager into bridges so they can transmit
         cotBridge.setBtManager(btConnectionManager);
+        cotBridge.setMeshBtManager(meshBtConnectionManager);
         chatBridge.setBtManager(btConnectionManager);
         chatBridge.setEncryptionManager(encryptionManager);
 

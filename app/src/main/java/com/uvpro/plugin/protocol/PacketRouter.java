@@ -142,6 +142,14 @@ public class PacketRouter {
      * Called by BtConnectionManager on the read thread.
      */
     public void routeIncoming(byte[] ax25Data) {
+        routeIncoming(ax25Data, 0);
+    }
+
+    /**
+     * Route an incoming AX.25 frame from the radio, carrying the MeshCore
+     * pathLen (number of repeater hops) for CoT display purposes.
+     */
+    public void routeIncoming(byte[] ax25Data, int pathLen) {
         Ax25Frame frame = Ax25Frame.decode(ax25Data);
         if (frame == null) {
             Log.w(TAG, "Failed to decode AX.25 frame");
@@ -184,7 +192,7 @@ public class PacketRouter {
                 // If decryption returns null, use raw (unencrypted packet)
             }
 
-            routeUVProPacket(srcCall, srcSsid, infoField);
+            routeUVProPacket(srcCall, srcSsid, infoField, pathLen);
             return;
         }
 
@@ -196,6 +204,10 @@ public class PacketRouter {
      * Route an UV-PRO custom packet.
      */
     private void routeUVProPacket(String callsign, int ssid, byte[] data) {
+        routeUVProPacket(callsign, ssid, data, 0);
+    }
+
+    private void routeUVProPacket(String callsign, int ssid, byte[] data, int pathLen) {
         UVProPacket packet = UVProPacket.decode(data);
         if (packet == null) {
             Log.w(TAG, "Failed to decode UV-PRO packet");
@@ -258,7 +270,7 @@ public class PacketRouter {
                 break;
 
             case UVProPacket.TYPE_COT:
-                cotBridge.injectCompressedCot(packet.getPayload());
+                cotBridge.injectCompressedCot(packet.getPayload(), pathLen);
                 break;
 
             case UVProPacket.TYPE_PING:
@@ -301,7 +313,14 @@ public class PacketRouter {
                 if (reassembled != null) {
                     Log.d(TAG, "Fragment reassembly complete: "
                             + reassembled.length + " bytes");
-                    cotBridge.injectCompressedCot(reassembled);
+                    cotBridge.injectCompressedCot(reassembled, pathLen);
+                }
+                break;
+
+            case UVProPacket.TYPE_COT_ACK:
+                String ackedUid = UVProPacket.decodeCotAckUid(packet.getPayload());
+                if (ackedUid != null) {
+                    cotBridge.handleCotAck(ackedUid);
                 }
                 break;
 

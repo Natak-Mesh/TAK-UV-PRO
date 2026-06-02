@@ -32,6 +32,11 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
 
+### 2026-06-01 Progress Update (v1.9.58)
+
+- **Silent iconset auto-install:** APRS and MeshCore iconsets now install automatically on first ATAK launch with no user interaction. The plugin stages the bundled zips to `/sdcard/atak/tools/import/` then sends the `com.atakmap.android.icons.ADD_ICONSET` broadcast directly to ATAK's `IconsMapAdapter`. No notification, no dialog, and no manual Point Dropper → Add Iconset step required. Install is idempotent — skipped if the iconset UID is already present in `iconsets.sqlite`.
+- **WiFi keepalive TX leak identified:** SA keepalive unicasts intended for Wi-Fi peers were being double-relayed over RF when those peers also had a radio/plugin connector registered. Documented in the SA Relay section; fix pending.
+
 ### 2026-05-30 Progress Update (v1.9.55)
 
 - **MeshCore DMs use native contact messages:** Map-selected GeoChat direct messages to MeshCore nodes now go out as standard pubkey-to-pubkey contact messages (`CMD_SEND_TXT_MSG`) instead of the proprietary `0xFF01` AX.25 channel datagram. Native MeshCore clients previously rejected those datagrams as "Unhandled," so DMs were never delivered; they now interoperate with the native MeshCore app in both directions.

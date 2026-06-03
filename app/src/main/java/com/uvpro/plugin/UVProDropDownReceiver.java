@@ -1355,45 +1355,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
             return;
         }
 
-        String target = BluetoothDeviceRegistry.getConnectTargetAddress(ctx);
-        BtDeviceRecord targetRecord =
-                (target != null && !target.isEmpty()) ? BluetoothDeviceRegistry.find(ctx, target) : null;
-        // Only explicit favorite selection should force CONNECT mode.
-        boolean connectMode = targetRecord != null && targetRecord.favorite;
-
-        if (connectMode) {
-            scanForNewRadioOnly = false;
-            stopScanConnectButtonPulse(true);
-            try {
-                BluetoothDevice device = adapter.getRemoteDevice(target);
-                if (isLikelyMeshNamedDevice(device)) {
-                    appendLog("Saved target appears to be MeshCore; switching UV-PRO to scan mode");
-                    BluetoothDeviceRegistry.setConnectTargetAddress(ctx, "");
-                    refreshFavoriteStrip();
-                    updateScanButtonText();
-                    foundDevices.clear();
-                    requestScanConnectButtonPulse();
-                    btManager.startScan();
-                    return;
-                }
-                String display = targetRecord != null
-                        ? BluetoothDeviceRegistry.getDisplayTitle(targetRecord)
-                        : target;
-                appendLog("Connecting to " + display + "...");
-                btManager.connect(device);
-            } catch (Exception e) {
-                appendLog("Saved radio no longer available, switching to scan");
-                BluetoothDeviceRegistry.setConnectTargetAddress(ctx, "");
-                refreshFavoriteStrip();
-                updateScanButtonText();
-            }
-            return;
-        }
-
-        // Scan mode: clear stale auto-target and discover available radios.
+        // Favorites/direct-connect retired: the radio button always scans and discovers radios.
+        // The saved last-connected target is preserved (used for silent startup auto-connect) and
+        // is recorded again on the next successful connect.
         foundDevices.clear();
         scanForNewRadioOnly = true;
-        BluetoothDeviceRegistry.setConnectTargetAddress(ctx, "");
         refreshFavoriteStrip();
         updateScanButtonText();
         appendLog("Scanning for radios...");
@@ -1448,16 +1414,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private void updateScanButtonText() {
         if (btnScan == null) return;
-        Context ctx = getMapView().getContext();
-        String tgt = BluetoothDeviceRegistry.getConnectTargetAddress(ctx);
-        BtDeviceRecord rec = (tgt != null && !tgt.isEmpty())
-                ? BluetoothDeviceRegistry.find(ctx, tgt)
-                : null;
-        if (!btManager.isConnected() && rec != null && rec.favorite) {
-            btnScan.setText("CONNECT");
-        } else {
-            btnScan.setText("SCAN & CONNECT");
-        }
+        // Favorites/direct-connect retired: the radio button is always "SCAN & CONNECT".
+        btnScan.setText("SCAN & CONNECT");
     }
 
     private void updateMeshScanButtonText() {
@@ -2807,73 +2765,24 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void refreshFavoriteStrip() {
-        if (favoritesStrip == null || favoritesScroll == null
-                || favoritesLabel == null || connectModeHint == null) {
-            return;
+        // Favorites were retired for both UV-PRO radio and MeshCore. Auto-connect now always
+        // targets the last successfully connected device (saved on every connect), so there is no
+        // favorites UI. Keep both strips hidden; the connect buttons always "SCAN & CONNECT".
+        if (favoritesStrip != null) {
+            favoritesStrip.removeAllViews();
         }
-        Context ctx = getMapView().getContext();
-        favoritesStrip.removeAllViews();
+        if (favoritesLabel != null) {
+            favoritesLabel.setVisibility(View.GONE);
+        }
+        if (favoritesScroll != null) {
+            favoritesScroll.setVisibility(View.GONE);
+        }
+        if (connectModeHint != null) {
+            connectModeHint.setVisibility(View.GONE);
+        }
         if (meshFavoritesStrip != null) {
             meshFavoritesStrip.removeAllViews();
         }
-        List<BtDeviceRecord> favs = BluetoothDeviceRegistry.getFavoritesSorted(ctx);
-        List<BtDeviceRecord> uvFavs = new ArrayList<>();
-        List<BtDeviceRecord> meshFavs = new ArrayList<>();
-        for (BtDeviceRecord r : favs) {
-            if (isLikelyMeshRecord(r)) {
-                meshFavs.add(r);
-            } else {
-                uvFavs.add(r);
-            }
-        }
-
-        if (uvFavs.isEmpty()) {
-            favoritesLabel.setVisibility(View.GONE);
-            favoritesScroll.setVisibility(View.GONE);
-            connectModeHint.setVisibility(View.GONE);
-        } else {
-            favoritesLabel.setVisibility(View.VISIBLE);
-            favoritesScroll.setVisibility(View.VISIBLE);
-            String selectedRadio = BluetoothDeviceRegistry.getConnectTargetAddress(ctx);
-            if (selectedRadio != null && !selectedRadio.isEmpty()) {
-                connectModeHint.setVisibility(View.VISIBLE);
-                connectModeHint.setText(
-                        "Direct connect enabled — tap the same favorite again to use Scan instead");
-            } else {
-                connectModeHint.setVisibility(View.GONE);
-            }
-            for (BtDeviceRecord r : uvFavs) {
-                Button chip = new Button(ctx);
-                chip.setAllCaps(false);
-                chip.setText(BluetoothDeviceRegistry.getDisplayTitle(r));
-                boolean isSel = selectedRadio != null && selectedRadio.equalsIgnoreCase(r.address);
-                applyPillButtonBackground(chip, isSel ? 0xFF00788B : 0xFF3D3D3D);
-                chip.setTextColor(0xFFFFFFFF);
-                int px = dip(ctx, 8);
-                chip.setPadding(px, px / 2, px, px / 2);
-                chip.setOnClickListener(v -> {
-                    String cur = BluetoothDeviceRegistry.getConnectTargetAddress(ctx);
-                    if (cur != null && cur.equalsIgnoreCase(r.address)) {
-                        BluetoothDeviceRegistry.setConnectTargetAddress(ctx, "");
-                        appendLog("Using Scan & Connect mode");
-                    } else {
-                        BluetoothDeviceRegistry.setConnectTargetAddress(ctx, r.address);
-                        appendLog("Selected: " + BluetoothDeviceRegistry.getDisplayTitle(r));
-                    }
-                    refreshFavoriteStrip();
-                    updateScanButtonText();
-                    updateMeshScanButtonText();
-                });
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                lp.setMarginEnd(dip(ctx, 6));
-                favoritesStrip.addView(chip, lp);
-            }
-        }
-
-        // MeshCore favorites were removed in favour of "auto-connect to last device on startup".
-        // The mesh favorites row is always hidden; the UV-Pro favorites strip above is unaffected.
         if (meshFavoritesLabel != null) {
             meshFavoritesLabel.setVisibility(View.GONE);
         }
@@ -6186,27 +6095,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
         android.widget.LinearLayout layout = new android.widget.LinearLayout(ctx);
         layout.setOrientation(android.widget.LinearLayout.VERTICAL);
         layout.setPadding(48, 32, 48, 16);
-
-        // Bluetooth Devices — manage history, favorites, rename/delete
-        TextView labelBluetooth = new TextView(ctx);
-        labelBluetooth.setText("Bluetooth Radio");
-        labelBluetooth.setTextColor(0xFFFFFFFF);
-        labelBluetooth.setTextSize(16);
-        layout.addView(labelBluetooth);
-
-        android.widget.Button btnBluetoothDevices = new android.widget.Button(ctx);
-        btnBluetoothDevices.setText("Manage Bluetooth Devices");
-        btnBluetoothDevices.setTextColor(0xFFFFFFFF);
-        btnBluetoothDevices.setTextSize(13f);
-        applyPillButtonBackground(btnBluetoothDevices, 0xFF455A64);
-        btnBluetoothDevices.setOnClickListener(v ->
-                com.uvpro.plugin.ui.BluetoothDevicesManagement.show(ctx, () ->
-                        getMapView().post(() -> {
-                            refreshFavoriteStrip();
-                            updateScanButtonText();
-                            updateMeshScanButtonText();
-                        })));
-        layout.addView(btnBluetoothDevices);
 
         SettingsFragment.AprsSettingsUi aprsUi =
                 SettingsFragment.appendAprsSettingsSection(ctx, pluginContext, layout);

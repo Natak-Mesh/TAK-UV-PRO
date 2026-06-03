@@ -56,9 +56,6 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     private static final UUID UUID_UART_SERVICE =
             UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
-    // Meshtastic primary BLE service UUID.
-    private static final UUID UUID_MESHTASTIC_SERVICE =
-            UUID.fromString("6BA1B218-15A8-461F-9FA8-5DCAE273EAFD");
     private static final UUID UUID_UART_RX =
             UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E");
     private static final UUID UUID_UART_TX =
@@ -458,8 +455,10 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         synchronized (liveScanAddresses) {
             liveScanAddresses.clear();
         }
-        emitBondedMeshCandidates();
-        emitRegistryMeshCandidates();
+        // Favorites were removed: the picker shows live (in-range) devices plus the single saved
+        // last-connected device (shown greyed if it isn't currently advertising). We no longer
+        // flood the list with every bonded/registry device.
+        emitSavedTargetCandidate();
 
         bleScanner = btAdapter.getBluetoothLeScanner();
         if (bleScanner == null) {
@@ -519,6 +518,26 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             if (scanCompleteNotified.compareAndSet(false, true)) {
                 notifyScanComplete();
             }
+        }
+    }
+
+    /**
+     * Emits only the saved last-connected target so it appears in the picker (greyed if it isn't
+     * advertising right now). This replaces the old favorite/bonded/registry flood.
+     */
+    private void emitSavedTargetCandidate() {
+        if (btAdapter == null) return;
+        try {
+            String tgt = BluetoothDeviceRegistry.getMeshConnectTargetAddress(context);
+            if (tgt == null || tgt.isEmpty()) return;
+            synchronized (seenScanAddresses) {
+                if (seenScanAddresses.contains(tgt)) return;
+                seenScanAddresses.add(tgt);
+            }
+            BluetoothDevice device = btAdapter.getRemoteDevice(tgt);
+            if (device != null) notifyDeviceFound(device);
+        } catch (Exception e) {
+            Log.w(TAG, "emitSavedTargetCandidate failed", e);
         }
     }
 
@@ -645,6 +664,9 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     public void connectUserSelected(BluetoothDevice device) {
         userInitiatedConnect.set(true);
         endScanPickerSession();
+        // Cancel any in-flight availability probes so the probe GATT can't collide with the
+        // real connection we're about to open.
+        availabilityProber.cancelAll();
         connectInternal(device);
     }
 
@@ -679,11 +701,16 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             }
             if (requested || bondState == BluetoothDevice.BOND_BONDING) {
                 notifyError(MeshBleDeviceMatcher.pairingHintMessage(device));
-            } else {
-                notifyError("Pairing not initiated for " + resolveName(device)
-                        + ". Attempting BLE connect...");
+                // IMPORTANT: do NOT connect now. Wait for the bond to complete — the bond
+                // receiver issues the single connect. Connecting here would produce a second
+                // GATT once the bond receiver fires, which closes the working link and trips a
+                // supervision timeout (the connection "drops right after connecting").
+                // connecting stays true; the bond receiver connects or clears it.
+                return;
             }
-            // Continue with BLE connect path for devices that pair lazily during GATT access.
+            notifyError("Pairing not initiated for " + resolveName(device)
+                    + ". Attempting BLE connect...");
+            // Fall through: some devices pair lazily during GATT access.
         }
 
         connectGattNow(device);
@@ -798,6 +825,21 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             return;
         }
         if (device == null) return;
+        // Only auto-connect to devices that are already bonded. Probing/connecting an
+        // unbonded saved target in the background grabs the node's single BLE connection
+        // slot and stops its advertising, which blocks the user from pairing it manually
+        // (in Android settings or the MeshCore app). Leave unbonded targets alone until the
+        // user explicitly taps Scan & Connect or the favorite chip.
+        int savedTargetBondState = BluetoothDevice.BOND_NONE;
+        try {
+            savedTargetBondState = device.getBondState();
+        } catch (Exception ignored) {
+        }
+        if (savedTargetBondState != BluetoothDevice.BOND_BONDED) {
+            Log.i(TAG, "Boot auto-connect: saved target " + tgt
+                    + " is not bonded — skipping background auto-connect (manual pairing first)");
+            return;
+        }
         final int probeGeneration = autoConnectGeneration.get();
         Log.i(TAG, "Boot auto-connect: probing " + tgt);
         scheduleAutoConnectTimeout(30_000);
@@ -871,7 +913,17 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     @Override
     public void disconnect() {
+        // Full stop: a user-initiated disconnect halts ALL auto-connect activity for the rest of
+        // this session (boot auto-connect, the 30s timeout, any in-flight probe). The saved target
+        // is intentionally NOT cleared, so the next app launch will still auto-connect to it.
         shouldReconnect.set(false);
+        autoConnectGeneration.incrementAndGet();
+        cancelBootAutoConnect();
+        cancelAutoConnectTimeout();
+        cancelPendingReconnect();
+        savedTargetAutoConnectAttempted.set(true);
+        availabilityProber.cancelAll();
+        userInitiatedConnect.set(false);
         connecting.set(false);
         connected.set(false);
         meshGpsEnabled = null;
@@ -1001,10 +1053,12 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         ioHandler.removeCallbacks(periodicMessagePoll);
         clearQueues();
         ioHandler.post(this::closeGattInternal);
+        // Auto-connect is startup-only: when the link drops mid-session we do NOT auto-retry.
+        // The UI reverts to SCAN & CONNECT and the user reconnects manually. (The saved target
+        // is still remembered for the next app launch.)
+        shouldReconnect.set(false);
+        cancelPendingReconnect();
         notifyDisconnected("Connection lost");
-        if (shouldReconnect.get()) {
-            scheduleReconnect();
-        }
     }
 
     private void scheduleReconnect() {
@@ -1389,6 +1443,14 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private void notifyConnected(BluetoothDevice device) {
         cancelAutoConnectTimeout();
         userInitiatedConnect.set(false);
+        // Remember this as the startup auto-connect target (replaces the old favorite mechanism).
+        if (device != null && device.getAddress() != null) {
+            try {
+                BluetoothDeviceRegistry.setMeshConnectTargetAddress(context, device.getAddress());
+            } catch (Exception e) {
+                Log.w(TAG, "Could not persist last-connected mesh target", e);
+            }
+        }
         for (ConnectionListener l : listeners) l.onConnected(device);
     }
 
@@ -1492,7 +1554,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
                         continue;
                     }
                     UUID adv = pu.getUuid();
-                    if (UUID_UART_SERVICE.equals(adv) || UUID_MESHTASTIC_SERVICE.equals(adv)) {
+                    if (UUID_UART_SERVICE.equals(adv)) {
                         return true;
                     }
                 }
@@ -1610,6 +1672,12 @@ public class MeshBtConnectionManager extends BtConnectionManager {
                         if (scanPickerSessionActive.get()) {
                             Log.i(TAG, "Bond complete but scan/picker session active — not auto-connecting");
                             connecting.set(false);
+                            return;
+                        }
+                        // Guard against a duplicate connection: if a link is already up or a GATT
+                        // is already in flight, don't open a second one (that collision drops it).
+                        if (connected.get() || gatt != null) {
+                            Log.i(TAG, "Bond complete; connection already active/in-flight — not reconnecting");
                             return;
                         }
                         connecting.set(true);

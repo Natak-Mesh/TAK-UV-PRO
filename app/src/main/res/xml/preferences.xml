@@ -38,6 +38,13 @@
             android:summary="Automatically reply to incoming pings with your position"
             android:defaultValue="true" />
 
+        <com.atakmap.android.gui.PanCheckBoxPreference
+            android:key="uvpro_ping_reply_same_transport"
+            android:title="Ping Reply on Same Transport"
+            android:summary="Reply on Mesh if ping arrived on Mesh; on UV-PRO radio if ping arrived on radio"
+            android:dependency="uvpro_ping_reply_enabled"
+            android:defaultValue="true" />
+
         <com.atakmap.android.gui.PanListPreference
             android:key="uvpro_retry_interval_min"
             android:title="Retry Interval"

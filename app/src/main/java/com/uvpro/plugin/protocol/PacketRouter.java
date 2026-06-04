@@ -142,14 +142,20 @@ public class PacketRouter {
      * Called by BtConnectionManager on the read thread.
      */
     public void routeIncoming(byte[] ax25Data) {
-        routeIncoming(ax25Data, 0);
+        routeIncoming(ax25Data, 0, RfInboundTransport.UVPRO);
     }
 
     /**
-     * Route an incoming AX.25 frame from the radio, carrying the MeshCore
-     * pathLen (number of repeater hops) for CoT display purposes.
+     * Route an incoming AX.25 frame from MeshCore (pathLen for hop display).
      */
     public void routeIncoming(byte[] ax25Data, int pathLen) {
+        routeIncoming(ax25Data, pathLen, RfInboundTransport.MESHCORE);
+    }
+
+    /**
+     * Route an incoming AX.25 frame, tagged with the receiving transport.
+     */
+    public void routeIncoming(byte[] ax25Data, int pathLen, RfInboundTransport inboundTransport) {
         Ax25Frame frame = Ax25Frame.decode(ax25Data);
         if (frame == null) {
             Log.w(TAG, "Failed to decode AX.25 frame");
@@ -192,7 +198,7 @@ public class PacketRouter {
                 // If decryption returns null, use raw (unencrypted packet)
             }
 
-            routeUVProPacket(srcCall, srcSsid, infoField, pathLen);
+            routeUVProPacket(srcCall, srcSsid, infoField, pathLen, inboundTransport);
             return;
         }
 
@@ -201,13 +207,23 @@ public class PacketRouter {
     }
 
     /**
+     * Wire UV-PRO and MeshCore managers for ping-reply same-transport routing.
+     */
+    public void setInboundTransports(
+            com.uvpro.plugin.bluetooth.BtConnectionManager uvpro,
+            com.uvpro.plugin.bluetooth.BtConnectionManager mesh) {
+        pingReplyScheduler.setInboundTransports(uvpro, mesh);
+    }
+
+    /**
      * Route an UV-PRO custom packet.
      */
     private void routeUVProPacket(String callsign, int ssid, byte[] data) {
-        routeUVProPacket(callsign, ssid, data, 0);
+        routeUVProPacket(callsign, ssid, data, 0, RfInboundTransport.UVPRO);
     }
 
-    private void routeUVProPacket(String callsign, int ssid, byte[] data, int pathLen) {
+    private void routeUVProPacket(String callsign, int ssid, byte[] data, int pathLen,
+                                  RfInboundTransport inboundTransport) {
         UVProPacket packet = UVProPacket.decode(data);
         if (packet == null) {
             Log.w(TAG, "Failed to decode UV-PRO packet");
@@ -287,7 +303,7 @@ public class PacketRouter {
                 if (!callsign.equalsIgnoreCase(pingCall)) {
                     chatBridge.onPeerActivity(pingCall);
                 }
-                schedulePingReply();
+                schedulePingReply(inboundTransport);
                 break;
 
             case UVProPacket.TYPE_NET_SLOT_CONFIG:
@@ -708,11 +724,11 @@ public class PacketRouter {
         return ncs;
     }
 
-    private void schedulePingReply() {
+    private void schedulePingReply(RfInboundTransport inboundTransport) {
         MapView mv = MapView.getMapView();
         if (mv == null) {
             return;
         }
-        pingReplyScheduler.scheduleReply(mv.getContext());
+        pingReplyScheduler.scheduleReply(mv.getContext(), inboundTransport);
     }
 }

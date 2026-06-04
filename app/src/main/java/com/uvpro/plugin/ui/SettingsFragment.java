@@ -60,6 +60,7 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String PREF_RESTRICT_CHAT_TO_REACHABLE_PEERS =
             "uvpro_restrict_chat_to_reachable_peers";
     public static final String PREF_PING_REPLY_ENABLED = "uvpro_ping_reply_enabled";
+    public static final String PREF_PING_REPLY_SAME_TRANSPORT = "uvpro_ping_reply_same_transport";
 
     public static final String PREF_APRS_CALLSIGN = "uvpro_aprs_callsign";
     public static final String PREF_APRS_SSID = "uvpro_aprs_ssid";
@@ -329,6 +330,15 @@ public class SettingsFragment extends PluginPreferenceFragment
                     : "Off");
         }
 
+        Preference pingSameTransportPref = findPreference(PREF_PING_REPLY_SAME_TRANSPORT);
+        if (pingSameTransportPref != null) {
+            boolean on = prefs.getBoolean(PREF_PING_REPLY_SAME_TRANSPORT, true);
+            pingSameTransportPref.setSummary(on
+                    ? "On — ping reply goes out on the same link that received the ping (Mesh or UV-PRO)"
+                    : "Off — ping reply uses the active transmit toggle");
+            pingSameTransportPref.setEnabled(prefs.getBoolean(PREF_PING_REPLY_ENABLED, true));
+        }
+
         Preference aprsIconPref = findPreference(KEY_APRS_ICON);
         if (aprsIconPref != null) {
             updateAprsIconSummary(aprsIconPref);
@@ -462,6 +472,12 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static boolean isPingReplyEnabled(Context context) {
         return getPrefs(context)
                 .getBoolean(PREF_PING_REPLY_ENABLED, true);
+    }
+
+    /** When true, slotted ping replies TX on the transport that received the ping. */
+    public static boolean isPingReplySameTransportEnabled(Context context) {
+        return getPrefs(context)
+                .getBoolean(PREF_PING_REPLY_SAME_TRANSPORT, true);
     }
 
     public static boolean isRfToTakUplinkEnabled(Context context) {

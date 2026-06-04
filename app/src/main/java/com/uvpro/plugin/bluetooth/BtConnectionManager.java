@@ -146,8 +146,7 @@ public class BtConnectionManager {
 
     /**
      * Scan for already-paired UV-PRO radios.
-     * Emits bonded radios immediately, then runs discovery to surface any
-     * bonded radios not yet cached by the adapter.
+     * Emits bonded radios immediately, then discovery for bonded devices only.
      * Pairing must be done in Android Bluetooth settings before using Scan & Connect.
      */
     public void startScan() {
@@ -201,6 +200,27 @@ public class BtConnectionManager {
         } catch (Exception e) {
             Log.w(TAG, "Could not enumerate bonded radios", e);
         }
+    }
+
+    /** True if Android Bluetooth has at least one bonded UV-PRO-class radio. */
+    public boolean hasBondedUvProRadio() {
+        if (btAdapter == null) {
+            return false;
+        }
+        try {
+            Set<BluetoothDevice> bonded = btAdapter.getBondedDevices();
+            if (bonded == null) {
+                return false;
+            }
+            for (BluetoothDevice device : bonded) {
+                if (isLikelyUvProDevice(device)) {
+                    return true;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Could not check bonded radios", e);
+        }
+        return false;
     }
 
     /** Stores a probe socket that connect() can reuse to avoid a double-connect. */
@@ -724,7 +744,6 @@ public class BtConnectionManager {
                     if (!markSeenIfNew(address)) {
                         return;
                     }
-                    // Only emit bonded radios — user must pair via Android BT settings.
                     int bondState = BluetoothDevice.BOND_NONE;
                     try {
                         bondState = device.getBondState();

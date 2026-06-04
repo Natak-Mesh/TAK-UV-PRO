@@ -249,6 +249,11 @@ public class CotBridge {
         this.btManager = btManager;
     }
 
+    /** Active transmit manager (Mesh or UV-PRO per UI toggle). */
+    public BtConnectionManager getActiveBtManager() {
+        return btManager;
+    }
+
     public void setMeshBtManager(com.uvpro.plugin.bluetooth.MeshBtConnectionManager m) {
         this.meshBtManager = m;
     }
@@ -1685,11 +1690,14 @@ public class CotBridge {
     }
 
     /**
-     * Send local GPS position over radio as compact GPS packet.
+     * Send local GPS position over radio as compact GPS packet on a specific transport.
      */
-    public void sendPositionOverRadio(double lat, double lon, double alt,
+    public void sendPositionOverRadio(BtConnectionManager txManager,
+                                      double lat, double lon, double alt,
                                       float speed, float course, int battery) {
-        if (btManager == null || !btManager.isConnected()) return;
+        if (txManager == null || !txManager.isConnected()) {
+            return;
+        }
 
         com.uvpro.plugin.protocol.RfTxArbitrator.get().markOpenRlTxStart();
         try {
@@ -1715,12 +1723,20 @@ public class CotBridge {
             byte[] ax25 = frame.encode();
 
             Log.d(TAG, "Sending GPS beacon: " + ax25.length + " bytes");
-            btManager.sendKissFrame(ax25);
+            txManager.sendKissFrame(ax25);
         } catch (Exception e) {
             Log.e(TAG, "Error sending position over radio", e);
         } finally {
             com.uvpro.plugin.protocol.RfTxArbitrator.get().markOpenRlTxEnd();
         }
+    }
+
+    /**
+     * Send local GPS position over radio using the active transmit manager.
+     */
+    public void sendPositionOverRadio(double lat, double lon, double alt,
+                                      float speed, float course, int battery) {
+        sendPositionOverRadio(btManager, lat, lon, alt, speed, course, battery);
     }
 
     /**

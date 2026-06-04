@@ -5812,7 +5812,21 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private void showDevicePicker() {
         if (foundDevices.isEmpty()) {
             stopScanConnectButtonPulse(true);
-            appendLog("No UV-PRO radios found");
+            Context ctx = getMapView().getContext();
+            if (btManager != null && !btManager.hasBondedUvProRadio()) {
+                appendLog("No paired UV-PRO radio in Android Bluetooth settings");
+                try {
+                    new AlertDialog.Builder(ctx)
+                            .setTitle("UV-PRO")
+                            .setMessage("Pair your radio in android bluetooth settings")
+                            .setPositiveButton(android.R.string.ok, null)
+                            .show();
+                } catch (Exception e) {
+                    Log.e(TAG, "Could not show pair-radio dialog", e);
+                }
+            } else {
+                appendLog("No UV-PRO radios found");
+            }
             return;
         }
 
@@ -6176,6 +6190,36 @@ public class UVProDropDownReceiver extends DropDownReceiver
         hintPingReply.setPadding(0, 2, 0, 0);
         layout.addView(hintPingReply);
 
+        LinearLayout rowPingSameTransport = new LinearLayout(ctx);
+        rowPingSameTransport.setOrientation(LinearLayout.HORIZONTAL);
+        rowPingSameTransport.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        rowPingSameTransport.setPadding(0, 12, 0, 0);
+
+        TextView labelPingSameTransport = new TextView(ctx);
+        labelPingSameTransport.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        labelPingSameTransport.setText("Ping Reply on Same Transport");
+        labelPingSameTransport.setTextColor(0xFFFFFFFF);
+        labelPingSameTransport.setTextSize(13);
+        rowPingSameTransport.addView(labelPingSameTransport);
+
+        Switch switchPingSameTransport = new Switch(ctx);
+        switchPingSameTransport.setChecked(
+                SettingsFragment.isPingReplySameTransportEnabled(ctx));
+        rowPingSameTransport.addView(switchPingSameTransport);
+        layout.addView(rowPingSameTransport);
+
+        TextView hintPingSameTransport = new TextView(ctx);
+        hintPingSameTransport.setText(
+                "Mesh ping → Mesh reply; UV-PRO ping → radio reply. Off uses the transmit toggle.");
+        hintPingSameTransport.setTextColor(0xFF888888);
+        hintPingSameTransport.setTextSize(11);
+        hintPingSameTransport.setPadding(0, 2, 0, 0);
+        layout.addView(hintPingSameTransport);
+
+        switchPingReply.setOnCheckedChangeListener((buttonView, isChecked) ->
+                switchPingSameTransport.setEnabled(isChecked));
+
         TextView headerSaRelay = new TextView(ctx);
         headerSaRelay.setText("\nSA Relay");
         headerSaRelay.setTextColor(0xFF00BCD4);
@@ -6230,6 +6274,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
                     editor.putBoolean(SettingsFragment.PREF_PING_REPLY_ENABLED,
                             switchPingReply.isChecked());
+                    editor.putBoolean(SettingsFragment.PREF_PING_REPLY_SAME_TRANSPORT,
+                            switchPingSameTransport.isChecked());
 
                     String newBeacon = editBeacon.getText().toString().trim();
                     if (!newBeacon.isEmpty()) {

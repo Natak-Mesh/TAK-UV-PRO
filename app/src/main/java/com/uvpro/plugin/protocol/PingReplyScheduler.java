@@ -7,8 +7,8 @@ import android.util.Log;
 
 import com.atakmap.android.maps.MapView;
 import com.atakmap.android.maps.PointMapItem;
+import com.uvpro.plugin.bluetooth.BtConnectionManager;
 import com.uvpro.plugin.cot.CotBridge;
-import com.uvpro.plugin.protocol.RfTxArbitrator;
 import com.uvpro.plugin.ui.SettingsFragment;
 
 import java.util.concurrent.ThreadLocalRandom;
@@ -23,15 +23,25 @@ public final class PingReplyScheduler {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final CotBridge cotBridge;
     private Runnable pendingReply;
+    private BtConnectionManager uvproTransport;
+    private BtConnectionManager meshTransport;
+    private RfInboundTransport pendingInboundTransport = RfInboundTransport.UVPRO;
 
     public PingReplyScheduler(CotBridge cotBridge) {
         this.cotBridge = cotBridge;
     }
 
+    public void setInboundTransports(BtConnectionManager uvpro, BtConnectionManager mesh) {
+        this.uvproTransport = uvpro;
+        this.meshTransport = mesh;
+    }
+
     /**
      * Queue a position reply after the configured slot delay for this device.
+     *
+     * @param inboundTransport link that received the ping (used when same-transport reply is on)
      */
-    public void scheduleReply(Context context) {
+    public void scheduleReply(Context context, RfInboundTransport inboundTransport) {
         if (context == null || cotBridge == null) {
             return;
         }
@@ -42,6 +52,9 @@ public final class PingReplyScheduler {
         if (mv == null) {
             return;
         }
+        pendingInboundTransport = inboundTransport != null
+                ? inboundTransport
+                : RfInboundTransport.UVPRO;
         String callsign = SettingsFragment.getCallsign(context);
         int slotCount = NetSlotConfig.getSlotCount(context);
         int rawSlot = NetSlotConfig.computeSlotIndex(callsign, slotCount);
@@ -59,6 +72,7 @@ public final class PingReplyScheduler {
         handler.postDelayed(pendingReply, delayMs);
         Log.d(TAG, "Ping reply scheduled in " + delayMs + "ms (slot " + effectiveSlot
                 + "/" + slotCount
+                + ", inbound=" + pendingInboundTransport
                 + ", rawSlot=" + rawSlot
                 + ", base=" + baseDelayMs + "ms, jitter=" + jitterMs + "ms)");
     }
@@ -97,13 +111,34 @@ public final class PingReplyScheduler {
                 course = Double.parseDouble(self.getMetaString("course", "0"));
             } catch (Exception ignored) {
             }
-            cotBridge.sendPositionOverRadio(
+            BtConnectionManager tx = resolveReplyTransport(context);
+            if (tx == null || !tx.isConnected()) {
+                Log.w(TAG, "Ping reply skipped — no connected transport for inbound="
+                        + pendingInboundTransport);
+                return;
+            }
+            cotBridge.sendPositionOverRadio(tx,
                     gp.getLatitude(), gp.getLongitude(),
                     gp.getAltitude(), (float) speedMs, (float) course, -1);
-            Log.d(TAG, "Ping reply sent (slotted)");
+            String link = tx == meshTransport ? "MeshCore" : "UV-PRO";
+            Log.d(TAG, "Ping reply sent (slotted) over " + link);
             PingReplyNotifier.notifyPingReplySent(context);
         } catch (Exception e) {
             Log.w(TAG, "Ping reply transmit failed: " + e.getMessage());
         }
+    }
+
+    private BtConnectionManager resolveReplyTransport(Context context) {
+        if (SettingsFragment.isPingReplySameTransportEnabled(context)) {
+            BtConnectionManager preferred = pendingInboundTransport == RfInboundTransport.MESHCORE
+                    ? meshTransport
+                    : uvproTransport;
+            if (preferred != null && preferred.isConnected()) {
+                return preferred;
+            }
+            Log.w(TAG, "Inbound transport " + pendingInboundTransport
+                    + " not connected — falling back to active TX manager");
+        }
+        return cotBridge.getActiveBtManager();
     }
 }

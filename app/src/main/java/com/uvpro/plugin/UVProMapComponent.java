@@ -290,6 +290,7 @@ try {
         // 5. BtConnectionManager (needs context + PacketRouter)
         btConnectionManager = new BtConnectionManager(context, packetRouter);
         meshBtConnectionManager = new MeshBtConnectionManager(context, packetRouter);
+        packetRouter.setInboundTransports(btConnectionManager, meshBtConnectionManager);
         btConnectionManager.setReconnectBlocker(
                 () -> meshBtConnectionManager != null && meshBtConnectionManager.isConnected());
         repeaterAdvertListener = advert -> {

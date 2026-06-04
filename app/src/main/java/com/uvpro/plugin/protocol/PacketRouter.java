@@ -293,7 +293,7 @@ public class PacketRouter {
                 byte[] pingBytes = packet.getPayload();
                 String pingCall = new String(pingBytes, java.nio.charset.StandardCharsets.US_ASCII).trim();
                 java.util.Arrays.fill(pingBytes, (byte) 0);
-                Log.d(TAG, "Ping from: " + pingCall);
+                Log.d(TAG, "Ping from: " + pingCall + " via " + inboundTransport);
                 MapView pingMv = MapView.getMapView();
                 if (pingMv != null) {
                     PingReplyNotifier.notifyPingReceived(pingMv.getContext(), pingCall);

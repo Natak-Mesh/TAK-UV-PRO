@@ -249,6 +249,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Switch switchMeshShowNodes;
     private Switch switchMeshSendPositionWithAdvert;
     private Button btnMeshcoreChannels;
+    private TextView meshChannelTitleView;
+    private TextView meshChannelLogText;
+    private android.widget.EditText editMeshChannelMessage;
+    private Button btnMeshChannelSend;
+    private android.view.View rowMeshChannelInput;
     private Button btnMeshcoreSetNodePositionMap;
     private Button btnMeshcoreSendAdvert;
     private Button btnClearMeshContacts;
@@ -862,6 +867,21 @@ public class UVProDropDownReceiver extends DropDownReceiver
         textMeshUseCallsignLocation = rootView.findViewById(
                 getId("text_mesh_use_callsign_location"));
         btnMeshcoreChannels = rootView.findViewById(getId("btn_meshcore_channels"));
+        meshChannelTitleView = rootView.findViewById(getId("text_mesh_channel_title"));
+        meshChannelLogText = rootView.findViewById(getId("text_mesh_channel_log"));
+        editMeshChannelMessage = rootView.findViewById(getId("edit_mesh_channel_message"));
+        btnMeshChannelSend = rootView.findViewById(getId("btn_mesh_channel_send"));
+        rowMeshChannelInput = rootView.findViewById(getId("row_mesh_channel_input"));
+        if (meshChannelLogText != null) {
+            meshChannelLogText.setMovementMethod(new ScrollingMovementMethod());
+            meshChannelLogText.setOnTouchListener((v, event) -> {
+                v.getParent().requestDisallowInterceptTouchEvent(true);
+                if (event.getAction() == android.view.MotionEvent.ACTION_UP) {
+                    v.getParent().requestDisallowInterceptTouchEvent(false);
+                }
+                return false;
+            });
+        }
         btnMeshcoreSetNodePositionMap = rootView.findViewById(getId("btn_meshcore_set_node_position_map"));
         btnMeshcoreSendAdvert = rootView.findViewById(getId("btn_meshcore_send_advert"));
         btnClearMeshContacts = rootView.findViewById(getId("btn_clear_mesh_contacts"));
@@ -930,6 +950,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         if (btnMeshcoreChannels != null) {
             btnMeshcoreChannels.setOnClickListener(v -> onMeshcoreChannelsClicked());
+        }
+        if (btnMeshChannelSend != null) {
+            btnMeshChannelSend.setOnClickListener(v -> sendInlineMeshChannelText());
         }
         if (btnMeshcoreSetNodePositionMap != null) {
             btnMeshcoreSetNodePositionMap.setOnClickListener(v -> startMeshNodePositionMapPick());
@@ -2045,92 +2068,49 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void openMeshChannelChatDialog(int channelIndex) {
-        Context ctx = getMapView().getContext();
         String channelName = meshChannelNames.get(channelIndex);
         if (channelName == null || channelName.trim().isEmpty()) {
             channelName = "Channel";
         }
         meshChannelChatActiveIndex = channelIndex;
+        // Show the inline chat window in the panel.
+        if (meshChannelTitleView != null) {
+            meshChannelTitleView.setText("Channel #" + channelIndex + " — " + channelName);
+            meshChannelTitleView.setVisibility(android.view.View.VISIBLE);
+        }
+        if (meshChannelLogText != null) {
+            meshChannelChatLogView = meshChannelLogText;
+            meshChannelLogText.setVisibility(android.view.View.VISIBLE);
+        }
+        if (rowMeshChannelInput != null) {
+            rowMeshChannelInput.setVisibility(android.view.View.VISIBLE);
+        }
+        renderMeshChannelChatLog(channelIndex);
+    }
 
-        LinearLayout root = new LinearLayout(ctx);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int pad = dip(ctx, 12);
-        root.setPadding(pad, pad, pad, pad);
-
-        TextView title = new TextView(ctx);
-        title.setText("Channel #" + channelIndex + " - " + channelName);
-        title.setTextColor(0xFFFFFFFF);
-        title.setTextSize(15f);
-        root.addView(title);
-        meshChannelChatTitleView = title;
-
-        TextView status = new TextView(ctx);
-        status.setText("Status shown from MeshCore message metadata when available.");
-        status.setTextColor(0xFF90A4AE);
-        status.setTextSize(11f);
-        LinearLayout.LayoutParams statusLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        statusLp.bottomMargin = dip(ctx, 8);
-        root.addView(status, statusLp);
-
-        ScrollView scroll = new ScrollView(ctx);
-        LinearLayout.LayoutParams scrollLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0);
-        scrollLp.weight = 1f;
-        TextView log = new TextView(ctx);
-        log.setTextColor(0xFFE0E0E0);
-        log.setTextSize(13f);
-        log.setMovementMethod(new ScrollingMovementMethod());
-        log.setPadding(dip(ctx, 8), dip(ctx, 8), dip(ctx, 8), dip(ctx, 8));
-        log.setBackgroundColor(0xFF1E1E1E);
-        scroll.addView(log, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(scroll, scrollLp);
-        meshChannelChatLogView = log;
-
-        EditText input = new EditText(ctx);
-        input.setHint("Type message");
-        input.setInputType(InputType.TYPE_CLASS_TEXT
-                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        inputLp.topMargin = dip(ctx, 8);
-        root.addView(input, inputLp);
-
-        AlertDialog dialog = new AlertDialog.Builder(ctx)
-                .setTitle("MeshCore Channel Chat")
-                .setView(root)
-                .setPositiveButton("Send", null)
-                .setNegativeButton("Close", (d, which) -> {
-                    meshChannelChatActiveIndex = -1;
-                    meshChannelChatDialog = null;
-                    meshChannelChatLogView = null;
-                    meshChannelChatTitleView = null;
-                })
-                .create();
-        dialog.setOnShowListener(d -> {
-            Button send = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-            if (send != null) {
-                send.setOnClickListener(v -> {
-                    String text = input.getText() != null ? input.getText().toString().trim() : "";
-                    if (text.isEmpty()) {
-                        return;
-                    }
-                    if (!meshBtManager.sendChannelText(channelIndex, text)) {
-                        Toast.makeText(ctx, "Failed to send over MeshCore channel.",
-                                Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    input.setText("");
-                });
-            }
-            renderMeshChannelChatLog(channelIndex);
-        });
-        dialog.show();
-        meshChannelChatDialog = dialog;
+    private void sendInlineMeshChannelText() {
+        if (meshBtManager == null || !meshBtManager.isConnected()) {
+            return;
+        }
+        if (meshChannelChatActiveIndex < 0) {
+            Toast.makeText(getMapView().getContext(),
+                    "Select a channel first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (editMeshChannelMessage == null) {
+            return;
+        }
+        String text = editMeshChannelMessage.getText() != null
+                ? editMeshChannelMessage.getText().toString().trim() : "";
+        if (text.isEmpty()) {
+            return;
+        }
+        if (!meshBtManager.sendChannelText(meshChannelChatActiveIndex, text)) {
+            Toast.makeText(getMapView().getContext(),
+                    "Failed to send over MeshCore channel.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        editMeshChannelMessage.setText("");
     }
 
     private void appendMeshChannelMessage(MeshBtConnectionManager.MeshChannelMessage message) {
@@ -2528,13 +2508,29 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (sb.length() == 0) {
             sb.append("No messages yet for this channel.");
         }
-        meshChannelChatLogView.setText(sb.toString());
+        meshChannelChatLogView.setText(sb);
+        // Auto-scroll to the bottom; user can still scroll up for history.
+        meshChannelChatLogView.post(() -> {
+            if (meshChannelChatLogView == null) return;
+            android.text.Layout layout = meshChannelChatLogView.getLayout();
+            if (layout == null) return;
+            int visible = meshChannelChatLogView.getHeight()
+                    - meshChannelChatLogView.getPaddingTop()
+                    - meshChannelChatLogView.getPaddingBottom();
+            int scrollY = layout.getHeight() - visible;
+            meshChannelChatLogView.scrollTo(0, Math.max(0, scrollY));
+        });
         if (meshChannelChatTitleView != null) {
             String channelName = meshChannelNames.get(channelIndex);
             if (channelName == null || channelName.trim().isEmpty()) {
                 channelName = "Channel";
             }
             meshChannelChatTitleView.setText("Channel #" + channelIndex + " - " + channelName);
+        }
+        if (meshChannelTitleView != null) {
+            String channelName = meshChannelNames.get(channelIndex);
+            if (channelName == null || channelName.trim().isEmpty()) channelName = "Channel";
+            meshChannelTitleView.setText("Channel #" + channelIndex + " — " + channelName);
         }
     }
 

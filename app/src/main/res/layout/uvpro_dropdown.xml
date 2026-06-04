@@ -1309,9 +1309,63 @@
                 style="@style/UvproPillButton.Beacon"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginBottom="8dp"
+                android:layout_marginBottom="4dp"
                 android:text="Channels"
                 android:background="@drawable/bg_uvpro_mesh_button" />
+
+            <!-- Inline channel chat window -->
+            <TextView
+                android:id="@+id/text_mesh_channel_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="#FF00BCD4"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:paddingTop="4dp"
+                android:paddingBottom="2dp"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/text_mesh_channel_log"
+                android:layout_width="match_parent"
+                android:layout_height="120dp"
+                android:layout_marginTop="2dp"
+                android:background="#FF1A1A1A"
+                android:padding="6dp"
+                android:scrollbars="vertical"
+                android:textColor="#FFF0F0F0"
+                android:textSize="13sp"
+                android:visibility="gone" />
+
+            <LinearLayout
+                android:id="@+id/row_mesh_channel_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="4dp"
+                android:layout_marginBottom="4dp"
+                android:visibility="gone">
+
+                <EditText
+                    android:id="@+id/edit_mesh_channel_message"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:inputType="text"
+                    android:hint="Channel message"
+                    android:textColor="#FFFFFFFF"
+                    android:textColorHint="#FF888888" />
+
+                <Button
+                    android:id="@+id/btn_mesh_channel_send"
+                    style="@style/UvproPillButton.Beacon"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:text="Send"
+                    android:background="@drawable/bg_uvpro_mesh_button" />
+            </LinearLayout>
 
             <Button
                 android:id="@+id/btn_clear_mesh_contacts"

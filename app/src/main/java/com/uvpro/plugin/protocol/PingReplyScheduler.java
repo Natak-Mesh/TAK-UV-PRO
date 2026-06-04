@@ -52,9 +52,29 @@ public final class PingReplyScheduler {
         if (mv == null) {
             return;
         }
-        pendingInboundTransport = inboundTransport != null
+        RfInboundTransport incoming = inboundTransport != null
                 ? inboundTransport
                 : RfInboundTransport.UVPRO;
+
+        if (pendingReply != null) {
+            // Same ping often hits both Mesh and UV-PRO; keep the direct radio path.
+            if (pendingInboundTransport == RfInboundTransport.UVPRO
+                    && incoming == RfInboundTransport.MESHCORE) {
+                Log.d(TAG, "Ping reply already scheduled on UV-PRO; ignoring Mesh duplicate");
+                return;
+            }
+            if (pendingInboundTransport == RfInboundTransport.MESHCORE
+                    && incoming == RfInboundTransport.UVPRO) {
+                Log.d(TAG, "Upgrading ping reply transport Mesh → UV-PRO");
+                cancelPending();
+            } else {
+                Log.d(TAG, "Ping reply already pending on " + pendingInboundTransport
+                        + "; ignoring duplicate on " + incoming);
+                return;
+            }
+        }
+
+        pendingInboundTransport = incoming;
         String callsign = SettingsFragment.getCallsign(context);
         int slotCount = NetSlotConfig.getSlotCount(context);
         int rawSlot = NetSlotConfig.computeSlotIndex(callsign, slotCount);
@@ -120,8 +140,8 @@ public final class PingReplyScheduler {
             cotBridge.sendPositionOverRadio(tx,
                     gp.getLatitude(), gp.getLongitude(),
                     gp.getAltitude(), (float) speedMs, (float) course, -1);
-            String link = tx == meshTransport ? "MeshCore" : "UV-PRO";
-            Log.d(TAG, "Ping reply sent (slotted) over " + link);
+            Log.d(TAG, "Ping reply sent (slotted) over " + linkNameFor(tx)
+                    + " (inbound=" + pendingInboundTransport + ")");
             PingReplyNotifier.notifyPingReplySent(context);
         } catch (Exception e) {
             Log.w(TAG, "Ping reply transmit failed: " + e.getMessage());
@@ -136,9 +156,23 @@ public final class PingReplyScheduler {
             if (preferred != null && preferred.isConnected()) {
                 return preferred;
             }
-            Log.w(TAG, "Inbound transport " + pendingInboundTransport
-                    + " not connected — falling back to active TX manager");
+            Log.w(TAG, "Ping reply skipped: inbound " + pendingInboundTransport
+                    + " not connected (same-transport mode, no fallback)");
+            return null;
         }
         return cotBridge.getActiveBtManager();
+    }
+
+    private String linkNameFor(BtConnectionManager tx) {
+        if (tx == null) {
+            return "?";
+        }
+        if (meshTransport != null && tx == meshTransport) {
+            return "MeshCore";
+        }
+        if (tx instanceof com.uvpro.plugin.bluetooth.MeshBtConnectionManager) {
+            return "MeshCore";
+        }
+        return "UV-PRO";
     }
 }

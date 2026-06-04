@@ -2208,7 +2208,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void showAddChannelDialog() {
-        if (meshBtManager == null || !meshBtManager.isConnected()) {
+        boolean connected = meshConnected
+                || (meshBtManager != null && meshBtManager.isConnected());
+        if (!connected) {
             Toast.makeText(getMapView().getContext(),
                     "Connect to a MeshCore node first.", Toast.LENGTH_SHORT).show();
             return;
@@ -2298,23 +2300,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     secretLayout.setOrientation(LinearLayout.VERTICAL);
                     int p = dip(ctx, 16);
                     secretLayout.setPadding(p, p / 2, p, p / 2);
-                    // QR code — centred
-                    String qrContent = "meshcore://channel/add?name="
-                            + Uri.encode(name) + "&secret=" + hex;
-                    android.graphics.Bitmap qrBmp = generateQrBitmap(qrContent, 400);
-                    if (qrBmp != null) {
-                        android.widget.ImageView qrView = new android.widget.ImageView(ctx);
-                        int qrSizePx = dip(ctx, 240);
-                        LinearLayout.LayoutParams qrLp = new LinearLayout.LayoutParams(
-                                qrSizePx, qrSizePx);
-                        qrLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
-                        qrLp.bottomMargin = dip(ctx, 12);
-                        qrView.setImageBitmap(qrBmp);
-                        qrView.setBackgroundColor(android.graphics.Color.WHITE);
-                        qrView.setPadding(dip(ctx, 8), dip(ctx, 8), dip(ctx, 8), dip(ctx, 8));
-                        qrView.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
-                        secretLayout.addView(qrView, qrLp);
-                    }
                     // Instruction text
                     TextView msg = new TextView(ctx);
                     msg.setText("Share this QR or the secret key below with your team.\nThey join via 'Join a Private Channel'.");
@@ -2346,6 +2331,23 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     secretLayout.addView(secretView, new LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.MATCH_PARENT,
                             LinearLayout.LayoutParams.WRAP_CONTENT));
+                    // QR code — centred, below secret
+                    String qrContent = "meshcore://channel/add?name="
+                            + Uri.encode(name) + "&secret=" + hex;
+                    android.graphics.Bitmap qrBmp = generateQrBitmap(qrContent, 400);
+                    if (qrBmp != null) {
+                        android.widget.ImageView qrView = new android.widget.ImageView(ctx);
+                        int qrSizePx = dip(ctx, 240);
+                        LinearLayout.LayoutParams qrLp = new LinearLayout.LayoutParams(
+                                qrSizePx, qrSizePx);
+                        qrLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+                        qrLp.topMargin = dip(ctx, 12);
+                        qrView.setImageBitmap(qrBmp);
+                        qrView.setBackgroundColor(android.graphics.Color.WHITE);
+                        qrView.setPadding(dip(ctx, 8), dip(ctx, 8), dip(ctx, 8), dip(ctx, 8));
+                        qrView.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+                        secretLayout.addView(qrView, qrLp);
+                    }
                     shareScroll.addView(secretLayout);
                     new AlertDialog.Builder(ctx)
                             .setTitle("Channel '" + name + "' Created")
@@ -2424,11 +2426,56 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private boolean pendingQrScan = false;
 
+    private Runnable qrPollRunnable = null;
+
     private void showQrScanDialog() {
+        // Clear any stale result before launching
+        try {
+            pluginContext.getSharedPreferences("uvpro_qr_result",
+                    android.content.Context.MODE_PRIVATE)
+                    .edit().remove("pending_qr").remove("pending_qr_ts").apply();
+        } catch (Exception ignored) {}
+
         pendingQrScan = true;
         Intent launch = new Intent(pluginContext, QrScanActivity.class);
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         pluginContext.startActivity(launch);
+
+        // Poll SharedPrefs every second for up to 30s — reliable across process boundary
+        if (qrPollRunnable != null) {
+            getMapView().removeCallbacks(qrPollRunnable);
+        }
+        qrPollRunnable = new Runnable() {
+            private int attempts = 0;
+            @Override
+            public void run() {
+                attempts++;
+                if (attempts > 30) {
+                    pendingQrScan = false;
+                    qrPollRunnable = null;
+                    return;
+                }
+                try {
+                    android.content.SharedPreferences prefs =
+                            pluginContext.getSharedPreferences("uvpro_qr_result",
+                                    android.content.Context.MODE_PRIVATE);
+                    String pending = prefs.getString("pending_qr", null);
+                    long ts = prefs.getLong("pending_qr_ts", 0L);
+                    if (pending != null && !pending.isEmpty()
+                            && System.currentTimeMillis() - ts < 60_000L) {
+                        prefs.edit().remove("pending_qr").remove("pending_qr_ts").apply();
+                        pendingQrScan = false;
+                        qrPollRunnable = null;
+                        handleQrChannelResult(pending);
+                        return;
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "QR poll failed", e);
+                }
+                getMapView().postDelayed(this, 1000L);
+            }
+        };
+        getMapView().postDelayed(qrPollRunnable, 1000L);
     }
 
     /** Parse a MeshCore channel QR payload: meshcore://channel/add?name=X&secret=Y */
@@ -2667,18 +2714,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         // QR code — centred via per-view gravity, not root gravity
         android.graphics.Bitmap qrBmp = generateQrBitmap(qrContent, 400);
-        if (qrBmp != null) {
-            android.widget.ImageView qrView = new android.widget.ImageView(ctx);
-            int qrSizePx = dip(ctx, 240);
-            LinearLayout.LayoutParams qrLp = new LinearLayout.LayoutParams(qrSizePx, qrSizePx);
-            qrLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
-            qrLp.bottomMargin = dip(ctx, 12);
-            qrView.setImageBitmap(qrBmp);
-            qrView.setBackgroundColor(android.graphics.Color.WHITE);
-            qrView.setPadding(dip(ctx, 8), dip(ctx, 8), dip(ctx, 8), dip(ctx, 8));
-            qrView.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
-            layout.addView(qrView, qrLp);
-        }
 
         TextView secLbl = new TextView(ctx);
         secLbl.setText("Secret Key (long-press to copy)");
@@ -2700,6 +2735,19 @@ public class UVProDropDownReceiver extends DropDownReceiver
         layout.addView(secretView, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        if (qrBmp != null) {
+            android.widget.ImageView qrView = new android.widget.ImageView(ctx);
+            int qrSizePx = dip(ctx, 240);
+            LinearLayout.LayoutParams qrLp = new LinearLayout.LayoutParams(qrSizePx, qrSizePx);
+            qrLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+            qrLp.topMargin = dip(ctx, 12);
+            qrView.setImageBitmap(qrBmp);
+            qrView.setBackgroundColor(android.graphics.Color.WHITE);
+            qrView.setPadding(dip(ctx, 8), dip(ctx, 8), dip(ctx, 8), dip(ctx, 8));
+            qrView.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+            layout.addView(qrView, qrLp);
+        }
 
         scroll.addView(layout);
         new AlertDialog.Builder(ctx)
@@ -7515,12 +7563,39 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 scheduleScrollToRepeaterLoadSection();
                 pendingOpenToChannelControl = false;
             }
+            // Check for a pending QR scan result stored by QrScanActivity
+            checkPendingQrResult();
+        }
+    }
+
+    private void checkPendingQrResult() {
+        try {
+            android.content.SharedPreferences prefs =
+                    pluginContext.getSharedPreferences("uvpro_qr_result",
+                            android.content.Context.MODE_PRIVATE);
+            String pending = prefs.getString("pending_qr", null);
+            long ts = prefs.getLong("pending_qr_ts", 0L);
+            if (pending == null || pending.isEmpty()) return;
+            // Only process results from the last 60 seconds
+            if (System.currentTimeMillis() - ts > 60_000L) {
+                prefs.edit().remove("pending_qr").remove("pending_qr_ts").apply();
+                return;
+            }
+            // Clear before processing so we don't double-handle
+            prefs.edit().remove("pending_qr").remove("pending_qr_ts").apply();
+            handleQrChannelResult(pending);
+        } catch (Exception e) {
+            Log.w(TAG, "checkPendingQrResult failed", e);
         }
     }
 
     @Override
     public void disposeImpl() {
         // Unregister listeners
+        if (qrPollRunnable != null && getMapView() != null) {
+            getMapView().removeCallbacks(qrPollRunnable);
+            qrPollRunnable = null;
+        }
         btManager.removeListener(this);
         if (meshBtManager != null) {
             meshBtManager.removeMeshChannelListener(meshChannelListener);

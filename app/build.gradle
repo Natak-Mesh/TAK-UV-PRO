@@ -152,4 +152,6 @@ dependencies {
     if (atakMainJar.exists()) {
         compileOnly files(atakMainJar)
     }
+    // ZXing core only — for QR encode/decode (no UI, no AndroidX dependency)
+    implementation 'com.google.zxing:core:3.5.3'
 }

@@ -34,6 +34,9 @@ public class MeshStatusOverlay extends MarkerIconWidget implements MapWidget.OnC
 
     private static MeshStatusOverlay instance;
     private static boolean lastKnownConnected = false;
+    // Install-generation counter: incremented on every install() call so stale
+    // postDelayed retries can detect they are no longer the current install attempt.
+    private static int installGeneration = 0;
 
     private final MapView mapView;
     private final String connectedUri;
@@ -65,19 +68,30 @@ public class MeshStatusOverlay extends MarkerIconWidget implements MapWidget.OnC
     }
 
     public static void install(Context pluginContext) {
+        // Skip if already installed — prevents duplicate widget on repeated panel opens.
+        if (instance != null) {
+            Log.d(TAG, "install skipped: already installed");
+            return;
+        }
         Log.d(TAG, "install requested");
         MapView mv = MapView.getMapView();
         if (mv == null) {
             Log.w(TAG, "install deferred: MapView is null");
             return;
         }
-        uninstall();
+        final int myGeneration = ++installGeneration;
         try {
             RootLayoutWidget root =
                     (RootLayoutWidget) mv.getComponentExtra("rootLayoutWidget");
             if (root == null) {
                 Log.d(TAG, "install deferred: rootLayoutWidget not ready");
-                mv.postDelayed(() -> install(pluginContext), 2000);
+                mv.postDelayed(() -> {
+                    // Only proceed if this retry is still the current install attempt
+                    // and no successful install has happened in the meantime.
+                    if (myGeneration == installGeneration && instance == null) {
+                        install(pluginContext);
+                    }
+                }, 2000);
                 return;
             }
             LinearLayoutWidget tr = root.getLayout(RootLayoutWidget.TOP_RIGHT);

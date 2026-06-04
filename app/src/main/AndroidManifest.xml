@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Camera (QR scanning) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <!-- Bluetooth permissions -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
@@ -19,6 +22,12 @@
         android:roundIcon="@drawable/ic_uvpro">
 
         <meta-data android:name="plugin-api" android:value="${atakApiVersion}" />
+
+        <!-- QR scan trampoline for channel import -->
+        <activity
+            android:name="com.uvpro.plugin.QrScanActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:exported="true" />
 
         <!-- Allow ATAK plugin discovery -->
         <activity android:name="com.atakmap.app.component"

@@ -464,6 +464,7 @@ try {
                 new AtakBroadcast.DocumentedIntentFilter();
         filter.addAction(UVProDropDownReceiver.SHOW_PLUGIN);
         filter.addAction(UVProDropDownReceiver.SHOW_PLUGIN_CHANNEL_CONTROL);
+        filter.addAction(UVProDropDownReceiver.ACTION_QR_CHANNEL_RESULT);
         registerDropDownReceiver(dropDownReceiver, filter);
 
         aprsDetailsDropDownReceiver = new AprsDetailsDropDownReceiver(

@@ -15,6 +15,7 @@ import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.net.Uri;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
@@ -59,6 +60,7 @@ import com.atakmap.android.maps.MapView;
 import com.atakmap.android.toolbar.ToolManagerBroadcastReceiver;
 import com.atakmap.android.user.MapClickTool;
 import com.atakmap.android.toolbar.widgets.TextContainer;
+import com.atakmap.coremap.filesystem.FileSystemUtils;
 
 import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.beacon.SmartBeacon;
@@ -248,7 +250,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Switch switchMeshShowRepeaters;
     private Switch switchMeshShowNodes;
     private Switch switchMeshSendPositionWithAdvert;
-    private Button btnMeshcoreChannels;
+    private Button btnAddMeshChannel;
+    private LinearLayout stripMeshChannels;
     private TextView meshChannelTitleView;
     private TextView meshChannelLogText;
     private android.widget.EditText editMeshChannelMessage;
@@ -469,8 +472,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     }
                     getMapView().post(() -> {
                         appendMeshChannelMessage(message);
-                        if (meshChannelChatDialog != null && meshChannelChatDialog.isShowing()
-                                && meshChannelChatActiveIndex == message.channelIndex) {
+                        if (meshChannelChatActiveIndex == message.channelIndex
+                                && meshChannelChatLogView != null) {
                             renderMeshChannelChatLog(message.channelIndex);
                         }
                     });
@@ -682,6 +685,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
     @Override
     public void onReceive(Context context, Intent intent) {
         final String action = intent.getAction();
+        if (ACTION_QR_CHANNEL_RESULT.equals(action)) {
+            String content = intent.getStringExtra(EXTRA_QR_RESULT);
+            getMapView().post(() -> handleQrChannelResult(content));
+            return;
+        }
         if (SHOW_PLUGIN.equals(action)
                 && intent.getBooleanExtra(EXTRA_MESH_NODE_POSITION_PICK_RESULT, false)) {
             handleMeshNodePositionPickResult(intent);
@@ -714,8 +722,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         // Bind views
         bindViews();
         loadMeshChannelHistoryIfNeeded();
-        // Fallback path: ensure MeshCore map icon installs when panel is opened.
-        MeshStatusOverlay.install(pluginContext);
+        // MeshStatusOverlay is installed once from UVProMapComponent on startup.
+        // Do NOT call install() here — repeated panel opens would create duplicate widgets.
 
         // Restore actual connection state (survives dropdown close/reopen)
         if (btManager.isConnected()) {
@@ -866,7 +874,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 getId("switch_mesh_use_callsign_location"));
         textMeshUseCallsignLocation = rootView.findViewById(
                 getId("text_mesh_use_callsign_location"));
-        btnMeshcoreChannels = rootView.findViewById(getId("btn_meshcore_channels"));
+        btnAddMeshChannel = rootView.findViewById(getId("btn_add_mesh_channel"));
+        stripMeshChannels = rootView.findViewById(getId("strip_mesh_channels"));
         meshChannelTitleView = rootView.findViewById(getId("text_mesh_channel_title"));
         meshChannelLogText = rootView.findViewById(getId("text_mesh_channel_log"));
         editMeshChannelMessage = rootView.findViewById(getId("edit_mesh_channel_message"));
@@ -948,11 +957,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnMeshDisconnect != null) {
             btnMeshDisconnect.setOnClickListener(v -> onMeshDisconnectClicked());
         }
-        if (btnMeshcoreChannels != null) {
-            btnMeshcoreChannels.setOnClickListener(v -> onMeshcoreChannelsClicked());
-        }
         if (btnMeshChannelSend != null) {
             btnMeshChannelSend.setOnClickListener(v -> sendInlineMeshChannelText());
+        }
+        if (btnAddMeshChannel != null) {
+            btnAddMeshChannel.setOnClickListener(v -> showAddChannelDialog());
         }
         if (btnMeshcoreSetNodePositionMap != null) {
             btnMeshcoreSetNodePositionMap.setOnClickListener(v -> startMeshNodePositionMapPick());
@@ -1435,6 +1444,26 @@ public class UVProDropDownReceiver extends DropDownReceiver
         return (int) (d * c.getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    private android.graphics.Bitmap generateQrBitmap(String content, int sizePx) {
+        try {
+            com.google.zxing.qrcode.QRCodeWriter writer = new com.google.zxing.qrcode.QRCodeWriter();
+            com.google.zxing.common.BitMatrix matrix =
+                    writer.encode(content, com.google.zxing.BarcodeFormat.QR_CODE, sizePx, sizePx);
+            android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
+                    sizePx, sizePx, android.graphics.Bitmap.Config.RGB_565);
+            for (int x = 0; x < sizePx; x++) {
+                for (int y = 0; y < sizePx; y++) {
+                    bmp.setPixel(x, y, matrix.get(x, y)
+                            ? android.graphics.Color.BLACK : android.graphics.Color.WHITE);
+                }
+            }
+            return bmp;
+        } catch (Exception e) {
+            android.util.Log.w("UVPro.UI", "QR generation failed", e);
+            return null;
+        }
+    }
+
     private void updateScanButtonText() {
         if (btnScan == null) return;
         // Favorites/direct-connect retired: the radio button is always "SCAN & CONNECT".
@@ -1451,19 +1480,84 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void onMeshcoreChannelsClicked() {
-        if (meshBtManager == null || !meshBtManager.isConnected()) {
-            Toast.makeText(getMapView().getContext(),
-                    "Connect to a MeshCore node first.", Toast.LENGTH_SHORT).show();
+        // Kept for legacy call-sites; channel strip is now driven by updateMeshChannelButtonLabel.
+        if (meshBtManager != null && meshBtManager.isConnected()) {
+            meshBtManager.requestAllChannelInfo();
+            Map<Integer, String> snapshot = meshBtManager.getKnownChannelNamesSnapshot();
+            if (!snapshot.isEmpty()) {
+                meshChannelNames.putAll(snapshot);
+                persistMeshChannelHistory();
+            }
+            updateMeshChannelButtonLabel();
+        }
+    }
+
+    private void buildMeshChannelButtonStrip() {
+        if (stripMeshChannels == null) return;
+        stripMeshChannels.removeAllViews();
+        Context ctx = getMapView().getContext();
+        List<Integer> indices = new ArrayList<>();
+        for (int i = 0; i < 8; i++) {
+            String name = meshChannelNames.get(i);
+            if (name != null && !name.trim().isEmpty()
+                    && !"ATAK_DATA".equalsIgnoreCase(name.trim())) {
+                indices.add(i);
+            }
+        }
+        if (indices.isEmpty()) {
+            // No named channels yet — show a placeholder.
+            TextView placeholder = new TextView(ctx);
+            placeholder.setText("No channels found. Try connecting first.");
+            placeholder.setTextColor(0xFF888888);
+            placeholder.setTextSize(11f);
+            placeholder.setPadding(8, 4, 8, 4);
+            stripMeshChannels.addView(placeholder);
             return;
         }
-        meshBtManager.requestAllChannelInfo();
-        Map<Integer, String> snapshot = meshBtManager.getKnownChannelNamesSnapshot();
-        if (!snapshot.isEmpty()) {
-            meshChannelNames.putAll(snapshot);
-            persistMeshChannelHistory();
+        for (int idx : indices) {
+            final int channelIndex = idx;
+            String name = meshChannelNames.get(idx);
+            Button btn = new Button(ctx);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            lp.setMarginEnd(indices.indexOf(idx) < indices.size() - 1 ? 4 : 0);
+            btn.setLayoutParams(lp);
+            btn.setText(name);
+            btn.setTextSize(11f);
+            btn.setAllCaps(false);
+            btn.setPadding(8, 6, 8, 6);
+            btn.setMinHeight(0);
+            btn.setMinimumHeight(0);
+            applyMeshChannelButtonStyle(btn, channelIndex == meshChannelChatActiveIndex);
+            btn.setOnClickListener(v -> {
+                meshChannelChatActiveIndex = channelIndex;
+                openMeshChannelChatDialog(channelIndex);
+                buildMeshChannelButtonStrip();
+            });
+            final String channelNameFinal = name;
+            btn.setOnLongClickListener(v -> {
+                showChannelSettingsMenu(channelIndex, channelNameFinal);
+                return true;
+            });
+            stripMeshChannels.addView(btn);
         }
-        updateMeshChannelButtonLabel();
-        showMeshChannelPickerDialog();
+    }
+
+    private void applyMeshChannelButtonStyle(Button btn, boolean selected) {
+        if (selected) {
+            btn.setBackgroundColor(0xFF00BCD4);
+            btn.setTextColor(0xFF000000);
+        } else {
+            try {
+                btn.setBackground(getMapView().getContext().getDrawable(
+                        getMapView().getContext().getResources().getIdentifier(
+                                "bg_uvpro_mesh_button", "drawable",
+                                getMapView().getContext().getPackageName())));
+            } catch (Exception e) {
+                btn.setBackgroundColor(0xFF37474F);
+            }
+            btn.setTextColor(0xFFFFFFFF);
+        }
     }
 
     private void onMeshcoreSendAdvertClicked() {
@@ -2113,6 +2207,613 @@ public class UVProDropDownReceiver extends DropDownReceiver
         editMeshChannelMessage.setText("");
     }
 
+    private void showAddChannelDialog() {
+        if (meshBtManager == null || !meshBtManager.isConnected()) {
+            Toast.makeText(getMapView().getContext(),
+                    "Connect to a MeshCore node first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Context ctx = getMapView().getContext();
+        String[] options = {
+                "Join the Public Channel",
+                "Join a Hashtag Channel  (e.g. #test)",
+                "Create a Private Channel",
+                "Join a Private Channel",
+                "Scan QR Code"
+        };
+        new AlertDialog.Builder(ctx)
+                .setTitle("Add Channel")
+                .setItems(options, (d, which) -> {
+                    switch (which) {
+                        case 0: joinPublicChannel();            break;
+                        case 1: showHashtagChannelDialog();     break;
+                        case 2: showCreatePrivateDialog();      break;
+                        case 3: showJoinPrivateDialog();        break;
+                        case 4: showQrScanDialog();             break;
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void joinPublicChannel() {
+        // Public channel: well-known fixed key 8b3387e9c5cdea6ac9e5edbaa115cd72
+        byte[] publicKey = hexToBytes("8b3387e9c5cdea6ac9e5edbaa115cd72");
+        addChannelToNode("Public", publicKey);
+    }
+
+    private void showHashtagChannelDialog() {
+        Context ctx = getMapView().getContext();
+        LinearLayout layout = buildChannelDialogLayout(ctx, true, false, false);
+        EditText nameField = (EditText) layout.getTag();
+
+        AlertDialog hashtagDialog = new AlertDialog.Builder(ctx)
+                .setTitle("Join Hashtag Channel")
+                .setMessage("Key is derived automatically from the channel name.\nAnyone who knows the name can join.")
+                .setView(layout)
+                .setPositiveButton("Join", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        hashtagDialog.setOnShowListener(d -> {
+            Button joinBtn = hashtagDialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (joinBtn == null) return;
+            joinBtn.setOnClickListener(v -> {
+                String raw = nameField.getText() != null
+                        ? nameField.getText().toString().trim() : "";
+                if (raw.isEmpty()) { nameField.setError("Name required"); return; }
+                String name = raw.startsWith("#") ? raw : "#" + raw;
+                byte[] secret = sha256First16(name);
+                if (addChannelToNode(name, secret)) hashtagDialog.dismiss();
+            });
+        });
+        hashtagDialog.show();
+    }
+
+    private void showCreatePrivateDialog() {
+        Context ctx = getMapView().getContext();
+        LinearLayout layout = buildChannelDialogLayout(ctx, true, false, false);
+        EditText nameField = (EditText) layout.getTag();
+
+        AlertDialog createPrivateDialog = new AlertDialog.Builder(ctx)
+                .setTitle("Create Private Channel")
+                .setMessage("A random secret key will be generated.\nShare it with your team via QR code.")
+                .setView(layout)
+                .setPositiveButton("Create", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        createPrivateDialog.setOnShowListener(d -> {
+            Button btn = createPrivateDialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (btn == null) return;
+            btn.setOnClickListener(v -> {
+                String name = nameField.getText() != null
+                        ? nameField.getText().toString().trim() : "";
+                if (name.isEmpty()) { nameField.setError("Name required"); return; }
+                byte[] secret = new byte[16];
+                new java.security.SecureRandom().nextBytes(secret);
+                if (addChannelToNode(name, secret)) {
+                    String hex = bytesToHex(secret);
+                    // Show secret in a selectable field so the user can copy it.
+                    android.widget.ScrollView shareScroll = new android.widget.ScrollView(ctx);
+                    LinearLayout secretLayout = new LinearLayout(ctx);
+                    secretLayout.setOrientation(LinearLayout.VERTICAL);
+                    int p = dip(ctx, 16);
+                    secretLayout.setPadding(p, p / 2, p, p / 2);
+                    // QR code — centred
+                    String qrContent = "meshcore://channel/add?name="
+                            + Uri.encode(name) + "&secret=" + hex;
+                    android.graphics.Bitmap qrBmp = generateQrBitmap(qrContent, 400);
+                    if (qrBmp != null) {
+                        android.widget.ImageView qrView = new android.widget.ImageView(ctx);
+                        int qrSizePx = dip(ctx, 240);
+                        LinearLayout.LayoutParams qrLp = new LinearLayout.LayoutParams(
+                                qrSizePx, qrSizePx);
+                        qrLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+                        qrLp.bottomMargin = dip(ctx, 12);
+                        qrView.setImageBitmap(qrBmp);
+                        qrView.setBackgroundColor(android.graphics.Color.WHITE);
+                        qrView.setPadding(dip(ctx, 8), dip(ctx, 8), dip(ctx, 8), dip(ctx, 8));
+                        qrView.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+                        secretLayout.addView(qrView, qrLp);
+                    }
+                    // Instruction text
+                    TextView msg = new TextView(ctx);
+                    msg.setText("Share this QR or the secret key below with your team.\nThey join via 'Join a Private Channel'.");
+                    msg.setTextColor(0xFFCCCCCC);
+                    msg.setTextSize(13f);
+                    LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT);
+                    mlp.bottomMargin = dip(ctx, 8);
+                    secretLayout.addView(msg, mlp);
+                    // Secret key label
+                    TextView secLbl = new TextView(ctx);
+                    secLbl.setText("Secret Key (long-press to copy)");
+                    secLbl.setTextColor(0xFFAAAAAA);
+                    secLbl.setTextSize(12f);
+                    secretLayout.addView(secLbl, new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT));
+                    // Selectable secret field
+                    EditText secretView = new EditText(ctx);
+                    secretView.setText(hex);
+                    secretView.setTextIsSelectable(true);
+                    secretView.setFocusableInTouchMode(true);
+                    secretView.setTextSize(13f);
+                    secretView.setInputType(InputType.TYPE_NULL);
+                    secretView.setTextColor(0xFF00BCD4);
+                    secretView.setBackgroundColor(0xFF1A1A1A);
+                    secretView.setPadding(p / 2, p / 2, p / 2, p / 2);
+                    secretLayout.addView(secretView, new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT));
+                    shareScroll.addView(secretLayout);
+                    new AlertDialog.Builder(ctx)
+                            .setTitle("Channel '" + name + "' Created")
+                            .setView(shareScroll)
+                            .setPositiveButton("Done", null)
+                            .show();
+                    createPrivateDialog.dismiss();
+                }
+            });
+        });
+        createPrivateDialog.show();
+    }
+
+    private void showJoinPrivateDialog() {
+        Context ctx = getMapView().getContext();
+        int pad = dip(ctx, 16);
+        LinearLayout layout = new LinearLayout(ctx);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(pad, pad / 2, pad, 0);
+
+        TextView nameLbl = new TextView(ctx); nameLbl.setText("Channel Name");
+        nameLbl.setTextColor(0xFFAAAAAA); nameLbl.setTextSize(12f);
+        layout.addView(nameLbl);
+        EditText nameField = new EditText(ctx);
+        nameField.setHint("e.g. OPS"); nameField.setInputType(InputType.TYPE_CLASS_TEXT);
+        nameField.setSingleLine(true);
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        nlp.bottomMargin = dip(ctx, 10);
+        layout.addView(nameField, nlp);
+
+        TextView secLbl = new TextView(ctx); secLbl.setText("Secret Key (32 hex chars)");
+        secLbl.setTextColor(0xFFAAAAAA); secLbl.setTextSize(12f);
+        layout.addView(secLbl);
+        EditText secretField = new EditText(ctx);
+        secretField.setHint("e.g. 8b3387e9c5cdea6ac9e5edbaa115cd72");
+        secretField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        secretField.setSingleLine(true);
+        layout.addView(secretField, new LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog joinPrivateDialog = new AlertDialog.Builder(ctx)
+                .setTitle("Join Private Channel")
+                .setView(layout)
+                .setPositiveButton("Join", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        joinPrivateDialog.setOnShowListener(d -> {
+            Button joinBtn = joinPrivateDialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (joinBtn == null) return;
+            joinBtn.setOnClickListener(v -> {
+                String name = nameField.getText() != null
+                        ? nameField.getText().toString().trim() : "";
+                String secretHex = secretField.getText() != null
+                        ? secretField.getText().toString().trim().toLowerCase(Locale.US) : "";
+                if (name.isEmpty()) { nameField.setError("Name required"); return; }
+                if (secretHex.length() != 32) {
+                    secretField.setError("Must be exactly 32 hex characters (16 bytes)");
+                    return;
+                }
+                byte[] secret = hexToBytes(secretHex);
+                if (secret == null) {
+                    secretField.setError("Invalid hex — use 0-9, a-f only");
+                    return;
+                }
+                if (addChannelToNode(name, secret)) joinPrivateDialog.dismiss();
+            });
+        });
+        joinPrivateDialog.show();
+    }
+
+    public static final String ACTION_QR_CHANNEL_RESULT = "com.uvpro.plugin.QR_CHANNEL_RESULT";
+    public static final String EXTRA_QR_RESULT = "qr_result";
+
+    private boolean pendingQrScan = false;
+
+    private void showQrScanDialog() {
+        pendingQrScan = true;
+        Intent launch = new Intent(pluginContext, QrScanActivity.class);
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        pluginContext.startActivity(launch);
+    }
+
+    /** Parse a MeshCore channel QR payload: meshcore://channel/add?name=X&secret=Y */
+    private void handleQrChannelResult(String rawContent) {
+        pendingQrScan = false;
+        if (rawContent == null || rawContent.trim().isEmpty()) return;
+        try {
+            android.net.Uri uri = android.net.Uri.parse(rawContent.trim());
+            if (!"meshcore".equals(uri.getScheme())
+                    || !"/add".equals(uri.getPath()) && !"channel/add".equals(uri.getPath())
+                            && !"/channel/add".equals(uri.getPath())) {
+                // Try loose parse — maybe just name?secret format
+                showJoinPrivateDialogFromQr(null, rawContent);
+                return;
+            }
+            String name = uri.getQueryParameter("name");
+            String secret = uri.getQueryParameter("secret");
+            showJoinPrivateDialogFromQr(name, secret);
+        } catch (Exception e) {
+            Log.w(TAG, "QR parse failed: " + rawContent, e);
+            showJoinPrivateDialogFromQr(null, rawContent);
+        }
+    }
+
+    /** Pre-filled join dialog shown after QR scan. */
+    private void showJoinPrivateDialogFromQr(String name, String secret) {
+        Context ctx = getMapView().getContext();
+        int pad = dip(ctx, 16);
+        LinearLayout layout = new LinearLayout(ctx);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(pad, pad / 2, pad, 0);
+
+        TextView nameLbl = new TextView(ctx);
+        nameLbl.setText("Channel Name");
+        nameLbl.setTextColor(0xFFAAAAAA);
+        nameLbl.setTextSize(12f);
+        layout.addView(nameLbl);
+        EditText nameField = new EditText(ctx);
+        nameField.setHint("Channel name");
+        nameField.setInputType(InputType.TYPE_CLASS_TEXT);
+        nameField.setSingleLine(true);
+        if (name != null) nameField.setText(name);
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        nlp.bottomMargin = dip(ctx, 10);
+        layout.addView(nameField, nlp);
+
+        TextView secLbl = new TextView(ctx);
+        secLbl.setText("Secret Key (32 hex chars)");
+        secLbl.setTextColor(0xFFAAAAAA);
+        secLbl.setTextSize(12f);
+        layout.addView(secLbl);
+        EditText secretField = new EditText(ctx);
+        secretField.setHint("32 hex characters");
+        secretField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        secretField.setSingleLine(true);
+        if (secret != null) secretField.setText(secret);
+        layout.addView(secretField, new LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog d = new AlertDialog.Builder(ctx)
+                .setTitle("Add Channel from QR")
+                .setView(layout)
+                .setPositiveButton("Add", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        d.setOnShowListener(ds -> {
+            Button addBtn = d.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (addBtn == null) return;
+            addBtn.setOnClickListener(v -> {
+                String n = nameField.getText() != null
+                        ? nameField.getText().toString().trim() : "";
+                String s = secretField.getText() != null
+                        ? secretField.getText().toString().trim().toLowerCase(Locale.US) : "";
+                if (n.isEmpty()) { nameField.setError("Name required"); return; }
+                if (s.length() != 32) {
+                    secretField.setError("Must be 32 hex characters"); return;
+                }
+                byte[] key = hexToBytes(s);
+                if (key == null) { secretField.setError("Invalid hex"); return; }
+                if (addChannelToNode(n, key)) d.dismiss();
+            });
+        });
+        d.show();
+    }
+
+    /** Build a reusable channel name [+ secret] form layout. Tag = nameField. */
+    private LinearLayout buildChannelDialogLayout(Context ctx,
+            boolean showName, boolean showSecret, boolean showPassphrase) {
+        LinearLayout layout = new LinearLayout(ctx);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        int pad = dip(ctx, 16);
+        layout.setPadding(pad, pad / 2, pad, 0);
+
+        EditText nameField = null;
+        if (showName) {
+            TextView lbl = new TextView(ctx);
+            lbl.setText("Channel Name");
+            lbl.setTextColor(0xFFAAAAAA);
+            lbl.setTextSize(12f);
+            layout.addView(lbl);
+            nameField = new EditText(ctx);
+            nameField.setHint("e.g. OPS, #test");
+            nameField.setInputType(InputType.TYPE_CLASS_TEXT);
+            nameField.setSingleLine(true);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = dip(ctx, 10);
+            layout.addView(nameField, lp);
+            layout.setTag(nameField);
+        }
+
+        if (showSecret) {
+            TextView lbl = new TextView(ctx);
+            lbl.setText("Secret Key (32 hex chars)");
+            lbl.setTextColor(0xFFAAAAAA);
+            lbl.setTextSize(12f);
+            layout.addView(lbl);
+            LinearLayout row = new LinearLayout(ctx);
+            row.setOrientation(LinearLayout.VERTICAL);
+            EditText secretField = new EditText(ctx);
+            secretField.setHint("e.g. 8b3387e9c5cdea6ac9e5edbaa115cd72");
+            secretField.setInputType(InputType.TYPE_CLASS_TEXT
+                    | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+            secretField.setSingleLine(true);
+            row.addView(secretField, new LinearLayout.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+            layout.addView(row);
+        }
+
+        return layout;
+    }
+
+    /** Find free slot and set channel; returns true on success. */
+    private boolean addChannelToNode(String name, byte[] secret) {
+        int targetSlot = -1;
+        for (int i = 0; i < 7; i++) {
+            String existing = meshChannelNames.get(i);
+            if (name.equalsIgnoreCase(existing != null ? existing.trim() : "")) {
+                targetSlot = i; break;
+            }
+        }
+        if (targetSlot < 0) {
+            for (int i = 0; i < 7; i++) {
+                String existing = meshChannelNames.get(i);
+                if (existing == null || existing.trim().isEmpty()) {
+                    targetSlot = i; break;
+                }
+            }
+        }
+        if (targetSlot < 0) {
+            Toast.makeText(getMapView().getContext(),
+                    "All channel slots are full (max 7). Long-press a channel to remove it.",
+                    Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (!meshBtManager.setChannelSlot(targetSlot, name, secret)) {
+            Toast.makeText(getMapView().getContext(),
+                    "Failed — not connected.", Toast.LENGTH_SHORT).show();
+            return false;
+        }
+        appendLog("Channel '" + name + "' added to slot " + targetSlot + ".");
+        return true;
+    }
+
+    /** First 16 bytes of SHA-256(input). Used for hashtag channel key derivation. */
+    private static byte[] sha256First16(String input) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] full = md.digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            byte[] key = new byte[16];
+            System.arraycopy(full, 0, key, 0, 16);
+            return key;
+        } catch (Exception e) {
+            return new byte[16];
+        }
+    }
+
+    private static byte[] hexToBytes(String hex) {
+        if (hex == null || hex.length() % 2 != 0) return null;
+        try {
+            byte[] out = new byte[hex.length() / 2];
+            for (int i = 0; i < out.length; i++) {
+                out[i] = (byte) Integer.parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+            }
+            return out;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (byte b : bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+
+    private void showChannelSettingsMenu(int slotIdx, String channelName) {
+        Context ctx = getMapView().getContext();
+        String[] options = {"Share", "Rename", "Participants", "Remove"};
+        new AlertDialog.Builder(ctx)
+                .setTitle(channelName)
+                .setItems(options, (d, which) -> {
+                    switch (which) {
+                        case 0: showChannelShare(slotIdx, channelName);        break;
+                        case 1: showChannelRename(slotIdx, channelName);       break;
+                        case 2: showChannelParticipants(slotIdx, channelName); break;
+                        case 3: removeChannelByName(channelName);              break;
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showChannelShare(int slotIdx, String channelName) {
+        Context ctx = getMapView().getContext();
+        byte[] secret = meshBtManager != null ? meshBtManager.getChannelSecret(slotIdx) : null;
+        if (secret == null) {
+            Toast.makeText(ctx, "Secret not available — reconnect to refresh channel info.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        String hex = bytesToHex(secret);
+        String qrContent = "meshcore://channel/add?name="
+                + Uri.encode(channelName) + "&secret=" + hex;
+
+        int pad = dip(ctx, 16);
+        android.widget.ScrollView scroll = new android.widget.ScrollView(ctx);
+        LinearLayout layout = new LinearLayout(ctx);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(pad, pad / 2, pad, pad / 2);
+
+        // QR code — centred via per-view gravity, not root gravity
+        android.graphics.Bitmap qrBmp = generateQrBitmap(qrContent, 400);
+        if (qrBmp != null) {
+            android.widget.ImageView qrView = new android.widget.ImageView(ctx);
+            int qrSizePx = dip(ctx, 240);
+            LinearLayout.LayoutParams qrLp = new LinearLayout.LayoutParams(qrSizePx, qrSizePx);
+            qrLp.gravity = android.view.Gravity.CENTER_HORIZONTAL;
+            qrLp.bottomMargin = dip(ctx, 12);
+            qrView.setImageBitmap(qrBmp);
+            qrView.setBackgroundColor(android.graphics.Color.WHITE);
+            qrView.setPadding(dip(ctx, 8), dip(ctx, 8), dip(ctx, 8), dip(ctx, 8));
+            qrView.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+            layout.addView(qrView, qrLp);
+        }
+
+        TextView secLbl = new TextView(ctx);
+        secLbl.setText("Secret Key (long-press to copy)");
+        secLbl.setTextColor(0xFFAAAAAA);
+        secLbl.setTextSize(12f);
+        layout.addView(secLbl, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        android.widget.EditText secretView = new android.widget.EditText(ctx);
+        secretView.setText(hex);
+        secretView.setTextIsSelectable(true);
+        secretView.setFocusableInTouchMode(true);
+        secretView.setInputType(android.text.InputType.TYPE_NULL);
+        secretView.setTextSize(13f);
+        secretView.setTextColor(0xFF00BCD4);
+        secretView.setBackgroundColor(0xFF1A1A1A);
+        secretView.setPadding(pad / 2, pad / 2, pad / 2, pad / 2);
+        layout.addView(secretView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        scroll.addView(layout);
+        new AlertDialog.Builder(ctx)
+                .setTitle("Share — " + channelName)
+                .setView(scroll)
+                .setPositiveButton("Done", null)
+                .show();
+    }
+
+    private void showChannelRename(int slotIdx, String currentName) {
+        Context ctx = getMapView().getContext();
+        int pad = dip(ctx, 16);
+        LinearLayout layout = new LinearLayout(ctx);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(pad, pad / 2, pad, 0);
+
+        android.widget.EditText nameField = new android.widget.EditText(ctx);
+        nameField.setText(currentName);
+        nameField.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        nameField.setSingleLine(true);
+        nameField.selectAll();
+        layout.addView(nameField, new LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog renameDialog = new AlertDialog.Builder(ctx)
+                .setTitle("Rename Channel")
+                .setView(layout)
+                .setPositiveButton("Rename", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        renameDialog.setOnShowListener(d -> {
+            android.widget.Button btn = renameDialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (btn == null) return;
+            btn.setOnClickListener(v -> {
+                String newName = nameField.getText() != null
+                        ? nameField.getText().toString().trim() : "";
+                if (newName.isEmpty()) { nameField.setError("Name required"); return; }
+                if (newName.length() > 32) newName = newName.substring(0, 32);
+                byte[] secret = meshBtManager != null
+                        ? meshBtManager.getChannelSecret(slotIdx) : null;
+                if (secret == null) secret = new byte[16];
+                if (meshBtManager.setChannelSlot(slotIdx, newName, secret)) {
+                    meshChannelNames.put(slotIdx, newName);
+                    if (meshChannelChatActiveIndex == slotIdx && meshChannelTitleView != null) {
+                        meshChannelTitleView.setText("Channel #" + slotIdx + " — " + newName);
+                    }
+                    updateMeshChannelButtonLabel();
+                    appendLog("Channel renamed to '" + newName + "'.");
+                    renameDialog.dismiss();
+                }
+            });
+        });
+        renameDialog.show();
+    }
+
+    private void showChannelParticipants(int slotIdx, String channelName) {
+        Context ctx = getMapView().getContext();
+        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        java.util.LinkedList<MeshBtConnectionManager.MeshChannelMessage> bucket =
+                meshChannelMessages.get(slotIdx);
+        if (bucket != null) {
+            for (MeshBtConnectionManager.MeshChannelMessage m : bucket) {
+                if (!m.outbound) {
+                    String sender = resolveMeshChannelSenderName(m);
+                    if (sender != null && !sender.isEmpty() && !"Node".equals(sender)) {
+                        seen.add(sender);
+                    }
+                }
+            }
+        }
+        String body = seen.isEmpty()
+                ? "No participants seen yet.\nParticipants appear here as messages are received."
+                : String.join("\n", seen);
+        new AlertDialog.Builder(ctx)
+                .setTitle("Participants — " + channelName)
+                .setMessage(body)
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    /** Remove a channel by name. Called from long-press on a channel button. */
+    private void removeChannelByName(String channelName) {
+        if (channelName == null || channelName.trim().isEmpty()) return;
+        for (int i = 0; i < 7; i++) {
+            String existing = meshChannelNames.get(i);
+            if (channelName.trim().equalsIgnoreCase(existing != null ? existing.trim() : "")) {
+                final int slot = i;
+                new AlertDialog.Builder(getMapView().getContext())
+                        .setTitle("Remove Channel")
+                        .setMessage("Remove '" + channelName.trim() + "' from this node?")
+                        .setPositiveButton("Remove", (d, w) -> {
+                            meshBtManager.clearChannelSlot(slot);
+                            meshChannelNames.remove(slot);
+                            if (meshChannelChatActiveIndex == slot) {
+                                meshChannelChatActiveIndex = -1;
+                                if (meshChannelLogText != null)
+                                    meshChannelLogText.setVisibility(android.view.View.GONE);
+                                if (meshChannelTitleView != null)
+                                    meshChannelTitleView.setVisibility(android.view.View.GONE);
+                                if (rowMeshChannelInput != null)
+                                    rowMeshChannelInput.setVisibility(android.view.View.GONE);
+                            }
+                            updateMeshChannelButtonLabel();
+                            appendLog("Channel '" + channelName.trim() + "' removed.");
+                        })
+                        .setNegativeButton("Cancel", null)
+                        .show();
+                return;
+            }
+        }
+    }
+
+
     private void appendMeshChannelMessage(MeshBtConnectionManager.MeshChannelMessage message) {
         if (message == null) {
             return;
@@ -2470,8 +3171,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         if (changed) {
             persistMeshChannelHistory();
-            if (meshChannelChatDialog != null && meshChannelChatDialog.isShowing()
-                    && meshChannelChatActiveIndex >= 0) {
+            if (meshChannelChatActiveIndex >= 0 && meshChannelChatLogView != null) {
                 renderMeshChannelChatLog(meshChannelChatActiveIndex);
             }
         }
@@ -2535,22 +3235,22 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void updateMeshChannelButtonLabel() {
-        if (btnMeshcoreChannels == null) {
-            return;
-        }
-        int known = 0;
-        for (int i = 0; i < 8; i++) {
-            String n = meshChannelNames.get(i);
-            if (n != null && !n.trim().isEmpty()
-                    && !"ATAK_DATA".equalsIgnoreCase(n.trim())) {
-                known++;
+        // Rebuild the channel strip whenever channel info changes.
+        buildMeshChannelButtonStrip();
+        if (stripMeshChannels != null && stripMeshChannels.getChildCount() > 0) {
+            stripMeshChannels.setVisibility(android.view.View.VISIBLE);
+            // Auto-select the first channel if none is active yet.
+            if (meshChannelChatActiveIndex < 0) {
+                for (int i = 0; i < 8; i++) {
+                    String n = meshChannelNames.get(i);
+                    if (n != null && !n.trim().isEmpty()
+                            && !"ATAK_DATA".equalsIgnoreCase(n.trim())) {
+                        openMeshChannelChatDialog(i);
+                        buildMeshChannelButtonStrip();
+                        break;
+                    }
+                }
             }
-        }
-        if (meshBtManager != null && meshBtManager.isConnected()) {
-            btnMeshcoreChannels.setText(
-                    known > 0 ? "Channels (" + known + ")" : "Channels");
-        } else {
-            btnMeshcoreChannels.setText("Channels");
         }
     }
 
@@ -2575,20 +3275,22 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private String resolveMeshChannelSenderName(MeshBtConnectionManager.MeshChannelMessage m) {
-        if (!m.outbound) {
-            return "Node";
-        }
-        try {
-            MapView mv = MapView.getMapView();
-            if (mv != null && mv.getSelfMarker() != null) {
-                String cs = mv.getSelfMarker().getMetaString("callsign", "");
-                if (cs != null && !cs.trim().isEmpty()) {
-                    return cs.trim();
-                }
+        if (m.outbound) {
+            // Use the node's advertised name (not the ATAK callsign) so the sender window
+            // matches what the receiver sees.
+            if (meshNodeSettingsState != null
+                    && meshNodeSettingsState.nodeName != null
+                    && !meshNodeSettingsState.nodeName.trim().isEmpty()) {
+                return meshNodeSettingsState.nodeName.trim();
             }
-        } catch (Exception ignored) {
+            MeshBtConnectionManager.MeshNodeSettings latest =
+                    meshBtManager != null ? meshBtManager.getLatestNodeSettings() : null;
+            if (latest != null && latest.nodeName != null && !latest.nodeName.trim().isEmpty()) {
+                return latest.nodeName.trim();
+            }
+            return "Me";
         }
-        return "Me";
+        return "Node";
     }
 
     private String deriveMeshChannelMetaStatus(MeshBtConnectionManager.MeshChannelMessage m) {
@@ -4154,15 +4856,38 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void showImportChannelsPicker() {
-        File dir = new File("/sdcard/atak/tools/import");
-        if (!dir.exists() || !dir.isDirectory()) {
-            appendLog("Import folder not found: /atak/tools/import");
+        MapView mv = getMapView();
+        if (mv == null) {
             return;
         }
-        File[] csv = dir.listFiles(f -> f != null && f.isFile()
-                && f.getName().toLowerCase(Locale.US).endsWith(".csv"));
+        mv.post(this::showImportChannelsPickerOnUi);
+    }
+
+    private void showImportChannelsPickerOnUi() {
+        Context ctx = getMapView().getContext();
+        File dir = resolveAtakToolsDir("tools/import");
+        String importPath = formatUserVisibleToolsPath("tools/import");
+        if (dir == null) {
+            appendLog("Import folder unavailable: " + importPath);
+            Toast.makeText(ctx, importPath, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!dir.exists() && !dir.mkdirs()) {
+            appendLog("Import folder not found: " + importPath);
+            Toast.makeText(ctx, "Could not create:\n" + importPath, Toast.LENGTH_LONG).show();
+            return;
+        }
+        importPath = formatUserVisibleToolsPath("tools/import");
+        appendLog("Import Channels: " + importPath);
+        File[] csv = dir.listFiles((d, name) -> name != null
+                && name.toLowerCase(Locale.US).endsWith(".csv"));
         if (csv == null || csv.length == 0) {
-            appendLog("No CSV files found in /atak/tools/import");
+            appendLog("No CSV files in " + importPath);
+            new AlertDialog.Builder(ctx)
+                    .setTitle("Import Channels")
+                    .setMessage("No .csv files found.\n\nCopy channel CSV files to:\n\n" + importPath)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
             return;
         }
         java.util.Arrays.sort(csv, (a, b) -> a.getName().compareToIgnoreCase(b.getName()));
@@ -4170,19 +4895,84 @@ public class UVProDropDownReceiver extends DropDownReceiver
         for (int i = 0; i < csv.length; i++) {
             names[i] = csv[i].getName();
         }
-        final int[] selectedIndex = {-1};
-        new AlertDialog.Builder(getMapView().getContext())
+        final File[] files = csv;
+        AlertDialog dialog = new AlertDialog.Builder(ctx)
                 .setTitle("Import Channels")
-                .setSingleChoiceItems(names, -1, (d, which) -> selectedIndex[0] = which)
-                .setPositiveButton("Import", (d, which) -> {
-                    if (selectedIndex[0] < 0 || selectedIndex[0] >= csv.length) {
-                        appendLog("No CSV selected for import.");
+                .setSingleChoiceItems(names, 0, null)
+                .setPositiveButton("Import", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        dialog.setOnShowListener(d -> {
+            android.widget.Button importBtn =
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (importBtn != null) {
+                importBtn.setOnClickListener(v -> {
+                    android.widget.ListView list = dialog.getListView();
+                    int checked = list != null
+                            ? list.getCheckedItemPosition()
+                            : android.widget.AdapterView.INVALID_POSITION;
+                    if (checked < 0 || checked >= files.length) {
+                        Toast.makeText(ctx, "Select a CSV file", Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    importChannelsFromFile(csv[selectedIndex[0]]);
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+                    dialog.dismiss();
+                    importChannelsFromFile(files[checked]);
+                });
+            }
+        });
+        try {
+            dialog.show();
+        } catch (Exception e) {
+            Log.e(TAG, "Import channels dialog failed", e);
+            appendLog("Could not open import picker: " + e.getMessage());
+        }
+    }
+
+    /** ATAK tools directory; I/O uses FileSystemUtils, same location as /sdcard/atak/… */
+    private static File resolveAtakToolsDir(String relativePath) {
+        String rel = normalizeAtakRelativePath(relativePath);
+        if (rel.isEmpty()) {
+            return null;
+        }
+        try {
+            File dir = FileSystemUtils.getItem(rel);
+            if (dir != null) {
+                return dir;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "FileSystemUtils.getItem(" + rel + ") failed", e);
+        }
+        try {
+            File root = FileSystemUtils.getRoot();
+            if (root != null) {
+                return new File(root, rel);
+            }
+        } catch (Exception ignored) {
+        }
+        return new File("/sdcard/atak", rel);
+    }
+
+    private static String normalizeAtakRelativePath(String relativePath) {
+        if (relativePath == null) {
+            return "";
+        }
+        String rel = relativePath.trim().replace('\\', '/');
+        while (rel.startsWith("/")) {
+            rel = rel.substring(1);
+        }
+        return rel;
+    }
+
+    /**
+     * Path shown in dialogs/logs — matches file-manager labels, not {@code /storage/emulated/0}.
+     * Example: {@code sdcard/atak/tools/import}
+     */
+    private static String formatUserVisibleToolsPath(String relativePath) {
+        String rel = normalizeAtakRelativePath(relativePath);
+        if (rel.isEmpty()) {
+            return "sdcard/atak";
+        }
+        return "sdcard/atak/" + rel;
     }
 
     private void importChannelsFromFile(File csvFile) {
@@ -4258,9 +5048,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 getMapView().post(() -> appendLog("Export failed: could not read channels."));
                 return;
             }
-            File outDir = new File("/sdcard/atak/tools/datapackage/transfer");
+            File outDir = resolveAtakToolsDir("tools/datapackage/transfer");
+            if (outDir == null) {
+                getMapView().post(() -> appendLog("Export failed: output folder unavailable."));
+                return;
+            }
             if (!outDir.exists() && !outDir.mkdirs()) {
-                getMapView().post(() -> appendLog("Export failed: could not create output folder."));
+                getMapView().post(() -> appendLog("Export failed: could not create "
+                        + outDir.getAbsolutePath()));
                 return;
             }
             String dtg = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
@@ -4285,10 +5080,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 getMapView().post(() -> appendLog("Export failed: " + e.getMessage()));
                 return;
             }
+            final String exportPath = outDir.getAbsolutePath();
             getMapView().post(() -> {
-                appendLog(fileName + " exported to /atak/tools/datapackage/transfer");
+                appendLog(fileName + " exported to " + exportPath);
                 Toast.makeText(getMapView().getContext(),
-                        fileName + " exported to /atak/tools/datapackage/transfer",
+                        fileName + " exported to transfer folder",
                         Toast.LENGTH_LONG).show();
             });
         }, "uvpro-export-group").start();

@@ -172,6 +172,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private final Map<String, Long> nodeToastDedupByPubKeyTs = new ConcurrentHashMap<>();
     private final Map<String, Long> contactQueryThrottleMsByPubKey = new ConcurrentHashMap<>();
     private final Map<Integer, String> meshChannelNamesByIndex = new ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<Integer, byte[]> channelSecretsByIndex =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     private final Map<Integer, ChunkAccumulator> chunkBuffers = new ConcurrentHashMap<>();
     private final ArrayDeque<byte[]> writeQueue = new ArrayDeque<>();
@@ -1193,6 +1195,32 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         for (int i = 0; i < 8; i++) {
             enqueueCommand(buildGetChannelInfoCommand(i));
         }
+    }
+
+    /**
+     * Set a channel slot on the node. The 16-byte {@code secret} is typically derived as
+     * MD5(passphrase). Pass {@code null} secret and empty name to clear the slot.
+     */
+    public boolean setChannelSlot(int idx, String name, byte[] secret) {
+        if (!connected.get()) {
+            return false;
+        }
+        if (idx < 0 || idx > 7) {
+            return false;
+        }
+        if (secret != null) channelSecretsByIndex.put(idx, java.util.Arrays.copyOf(secret, secret.length));
+        enqueueCommand(buildSetChannelCommand(idx, name != null ? name : "", secret));
+        enqueueCommand(buildGetChannelInfoCommand(idx));
+        return true;
+    }
+
+    /** Remove a channel slot (set to empty name + zeroed secret). */
+    public boolean clearChannelSlot(int idx) {
+        return setChannelSlot(idx, "", new byte[16]);
+    }
+
+    public byte[] getChannelSecret(int idx) {
+        return channelSecretsByIndex.get(idx);
     }
 
     public boolean sendChannelText(int channelIndex, String text) {
@@ -2270,6 +2298,11 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         int nul = raw.indexOf('\0');
         String name = (nul >= 0 ? raw.substring(0, nul) : raw).trim();
         meshChannelNamesByIndex.put(idx, name);
+        if (pkt.length >= 50) {
+            byte[] secret = new byte[16];
+            System.arraycopy(pkt, 34, secret, 0, 16);
+            channelSecretsByIndex.put(idx, secret);
+        }
         notifyMeshChannelInfo(new MeshChannelInfo(idx, name));
         if (idx == ATAK_CHANNEL_INDEX) {
             Log.i(TAG, "ATAK channel slot " + idx + " name='" + name + "'");

@@ -32,6 +32,23 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
 
+### 2026-06-04 Progress Update (v1.9.64)
+
+- **Inline MeshCore channel chat window:** Channel messages now appear in an embedded panel at the bottom of the plugin instead of a separate popup dialog.
+- **Channel tab strip:** Each subscribed channel (excluding `ATAK_DATA`) gets its own tab button above the chat log. One channel = full-width; multiple channels = equal-width tabs. Selected channel is highlighted cyan. Long-press a tab to open channel settings.
+- **Add Channel dialog (5 options):**
+  - *Join the Public Channel* — one tap; uses the well-known public key.
+  - *Join a Hashtag Channel* — enter `#name`; key derived from `SHA-256("#name")[0..15]`.
+  - *Create a Private Channel* — random 16-byte secret generated; QR code + copyable hex shown.
+  - *Join a Private Channel* — enter channel name + 32-char hex secret.
+  - *Scan QR Code* — opens native camera scanner (ZXing core); parses `meshcore://channel/add?name=X&secret=Y`.
+- **Channel long-press settings menu:** Share (QR + copyable secret), Rename, Participants, Remove.
+- **Channel name on sender side:** Channel messages now show the node's advertised name (e.g. `ATAK-TEST1`) instead of the ATAK callsign.
+- **Status upgrade fixed:** "queued" now correctly updates to "Sent" / "heard N repeats" in the inline window after delivery.
+- **MeshCore status overlay dedup fix:** `install()` now skips if already installed; deferred-retry lambda uses a generation counter to cancel stale retries. Removed redundant `install()` call from `createView()`.
+- **GPS power switch synced:** "Enable MeshCore GPS" appears in both CONNECTION and MESHCORE sections; toggling either updates both and gates "Update GPS from MeshCore" and "Augment GPS from MeshCore".
+- **Advert toast:** "Advert Sent" toast fires on successful `sendSelfAdvert()`.
+
 ### 2026-06-02 Progress Update (v1.9.61)
 
 - **CoT Minification:** Non-essential `<detail>` children (`link`, `creator`, `takv`, `precisionlocation`, `status`, `archive`, `height`, `track`, `uid`, `ce`, `le`, `_flow-tags_`) and XML declaration stripped before compression. Reduces typical waypoint from 3→2 fragments. Never-worse fallback — `version='2.0'` preserved (required by ATAK CoT parser).

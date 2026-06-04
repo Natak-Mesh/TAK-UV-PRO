@@ -2431,9 +2431,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private void showQrScanDialog() {
         // Clear any stale result before launching
         try {
-            pluginContext.getSharedPreferences("uvpro_qr_result",
-                    android.content.Context.MODE_PRIVATE)
-                    .edit().remove("pending_qr").remove("pending_qr_ts").apply();
+            getQrPendingFile().delete();
         } catch (Exception ignored) {}
 
         pendingQrScan = true;
@@ -2456,18 +2454,27 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     return;
                 }
                 try {
-                    android.content.SharedPreferences prefs =
-                            pluginContext.getSharedPreferences("uvpro_qr_result",
-                                    android.content.Context.MODE_PRIVATE);
-                    String pending = prefs.getString("pending_qr", null);
-                    long ts = prefs.getLong("pending_qr_ts", 0L);
-                    if (pending != null && !pending.isEmpty()
-                            && System.currentTimeMillis() - ts < 60_000L) {
-                        prefs.edit().remove("pending_qr").remove("pending_qr_ts").apply();
-                        pendingQrScan = false;
-                        qrPollRunnable = null;
-                        handleQrChannelResult(pending);
-                        return;
+                    java.io.File file = getQrPendingFile();
+                    if (file.exists()) {
+                        java.util.List<String> lines = new java.util.ArrayList<>();
+                        try (java.io.BufferedReader br = new java.io.BufferedReader(
+                                new java.io.FileReader(file))) {
+                            String l;
+                            while ((l = br.readLine()) != null) lines.add(l);
+                        }
+                        if (lines.size() >= 2) {
+                            long ts = Long.parseLong(lines.get(0).trim());
+                            String content = lines.get(1).trim();
+                            if (System.currentTimeMillis() - ts < 60_000L
+                                    && !content.isEmpty()) {
+                                file.delete();
+                                pendingQrScan = false;
+                                qrPollRunnable = null;
+                                handleQrChannelResult(content);
+                                return;
+                            }
+                        }
+                        file.delete();
                     }
                 } catch (Exception e) {
                     Log.w(TAG, "QR poll failed", e);
@@ -7568,22 +7575,42 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
     }
 
+    private java.io.File getQrPendingFile() {
+        // Read from the plugin's external cache dir — world-readable, accessible from
+        // both the plugin process (QrScanActivity writes it) and ATAK process (we read it).
+        // Path: /sdcard/Android/data/com.uvpro.plugin/cache/uvpro_qr_pending.txt
+        try {
+            Context pluginPkgCtx = getMapView().getContext()
+                    .createPackageContext("com.uvpro.plugin",
+                            Context.CONTEXT_IGNORE_SECURITY);
+            java.io.File extCache = pluginPkgCtx.getExternalCacheDir();
+            if (extCache != null) {
+                return new java.io.File(extCache, "uvpro_qr_pending.txt");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "getQrPendingFile createPackageContext failed", e);
+        }
+        // Fallback: hardcoded external cache path
+        return new java.io.File(
+                "/sdcard/Android/data/com.uvpro.plugin/cache/uvpro_qr_pending.txt");
+    }
+
     private void checkPendingQrResult() {
         try {
-            android.content.SharedPreferences prefs =
-                    pluginContext.getSharedPreferences("uvpro_qr_result",
-                            android.content.Context.MODE_PRIVATE);
-            String pending = prefs.getString("pending_qr", null);
-            long ts = prefs.getLong("pending_qr_ts", 0L);
-            if (pending == null || pending.isEmpty()) return;
-            // Only process results from the last 60 seconds
-            if (System.currentTimeMillis() - ts > 60_000L) {
-                prefs.edit().remove("pending_qr").remove("pending_qr_ts").apply();
-                return;
+            java.io.File file = getQrPendingFile();
+            if (!file.exists()) return;
+            java.util.List<String> lines = new java.util.ArrayList<>();
+            try (java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.FileReader(file))) {
+                String l;
+                while ((l = br.readLine()) != null) lines.add(l);
             }
-            // Clear before processing so we don't double-handle
-            prefs.edit().remove("pending_qr").remove("pending_qr_ts").apply();
-            handleQrChannelResult(pending);
+            file.delete();
+            if (lines.size() < 2) return;
+            long ts = Long.parseLong(lines.get(0).trim());
+            String content = lines.get(1).trim();
+            if (System.currentTimeMillis() - ts > 60_000L || content.isEmpty()) return;
+            handleQrChannelResult(content);
         } catch (Exception e) {
             Log.w(TAG, "checkPendingQrResult failed", e);
         }

@@ -351,6 +351,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private long pendingChannelATimestamp = 0;
     private int pendingChannelB = -1;
     private long pendingChannelBTimestamp = 0;
+    private int pendingDigitalChannel = -1;
+    private long pendingDigitalChannelTimestamp = 0;
     private int currentChannelGroup = 0;
     private int availableChannelGroups = UVProRadioControlManager.DEFAULT_GROUP_COUNT;
     private boolean lastHasRxFocus = false;
@@ -5671,13 +5673,15 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 ? pendingChannelA : snapshot.channelA;
         int effectiveChannelB = (pendingChannelB >= 0 && now - pendingChannelBTimestamp < 5000)
                 ? pendingChannelB : snapshot.channelB;
+        int effectiveDigitalChannel = (pendingDigitalChannel >= 0 && now - pendingDigitalChannelTimestamp < 5000)
+                ? pendingDigitalChannel : snapshot.digitalChannelId;
 
         lastChannelA = snapshot.channelA;
         lastChannelB = snapshot.channelB;
         lastDigitalChannel = snapshot.digitalChannelId;
         lastDualWatchEnabled = snapshot.dualWatchEnabled;
         lastHasRxFocus = snapshot.currentChannelId >= 0;
-        updateVfoButtons(effectiveChannelA, effectiveChannelB, snapshot.digitalChannelId,
+        updateVfoButtons(effectiveChannelA, effectiveChannelB, effectiveDigitalChannel,
                 snapshot.dualWatchEnabled, txVfoB, snapshot.currentChannelId >= 0);
         updateReceiveRssiUi(snapshot.receiveRssi);
 
@@ -5723,8 +5727,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
             boolean isA = channel.channelId == effectiveChannelA;
             // Only show B assignment in the grid when dual watch is actually enabled.
             boolean isB = snapshot.dualWatchEnabled && channel.channelId == effectiveChannelB;
-            boolean isDigital = snapshot.digitalChannelId >= 0
-                    && channel.channelId == snapshot.digitalChannelId;
+            boolean isDigital = effectiveDigitalChannel >= 0
+                    && channel.channelId == effectiveDigitalChannel;
 
             int bgColor = 0xFF3D3D3D;
             if (isB) {
@@ -5827,6 +5831,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     appendLog(result.message);
                     if (result.success) {
                         lastDigitalChannel = channelId;
+                        pendingDigitalChannel = channelId;
+                        pendingDigitalChannelTimestamp = System.currentTimeMillis();
                         if (switchDigitalEdit != null) {
                             switchDigitalEdit.setChecked(false);
                         }

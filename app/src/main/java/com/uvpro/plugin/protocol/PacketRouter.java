@@ -615,8 +615,11 @@ public class PacketRouter {
 
         Log.d(TAG, "Chat mid=" + messageId + " from " + sender + " [" + room + "] len=" + message.length());
         boolean accepted = chatBridge.injectRadioMessage(sender, room, message, messageId);
-        if (accepted) {
+        if (accepted && chatBridge.shouldSendInboundDeliveredAck(room)) {
             chatBridge.sendRadioChatAck(messageId, UVProPacket.ACK_KIND_DELIVERED);
+        } else if (accepted) {
+            Log.d(TAG, "Skipping DELIVERED ACK for All Chat Rooms mid=" + messageId
+                    + " room=" + room + " sender=" + sender);
         } else {
             Log.d(TAG, "Skipping DELIVERED ACK for non-local chat mid=" + messageId
                     + " room=" + room + " sender=" + sender);

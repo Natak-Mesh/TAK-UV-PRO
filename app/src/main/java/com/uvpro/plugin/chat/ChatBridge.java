@@ -2913,6 +2913,14 @@ public class ChatBridge {
         }
     }
 
+    /**
+     * Inbound RF chat DELIVERED acks are for directed DMs only — not net-wide
+     * All Chat Rooms / {@code ALL} / bulletin traffic.
+     */
+    public boolean shouldSendInboundDeliveredAck(String toCallsign) {
+        return !isBroadcastRoom(toCallsign);
+    }
+
     private static boolean isBroadcastRoom(String roomRaw) {
         if (roomRaw == null) {
             return true;

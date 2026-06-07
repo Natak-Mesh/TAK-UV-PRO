@@ -5686,14 +5686,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
             boolean activeA = selectedTarget == TARGET_A;
             boolean activeB = selectedTarget == TARGET_B && snapshot.dualWatchEnabled;
             boolean isA = channel.channelId == snapshot.channelA;
-            // Always show B assignment in the grid (active or subdued),
-            // even if B isn't currently the selected control target.
-            boolean isB = channel.channelId == snapshot.channelB;
+            // Only show B assignment in the grid when dual watch is actually enabled.
+            boolean isB = snapshot.dualWatchEnabled && channel.channelId == snapshot.channelB;
             boolean isDigital = snapshot.digitalChannelId >= 0
                     && channel.channelId == snapshot.digitalChannelId;
 
             int bgColor = 0xFF3D3D3D;
-            // Keep B assignment always visible in green tones.
             if (isB) {
                 bgColor = activeB ? COLOR_B_ACTIVE : COLOR_B_SUBDUED;
             }
@@ -5710,7 +5708,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
             } else if (isA && activeA) {
                 bgColor = COLOR_A_ACTIVE;
             } else if (isB) {
-                // Keep B assignment green even when Digital shares same slot.
                 bgColor = COLOR_B_ACTIVE;
             } else if (isDigital && activeDigital) {
                 bgColor = COLOR_DIGITAL_ACTIVE;

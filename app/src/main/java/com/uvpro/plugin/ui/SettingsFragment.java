@@ -83,7 +83,7 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String KEY_BLUETOOTH_DEVICES = "uvpro_bluetooth_devices";
     public static final String KEY_CAT_RADIO = "uvpro_cat_radio";
 
-    public static final String DEFAULT_BEACON_INTERVAL = "300";
+    public static final String DEFAULT_BEACON_INTERVAL = "600";
     public static final boolean DEFAULT_AUTO_RECONNECT = true;
     public static final String DEFAULT_RETRY_INTERVAL_MIN = "2";
     public static final String DEFAULT_RETRY_MAX = "3";

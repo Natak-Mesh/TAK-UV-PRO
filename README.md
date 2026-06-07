@@ -32,6 +32,12 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
 
+### 2026-06-06 Progress Update (v1.9.65)
+
+- **Channel grid dual-watch highlight:** Secondary (B) channel is no longer highlighted in the channel grid when the radio is not in dual-watch mode. The green highlight now only appears when dual watch is enabled.
+- **All Chat Rooms ACK suppressed:** Inbound RF chat messages addressed to "All Chat Rooms" (broadcast) no longer trigger a DELIVERED ACK back over RF. ACKs are only sent for directed DMs.
+- **Default beacon interval:** Increased default GPS beacon interval from 60s to 600s for reduced RF congestion out-of-box.
+
 ### 2026-06-04 Progress Update (v1.9.64)
 
 - **Inline MeshCore channel chat window:** Channel messages now appear in an embedded panel at the bottom of the plugin instead of a separate popup dialog.

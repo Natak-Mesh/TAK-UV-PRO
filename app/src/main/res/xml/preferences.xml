@@ -27,7 +27,7 @@
             android:key="uvpro_beacon_interval"
             android:title="GPS Beacon Interval"
             android:summary="How often to broadcast position"
-            android:defaultValue="60"
+            android:defaultValue="600"
             android:dialogTitle="Beacon Interval"
             android:entries="@array/beacon_interval_labels"
             android:entryValues="@array/beacon_interval_values" />

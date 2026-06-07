@@ -343,6 +343,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private int lastChannelB = -1;
     private int lastDigitalChannel = -1;
     private boolean lastDualWatchEnabled = false;
+    private boolean dualWatchProgrammaticUpdate = false;
+    private long dualWatchWriteTimestamp = 0;
+    private boolean dualWatchWriteValue = false;
     private int currentTxPowerLevel = UVProRadioControlManager.TX_POWER_LOW;
     private int currentChannelGroup = 0;
     private int availableChannelGroups = UVProRadioControlManager.DEFAULT_GROUP_COUNT;
@@ -1304,7 +1307,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         if (switchDualWatch != null) {
             switchDualWatch.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                if (!buttonView.isPressed()) {
+                if (dualWatchProgrammaticUpdate) {
                     return;
                 }
                 applyDualWatch(isChecked);
@@ -5598,7 +5601,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
             channelsGrid.removeAllViews();
             // If actually disconnected, clear to baseline.
             if (switchDualWatch != null) {
+                dualWatchProgrammaticUpdate = true;
                 switchDualWatch.setChecked(false);
+                dualWatchProgrammaticUpdate = false;
                 switchDualWatch.setEnabled(false);
                 switchDualWatch.setText("");
             }
@@ -5625,7 +5630,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         if (switchDualWatch != null) {
             switchDualWatch.setEnabled(true);
-            switchDualWatch.setChecked(snapshot.dualWatchEnabled);
+            dualWatchProgrammaticUpdate = true;
+            boolean dualWatchDisplay = snapshot.dualWatchEnabled;
+            if (System.currentTimeMillis() - dualWatchWriteTimestamp < 5000) {
+                // Radio hasn't settled yet after our write; hold the optimistic value
+                dualWatchDisplay = dualWatchWriteValue;
+            }
+            switchDualWatch.setChecked(dualWatchDisplay);
+            dualWatchProgrammaticUpdate = false;
             switchDualWatch.setText("");
         }
 
@@ -5757,6 +5769,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                         result.success ? Toast.LENGTH_SHORT : Toast.LENGTH_LONG).show();
                 if (result.success) {
                     lastDualWatchEnabled = enabled;
+                    dualWatchWriteTimestamp = System.currentTimeMillis();
+                    dualWatchWriteValue = enabled;
                     if (!enabled && selectedTarget == TARGET_B) {
                         selectedTarget = TARGET_A;
                         activeVfoB = false;

@@ -106,10 +106,14 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
         public final Object rxTone;
         public final boolean scanEnabled;
         public final boolean muted;
+        public final boolean wideBandwidth;
+        /** TX_POWER_LOW / TX_POWER_MED / TX_POWER_HIGH */
+        public final int txPowerLevel;
 
         public ChannelSummary(int channelId, String name, double rxFreqMHz, double txFreqMHz,
                               Object txTone, Object rxTone,
-                              boolean scanEnabled, boolean muted) {
+                              boolean scanEnabled, boolean muted, boolean wideBandwidth,
+                              int txPowerLevel) {
             this.channelId = channelId;
             this.name = name;
             this.rxFreqMHz = rxFreqMHz;
@@ -118,6 +122,8 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
             this.rxTone = rxTone;
             this.scanEnabled = scanEnabled;
             this.muted = muted;
+            this.wideBandwidth = wideBandwidth;
+            this.txPowerLevel = txPowerLevel;
         }
     }
 
@@ -158,7 +164,8 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
         public final Object rxTone;
         public final boolean scanEnabled;
         public final boolean muted;
-        public final boolean highPower;
+        /** TX_POWER_LOW / TX_POWER_MED / TX_POWER_HIGH */
+        public final int txPowerLevel;
         public final boolean wideBandwidth;
         public final int squelchLevel; // -1 keep current, otherwise 0..9
 
@@ -169,7 +176,7 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
                                  Object rxTone,
                                  boolean scanEnabled,
                                  boolean muted,
-                                 boolean highPower,
+                                 int txPowerLevel,
                                  boolean wideBandwidth,
                                  int squelchLevel) {
             this.name = name;
@@ -179,7 +186,7 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
             this.rxTone = rxTone;
             this.scanEnabled = scanEnabled;
             this.muted = muted;
-            this.highPower = highPower;
+            this.txPowerLevel = txPowerLevel;
             this.wideBandwidth = wideBandwidth;
             this.squelchLevel = squelchLevel;
         }
@@ -411,7 +418,7 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
                 if (channelReply == null || channelReply.status != STATUS_SUCCESS
                         || channelReply.payload == null || channelReply.payload.length < 20) {
                     channels[i] = new ChannelSummary(i, "", 0.0, 0.0,
-                            null, null, false, false);
+                            null, null, false, false, false, TX_POWER_HIGH);
                     continue;
                 }
                 channels[i] = parseChannelSummary(channelReply.payload, i);
@@ -648,7 +655,7 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
             for (int i = 0; i < channels.length; i++) {
                 if (channels[i] == null) {
                     channels[i] = new ChannelSummary(i, "", 0.0, 0.0,
-                            null, null, false, false);
+                            null, null, false, false, false, TX_POWER_HIGH);
                 }
             }
 
@@ -924,12 +931,12 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
                     spec.txTone,
                     spec.rxTone,
                     spec.scanEnabled,
-                    spec.highPower,
+                    spec.txPowerLevel == TX_POWER_HIGH,
                     false, // talk-around
                     spec.wideBandwidth ? 1 : 0,
                     false, // pre/de-emphasis bypass
                     false, // sign
-                    !spec.highPower, // med power when not high
+                    spec.txPowerLevel == TX_POWER_MED,
                     false, // tx disable
                     false, // fixed freq
                     false, // fixed bandwidth
@@ -2017,8 +2024,14 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
                 | ((payload[6] & 0xFF) << 16)
                 | ((payload[7] & 0xFF) << 8)
                 | (payload[8] & 0xFF);
-        boolean scanEnabled = (payload[13] & 0x80) != 0;
-        boolean muted = (payload[14] & 0x10) != 0;
+        boolean scanEnabled    = (payload[13] & 0x80) != 0;
+        boolean txAtMaxPower   = (payload[13] & 0x40) != 0;
+        boolean wideBandwidth  = (payload[13] & 0x10) != 0;
+        boolean txAtMedPower   = (payload[13] & 0x02) != 0;
+        boolean muted          = (payload[14] & 0x10) != 0;
+        int txPowerLevel = txAtMaxPower ? TX_POWER_HIGH
+                         : txAtMedPower ? TX_POWER_MED
+                         : TX_POWER_LOW;
         int txToneRaw = ((payload[9] & 0xFF) << 8) | (payload[10] & 0xFF);
         int rxToneRaw = ((payload[11] & 0xFF) << 8) | (payload[12] & 0xFF);
         String name = decodeChannelName(payload);
@@ -2030,7 +2043,9 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
                 decodeTone(txToneRaw),
                 decodeTone(rxToneRaw),
                 scanEnabled,
-                muted
+                muted,
+                wideBandwidth,
+                txPowerLevel
         );
     }
 

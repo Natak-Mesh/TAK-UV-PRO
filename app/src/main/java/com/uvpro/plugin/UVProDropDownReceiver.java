@@ -4795,7 +4795,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                                 null,
                                 true,
                                 false,
-                                true,
+                                UVProRadioControlManager.TX_POWER_HIGH,
                                 true,
                                 -1);
                 int seeded = 0;
@@ -5205,7 +5205,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                                 null,
                                 true,
                                 false,
-                                true,
+                                UVProRadioControlManager.TX_POWER_HIGH,
                                 true,
                                 -1);
                 out[rowIndex] = spec;
@@ -5670,6 +5670,19 @@ public class UVProDropDownReceiver extends DropDownReceiver
         updateVfoButtons(snapshot.channelA, snapshot.channelB, snapshot.digitalChannelId,
                 snapshot.dualWatchEnabled, txVfoB, snapshot.currentChannelId >= 0);
         updateReceiveRssiUi(snapshot.receiveRssi);
+
+        // Sync TX power button from the active channel's stored per-channel power level.
+        int activeChId = (selectedTarget == TARGET_B && snapshot.dualWatchEnabled)
+                ? snapshot.channelB : snapshot.channelA;
+        if (snapshot.channels != null) {
+            for (UVProRadioControlManager.ChannelSummary ch : snapshot.channels) {
+                if (ch != null && ch.channelId == activeChId) {
+                    currentTxPowerLevel = ch.txPowerLevel;
+                    break;
+                }
+            }
+        }
+        updateTxPowerButtonUi();
 
         for (UVProRadioControlManager.ChannelSummary channel : snapshot.channels) {
             if (channel == null) {
@@ -6139,10 +6152,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         Context ctx = getMapView().getContext();
 
+        ScrollView scroll = new ScrollView(ctx);
         LinearLayout layout = new LinearLayout(ctx);
         layout.setOrientation(LinearLayout.VERTICAL);
         int p = dip(ctx, 12);
         layout.setPadding(p, p, p, p);
+        scroll.addView(layout);
 
         EditText editName = new EditText(ctx);
         editName.setHint("Name (max 10)");
@@ -6199,20 +6214,28 @@ public class UVProDropDownReceiver extends DropDownReceiver
         cbMute.setChecked(channel.muted);
         layout.addView(cbMute);
 
-        CheckBox cbHighPower = new CheckBox(ctx);
-        cbHighPower.setText("TX high power");
-        cbHighPower.setChecked(true);
-        layout.addView(cbHighPower);
-
         CheckBox cbWide = new CheckBox(ctx);
         cbWide.setText("Wide bandwidth");
-        cbWide.setChecked(true);
+        cbWide.setChecked(channel.wideBandwidth);
         layout.addView(cbWide);
+
+        TextView tvPower = new TextView(ctx);
+        tvPower.setText("TX Power");
+        layout.addView(tvPower);
+
+        Spinner spinnerPower = new Spinner(ctx);
+        ArrayAdapter<String> powerAdapter = new ArrayAdapter<>(ctx,
+                android.R.layout.simple_spinner_item,
+                new String[]{"Low", "Medium", "High"});
+        powerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinnerPower.setAdapter(powerAdapter);
+        spinnerPower.setSelection(channel.txPowerLevel);
+        layout.addView(spinnerPower);
 
         new AlertDialog.Builder(ctx)
                 .setTitle(String.format(Locale.US, "Program CH%02d",
                         displayChannelNumber(channel.channelId)))
-                .setView(layout)
+                .setView(scroll)
                 .setPositiveButton("Save", (dialog, which) -> {
                     String name = editName.getText().toString().trim();
                     String rxStr = editRx.getText().toString().trim();
@@ -6265,7 +6288,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                                     rxTone,
                                     cbScan.isChecked(),
                                     cbMute.isChecked(),
-                                    cbHighPower.isChecked(),
+                                    spinnerPower.getSelectedItemPosition(),
                                     cbWide.isChecked(),
                                     sq
                             );

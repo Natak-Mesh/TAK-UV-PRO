@@ -347,6 +347,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private long dualWatchWriteTimestamp = 0;
     private boolean dualWatchWriteValue = false;
     private int currentTxPowerLevel = UVProRadioControlManager.TX_POWER_LOW;
+    private int pendingChannelA = -1;
+    private long pendingChannelATimestamp = 0;
+    private int pendingChannelB = -1;
+    private long pendingChannelBTimestamp = 0;
     private int currentChannelGroup = 0;
     private int availableChannelGroups = UVProRadioControlManager.DEFAULT_GROUP_COUNT;
     private boolean lastHasRxFocus = false;
@@ -5662,18 +5666,24 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 channelTargetDigital = true;
             }
         }
+        long now = System.currentTimeMillis();
+        int effectiveChannelA = (pendingChannelA >= 0 && now - pendingChannelATimestamp < 5000)
+                ? pendingChannelA : snapshot.channelA;
+        int effectiveChannelB = (pendingChannelB >= 0 && now - pendingChannelBTimestamp < 5000)
+                ? pendingChannelB : snapshot.channelB;
+
         lastChannelA = snapshot.channelA;
         lastChannelB = snapshot.channelB;
         lastDigitalChannel = snapshot.digitalChannelId;
         lastDualWatchEnabled = snapshot.dualWatchEnabled;
         lastHasRxFocus = snapshot.currentChannelId >= 0;
-        updateVfoButtons(snapshot.channelA, snapshot.channelB, snapshot.digitalChannelId,
+        updateVfoButtons(effectiveChannelA, effectiveChannelB, snapshot.digitalChannelId,
                 snapshot.dualWatchEnabled, txVfoB, snapshot.currentChannelId >= 0);
         updateReceiveRssiUi(snapshot.receiveRssi);
 
         // Sync TX power button from the active channel's stored per-channel power level.
         int activeChId = (selectedTarget == TARGET_B && snapshot.dualWatchEnabled)
-                ? snapshot.channelB : snapshot.channelA;
+                ? effectiveChannelB : effectiveChannelA;
         if (snapshot.channels != null) {
             for (UVProRadioControlManager.ChannelSummary ch : snapshot.channels) {
                 if (ch != null && ch.channelId == activeChId) {
@@ -5710,9 +5720,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
             boolean activeDigital = selectedTarget == TARGET_DIGITAL;
             boolean activeA = selectedTarget == TARGET_A;
             boolean activeB = selectedTarget == TARGET_B && snapshot.dualWatchEnabled;
-            boolean isA = channel.channelId == snapshot.channelA;
+            boolean isA = channel.channelId == effectiveChannelA;
             // Only show B assignment in the grid when dual watch is actually enabled.
-            boolean isB = snapshot.dualWatchEnabled && channel.channelId == snapshot.channelB;
+            boolean isB = snapshot.dualWatchEnabled && channel.channelId == effectiveChannelB;
             boolean isDigital = snapshot.digitalChannelId >= 0
                     && channel.channelId == snapshot.digitalChannelId;
 
@@ -5843,8 +5853,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 if (result.success) {
                     if (targetB) {
                         lastChannelB = channelId;
+                        pendingChannelB = channelId;
+                        pendingChannelBTimestamp = System.currentTimeMillis();
                     } else {
                         lastChannelA = channelId;
+                        pendingChannelA = channelId;
+                        pendingChannelATimestamp = System.currentTimeMillis();
                     }
                     rerenderGridFromLastSnapshot();
                 } else {

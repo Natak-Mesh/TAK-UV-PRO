@@ -7,7 +7,7 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | Feature | Status | Description |
 |---------|--------|-------------|
 | **Position Sharing (PLI)** | ✅ Working | Your ATAK position is beaconed over radio at a configurable interval. Incoming positions appear as contacts on the map. |
-| **Smart Beaconing (APRS-style)** | ✅ Working | APRS-standard SmartBeaconing + corner pegging: speed-proportional rate, turn-threshold slope, and minimum turn time. Seven parameters configurable in Settings → Manage Smart Beacon Settings. |
+| **Smart Beaconing (APRS-style)** | ✅ Working | APRS-standard SmartBeaconing + corner pegging using live GPS Doppler speed (not position delta). Speed-proportional rate between low/high thresholds, turn detection at any speed > 0, and fixed-interval safety floor. Seven parameters in Settings → Manage Smart Beacon Settings. |
 | **Dynamic CoT Stale Window** | ✅ Working | Contact `stale` timestamp now tracks current beacon policy (fixed interval or Smart Beacon profile) so receivers do not grey contacts prematurely. |
 | **Ping / Ping Reply** | ✅ Working | **Send Ping** broadcasts a discovery ping; **Send Ping Reply** (Settings) auto-replies to incoming pings with your GPS position. Replies use **slotted timing** (default 20 slots × 2.5 s) keyed by callsign hash to reduce collisions. |
 | **Net slot administration** | ✅ Working | Team leadership can set slot count/time and **Distribute to net** (`TYPE_NET_SLOT_CONFIG`); receivers auto-apply newer assignments. In **Settings → Tool Preferences → UV-PRO Settings → Administration** or **Plugin Settings** (bottom of dialog). |
@@ -31,6 +31,15 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Bluetooth Auto-Reconnect** | ✅ Working | Three-strategy SPP connection with exponential backoff reconnect (up to 5 attempts). |
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
+
+### 2026-06-07 Progress Update (v1.9.66)
+
+- **Smart Beacon GPS speed:** Beacon decisions now use Android `LocationManager` GPS Doppler speed/bearing (`src=gps`) instead of ATAK self-marker meta or position-derived delta. Eliminates false high-speed spikes from GPS position jitter; position-derived speed remains as a startup fallback only.
+- **Smart Beacon turn vs. low-speed logic:** Turn detection now runs before the low-speed threshold check, so heading changes trigger beacons at any speed > 0. Speed-interval beacons are suppressed at or below the configured low-speed threshold; below that, only turns or the fixed beacon-interval floor can fire.
+- **Smart Beacon safety floor:** If the configured fixed beacon interval elapses without a Smart Beacon trigger, a beacon is sent anyway so position updates are not silently blocked when speed is unavailable or ambiguous.
+- **Dual watch switch stability:** Fixed flicker when toggling dual watch on/off after enable/disable.
+- **Channel grid highlight lag:** Fixed delayed highlight updates after channel selection (analog and digital grids).
+- **Channel program dialog:** Added bandwidth, mute, and TX power controls when programming a channel.
 
 ### 2026-06-06 Progress Update (v1.9.65)
 

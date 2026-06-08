@@ -29,6 +29,12 @@
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:exported="true" />
 
+        <!-- Cross-process QR result IPC (plugin process → ATAK process) -->
+        <provider
+            android:name="com.uvpro.plugin.QrResultProvider"
+            android:authorities="com.uvpro.plugin.qrresult"
+            android:exported="true" />
+
         <!-- Allow ATAK plugin discovery -->
         <activity android:name="com.atakmap.app.component"
             android:exported="true"

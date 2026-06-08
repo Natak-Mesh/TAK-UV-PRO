@@ -27,6 +27,8 @@ import com.google.zxing.Result;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.qrcode.QRCodeReader;
 
+import com.atakmap.android.ipc.AtakBroadcast;
+
 /**
  * Native QR scanner — uses the device camera directly with ZXing core decoding.
  * No AndroidX or external app required. Requests CAMERA permission at runtime.
@@ -169,33 +171,18 @@ public class QrScanActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void broadcastResult(String content) {
-        // Write to external cache dir — world-readable by both the plugin and ATAK processes.
-        // External cache is under /sdcard/Android/data/<package>/cache/ which is readable
-        // by any process on the device (no special permissions needed on Android <10).
-        // We also write to ATAK's external cache as a secondary path.
+        // ContentProvider IPC — reliable across plugin/ATAK UIDs on Android 11+.
+        QrResultProvider.storePending(this, content);
+        // AtakBroadcast reaches DropDownReceiver in the ATAK process.
         try {
-            android.os.Environment.getExternalStorageState(); // ensure media available
-            java.io.File dir = getExternalCacheDir();
-            if (dir == null) dir = getCacheDir(); // fallback to internal cache
-            java.io.File file = new java.io.File(dir, "uvpro_qr_pending.txt");
-            if (content != null && !content.isEmpty()) {
-                try (java.io.FileWriter fw = new java.io.FileWriter(file, false)) {
-                    fw.write(System.currentTimeMillis() + "\n" + content);
-                }
-                // Make world-readable so ATAK process can read it
-                file.setReadable(true, false);
-            } else {
-                file.delete();
+            Intent broadcast = new Intent(UVProDropDownReceiver.ACTION_QR_CHANNEL_RESULT);
+            if (content != null) {
+                broadcast.putExtra(UVProDropDownReceiver.EXTRA_QR_RESULT, content);
             }
+            AtakBroadcast.getInstance().sendBroadcast(broadcast);
         } catch (Exception e) {
-            android.util.Log.w(TAG, "Could not write QR result file", e);
+            Log.w(TAG, "AtakBroadcast failed", e);
         }
-        // Standard broadcast (secondary path)
-        Intent broadcast = new Intent(UVProDropDownReceiver.ACTION_QR_CHANNEL_RESULT);
-        if (content != null) {
-            broadcast.putExtra(UVProDropDownReceiver.EXTRA_QR_RESULT, content);
-        }
-        sendBroadcast(broadcast);
     }
 
     // SurfaceHolder.Callback

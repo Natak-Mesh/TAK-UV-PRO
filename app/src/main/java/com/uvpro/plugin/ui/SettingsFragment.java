@@ -61,6 +61,7 @@ public class SettingsFragment extends PluginPreferenceFragment
             "uvpro_restrict_chat_to_reachable_peers";
     public static final String PREF_PING_REPLY_ENABLED = "uvpro_ping_reply_enabled";
     public static final String PREF_PING_REPLY_SAME_TRANSPORT = "uvpro_ping_reply_same_transport";
+    public static final String PREF_ATAK_MESHCORE_TRANSMIT = "uvpro_atak_meshcore_transmit";
 
     public static final String PREF_APRS_CALLSIGN = "uvpro_aprs_callsign";
     public static final String PREF_APRS_SSID = "uvpro_aprs_ssid";
@@ -478,6 +479,11 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static boolean isPingReplySameTransportEnabled(Context context) {
         return getPrefs(context)
                 .getBoolean(PREF_PING_REPLY_SAME_TRANSPORT, true);
+    }
+
+    public static boolean isMeshTransmitEnabled(Context context) {
+        return getPrefs(context)
+                .getBoolean(PREF_ATAK_MESHCORE_TRANSMIT, false);
     }
 
     public static boolean isRfToTakUplinkEnabled(Context context) {

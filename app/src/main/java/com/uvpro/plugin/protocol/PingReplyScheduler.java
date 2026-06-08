@@ -153,6 +153,9 @@ public final class PingReplyScheduler {
             BtConnectionManager preferred = pendingInboundTransport == RfInboundTransport.MESHCORE
                     ? meshTransport
                     : uvproTransport;
+            if (preferred == meshTransport && !SettingsFragment.isMeshTransmitEnabled(context)) {
+                preferred = uvproTransport;
+            }
             if (preferred != null && preferred.isConnected()) {
                 return preferred;
             }
@@ -160,7 +163,22 @@ public final class PingReplyScheduler {
                     + " not connected (same-transport mode, no fallback)");
             return null;
         }
-        return cotBridge.getActiveBtManager();
+        BtConnectionManager active = cotBridge.getActiveBtManager();
+        if (isMeshTransport(active) && !SettingsFragment.isMeshTransmitEnabled(context)) {
+            if (uvproTransport != null && uvproTransport.isConnected()) {
+                return uvproTransport;
+            }
+            return null;
+        }
+        return active;
+    }
+
+    private boolean isMeshTransport(BtConnectionManager tx) {
+        if (tx == null) {
+            return false;
+        }
+        return meshTransport != null && tx == meshTransport
+                || tx instanceof com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
     }
 
     private String linkNameFor(BtConnectionManager tx) {

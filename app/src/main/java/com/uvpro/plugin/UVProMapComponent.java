@@ -366,6 +366,7 @@ try {
                 RadioStatusOverlay.setConnected(true);
                 // Anchor first periodic beacon to connection time.
                 startBeaconTimer();
+                applyActiveTransmitTransportFromPreference();
                 triggerOneTimeStartupRadioGpsUpdate();
                 view.post(() -> {
                     ChatBridge.collapseAllCallsignAliasDuplicates();
@@ -398,12 +399,8 @@ try {
                 // Keep periodic beacon behavior consistent with UV-PRO transport:
                 // first beacon 30s after a successful mesh connection.
                 startBeaconTimer();
-                BtConnectionManager active = resolveBeaconTransportManager();
-                if (active != null) {
-                    cotBridge.setBtManager(active);
-                    if (chatBridge != null) {
-                        chatBridge.setBtManager(active);
-                    }
+                applyActiveTransmitTransportFromPreference();
+                if (cotBridge != null) {
                     cotBridge.refreshSendableMapItems();
                 }
                 view.post(() -> {
@@ -2526,16 +2523,22 @@ try {
     }
 
     private void sendBeaconIfConnected(boolean forceImmediate) {
-        BtConnectionManager beaconTransport = resolveBeaconTransportManager();
-        if (beaconTransport == null || !beaconTransport.isConnected()) return;
+        // Startup (30s post-connect): UV-PRO or MeshCore per active transmit preference.
+        // Smart/periodic beacons: UV-PRO and APRS only — never MeshCore.
+        BtConnectionManager beaconTransport = forceImmediate
+                ? resolveStartupBeaconTransportManager()
+                : resolvePeriodicBeaconTransportManager();
+        if (beaconTransport == null || !beaconTransport.isConnected()) {
+            Log.d(TAG, forceImmediate
+                    ? "Startup beacon skipped: no connected transmit transport"
+                    : "Periodic beacon skipped: UV-PRO not connected");
+            return;
+        }
         if (cotBridge == null || mapView == null) return;
 
         try {
-            // Ensure periodic beacons follow the connected transport (mesh-only boots included).
-            cotBridge.setBtManager(beaconTransport);
-            if (chatBridge != null) {
-                chatBridge.setBtManager(beaconTransport);
-            }
+            Log.d(TAG, (forceImmediate ? "Startup" : "Periodic") + " beacon transport: "
+                    + (beaconTransport == meshBtConnectionManager ? "MeshCore" : "UV-PRO"));
             com.atakmap.android.maps.PointMapItem self = mapView.getSelfMarker();
             if (self == null) return;
 
@@ -2617,10 +2620,11 @@ try {
 
             if (!disableAtak) {
                 cotBridge.sendPositionOverRadio(
+                        beaconTransport,
                         gp.getLatitude(), gp.getLongitude(),
                         gp.getAltitude(), (float) speedMs, (float) course, -1);
                 openRlSent = true;
-                Log.d(TAG, "Periodic OPENRL beacon sent");
+                Log.d(TAG, (forceImmediate ? "Startup" : "Periodic") + " OPENRL beacon sent");
             }
 
             if (aprsEnabled && !openRlSent
@@ -2643,6 +2647,29 @@ try {
     private boolean isAnyTransportConnected() {
         return (btConnectionManager != null && btConnectionManager.isConnected())
                 || (meshBtConnectionManager != null && meshBtConnectionManager.isConnected());
+    }
+
+    private void applyActiveTransmitTransportFromPreference() {
+        BtConnectionManager active = resolveBeaconTransportManager();
+        if (cotBridge != null) {
+            cotBridge.setBtManager(active);
+        }
+        if (chatBridge != null) {
+            chatBridge.setBtManager(active);
+        }
+    }
+
+    /** UV-PRO only — used for smart/periodic OPENRL and APRS beacons. */
+    private BtConnectionManager resolvePeriodicBeaconTransportManager() {
+        if (btConnectionManager != null && btConnectionManager.isConnected()) {
+            return btConnectionManager;
+        }
+        return null;
+    }
+
+    /** Post-connect startup beacon — may use MeshCore when that is the active transmit path. */
+    private BtConnectionManager resolveStartupBeaconTransportManager() {
+        return resolveBeaconTransportManager();
     }
 
     private BtConnectionManager resolveBeaconTransportManager() {

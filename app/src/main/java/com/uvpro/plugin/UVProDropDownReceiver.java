@@ -2438,17 +2438,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Runnable qrPollRunnable = null;
 
     private void showQrScanDialog() {
-        // Clear any stale result before launching
-        try {
-            getQrPendingFile().delete();
-        } catch (Exception ignored) {}
+        QrResultProvider.clearPending(getMapView().getContext());
 
         pendingQrScan = true;
         Intent launch = new Intent(pluginContext, QrScanActivity.class);
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         pluginContext.startActivity(launch);
 
-        // Poll SharedPrefs every second for up to 30s — reliable across process boundary
+        // Poll ContentProvider every second — reliable across plugin/ATAK UIDs.
         if (qrPollRunnable != null) {
             getMapView().removeCallbacks(qrPollRunnable);
         }
@@ -2462,53 +2459,48 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     qrPollRunnable = null;
                     return;
                 }
-                try {
-                    java.io.File file = getQrPendingFile();
-                    if (file.exists()) {
-                        java.util.List<String> lines = new java.util.ArrayList<>();
-                        try (java.io.BufferedReader br = new java.io.BufferedReader(
-                                new java.io.FileReader(file))) {
-                            String l;
-                            while ((l = br.readLine()) != null) lines.add(l);
-                        }
-                        if (lines.size() >= 2) {
-                            long ts = Long.parseLong(lines.get(0).trim());
-                            String content = lines.get(1).trim();
-                            if (System.currentTimeMillis() - ts < 60_000L
-                                    && !content.isEmpty()) {
-                                file.delete();
-                                pendingQrScan = false;
-                                qrPollRunnable = null;
-                                handleQrChannelResult(content);
-                                return;
-                            }
-                        }
-                        file.delete();
-                    }
-                } catch (Exception e) {
-                    Log.w(TAG, "QR poll failed", e);
+                String content = QrResultProvider.consumePending(
+                        getMapView().getContext(), 60_000L);
+                if (content != null && !content.isEmpty()) {
+                    pendingQrScan = false;
+                    qrPollRunnable = null;
+                    handleQrChannelResult(content);
+                    return;
                 }
                 getMapView().postDelayed(this, 1000L);
             }
         };
-        getMapView().postDelayed(qrPollRunnable, 1000L);
+        getMapView().postDelayed(qrPollRunnable, 500L);
     }
 
     /** Parse a MeshCore channel QR payload: meshcore://channel/add?name=X&secret=Y */
     private void handleQrChannelResult(String rawContent) {
         pendingQrScan = false;
+        QrResultProvider.clearPending(getMapView().getContext());
         if (rawContent == null || rawContent.trim().isEmpty()) return;
+        Log.d(TAG, "QR result received: " + rawContent);
         try {
             android.net.Uri uri = android.net.Uri.parse(rawContent.trim());
-            if (!"meshcore".equals(uri.getScheme())
-                    || !"/add".equals(uri.getPath()) && !"channel/add".equals(uri.getPath())
-                            && !"/channel/add".equals(uri.getPath())) {
-                // Try loose parse — maybe just name?secret format
+            String path = uri.getPath();
+            boolean validMeshcore = "meshcore".equals(uri.getScheme())
+                    && ("/add".equals(path) || "/channel/add".equals(path)
+                            || "channel/add".equals(path));
+            if (!validMeshcore) {
                 showJoinPrivateDialogFromQr(null, rawContent);
                 return;
             }
             String name = uri.getQueryParameter("name");
             String secret = uri.getQueryParameter("secret");
+            if (name != null && secret != null && secret.length() == 32) {
+                byte[] key = hexToBytes(secret.toLowerCase(Locale.US));
+                if (key != null && addChannelToNode(name.trim(), key)) {
+                    Toast.makeText(getMapView().getContext(),
+                            "Channel '" + name.trim() + "' added from QR.",
+                            Toast.LENGTH_SHORT).show();
+                    buildMeshChannelButtonStrip();
+                    return;
+                }
+            }
             showJoinPrivateDialogFromQr(name, secret);
         } catch (Exception e) {
             Log.w(TAG, "QR parse failed: " + rawContent, e);
@@ -3902,6 +3894,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         meshTransmitEnabled = useMesh;
         setMeshTransmitPreference(useMesh);
         syncTransmitSwitchesUi();
+        notifyBeaconTransportChanged();
         appendLog(useMesh
                 ? "Transmit mode: ATAK MeshCore"
                 : "Transmit mode: ATAK UV-PRO");
@@ -3922,37 +3915,33 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     /**
-     * Connection-priority transmit policy:
-     *  - UV-PRO connected => UV-PRO transmit
-     *  - UV-PRO disconnected + Mesh connected => Mesh transmit
-     *  - neither connected => retain current user choice
+     * Connection-driven transmit policy (updates toggles on connect/disconnect):
+     *  - both connected => MeshCore transmit
+     *  - only MeshCore connected => MeshCore transmit
+     *  - only UV-PRO connected => UV-PRO transmit
+     *  - neither connected => retain current toggle state
      */
     private void applyPreferredTransmitModeForConnectionState(boolean logWhenChanged) {
-        Context ctx = getMapView() != null ? getMapView().getContext() : null;
-        Boolean persisted = getMeshTransmitPreference(ctx);
-        if (persisted != null) {
-            if (meshTransmitEnabled != persisted) {
-                meshTransmitEnabled = persisted;
-                syncTransmitSwitchesUi();
-            } else {
-                applyActiveTransmitTransport();
-            }
-            return;
-        }
         boolean uvConnected = btManager != null && btManager.isConnected();
         boolean meshConnectedNow = meshBtManager != null && meshBtManager.isConnected();
-        boolean targetMode = meshTransmitEnabled;
-        if (uvConnected) {
-            targetMode = false;
+        boolean targetMesh;
+        if (uvConnected && meshConnectedNow) {
+            targetMesh = true;
         } else if (meshConnectedNow) {
-            targetMode = true;
+            targetMesh = true;
+        } else if (uvConnected) {
+            targetMesh = false;
+        } else {
+            applyActiveTransmitTransport();
+            return;
         }
-        if (meshTransmitEnabled != targetMode) {
-            meshTransmitEnabled = targetMode;
-            setMeshTransmitPreference(targetMode);
+        if (meshTransmitEnabled != targetMesh) {
+            meshTransmitEnabled = targetMesh;
+            setMeshTransmitPreference(targetMesh);
             syncTransmitSwitchesUi();
+            notifyBeaconTransportChanged();
             if (logWhenChanged) {
-                appendLog(targetMode
+                appendLog(targetMesh
                         ? "Transmit mode: ATAK MeshCore"
                         : "Transmit mode: ATAK UV-PRO");
             }
@@ -3969,6 +3958,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (chatBridge != null) {
             chatBridge.setBtManager(active);
         }
+    }
+
+    private void notifyBeaconTransportChanged() {
+        AtakBroadcast.getInstance().sendBroadcast(
+                new Intent(UVProMapComponent.ACTION_BEACON_INTERVAL_CHANGED));
     }
 
     private BtConnectionManager resolveActiveTransmitManager() {
@@ -7220,8 +7214,21 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 .show();
     }
 
+    /**
+     * Manual beacon: MeshCore only when mesh transmit is enabled; otherwise UV-PRO only.
+     */
+    private BtConnectionManager resolveManualBeaconTransport() {
+        if (meshTransmitEnabled && meshBtManager != null && meshBtManager.isConnected()) {
+            return meshBtManager;
+        }
+        if (btManager != null && btManager.isConnected()) {
+            return btManager;
+        }
+        return null;
+    }
+
     private void sendManualBeacon() {
-        BtConnectionManager activeTx = resolveActiveTransmitManager();
+        BtConnectionManager activeTx = resolveManualBeaconTransport();
         appendLog("Beacon TX route: mode=" + (meshTransmitEnabled ? "mesh" : "uvpro")
                 + " meshConnected=" + (meshBtManager != null && meshBtManager.isConnected())
                 + " uvproConnected=" + (btManager != null && btManager.isConnected())
@@ -7240,6 +7247,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 com.atakmap.coremap.maps.coords.GeoPoint gp =
                         ((com.atakmap.android.maps.PointMapItem) self).getPoint();
                 cotBridge.sendPositionOverRadio(
+                        activeTx,
                         gp.getLatitude(), gp.getLongitude(),
                         gp.getAltitude(), 0, 0, -1);
                 appendLog("Beacon sent over " + (activeTx == meshBtManager ? "MeshCore" : "UV-PRO"));
@@ -7629,44 +7637,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
     }
 
-    private java.io.File getQrPendingFile() {
-        // Read from the plugin's external cache dir — world-readable, accessible from
-        // both the plugin process (QrScanActivity writes it) and ATAK process (we read it).
-        // Path: /sdcard/Android/data/com.uvpro.plugin/cache/uvpro_qr_pending.txt
-        try {
-            Context pluginPkgCtx = getMapView().getContext()
-                    .createPackageContext("com.uvpro.plugin",
-                            Context.CONTEXT_IGNORE_SECURITY);
-            java.io.File extCache = pluginPkgCtx.getExternalCacheDir();
-            if (extCache != null) {
-                return new java.io.File(extCache, "uvpro_qr_pending.txt");
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "getQrPendingFile createPackageContext failed", e);
-        }
-        // Fallback: hardcoded external cache path
-        return new java.io.File(
-                "/sdcard/Android/data/com.uvpro.plugin/cache/uvpro_qr_pending.txt");
-    }
-
     private void checkPendingQrResult() {
-        try {
-            java.io.File file = getQrPendingFile();
-            if (!file.exists()) return;
-            java.util.List<String> lines = new java.util.ArrayList<>();
-            try (java.io.BufferedReader br = new java.io.BufferedReader(
-                    new java.io.FileReader(file))) {
-                String l;
-                while ((l = br.readLine()) != null) lines.add(l);
-            }
-            file.delete();
-            if (lines.size() < 2) return;
-            long ts = Long.parseLong(lines.get(0).trim());
-            String content = lines.get(1).trim();
-            if (System.currentTimeMillis() - ts > 60_000L || content.isEmpty()) return;
+        if (!pendingQrScan) return;
+        String content = QrResultProvider.consumePending(getMapView().getContext(), 60_000L);
+        if (content != null && !content.isEmpty()) {
             handleQrChannelResult(content);
-        } catch (Exception e) {
-            Log.w(TAG, "checkPendingQrResult failed", e);
         }
     }
 

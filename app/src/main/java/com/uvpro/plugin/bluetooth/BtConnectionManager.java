@@ -18,6 +18,7 @@ import android.util.Log;
 import com.uvpro.plugin.kiss.KissFrameDecoder;
 import com.uvpro.plugin.kiss.KissFrameEncoder;
 import com.uvpro.plugin.protocol.PacketRouter;
+import com.uvpro.plugin.ui.SettingsFragment;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -44,6 +45,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * - Reading incoming KISS frames in a background thread
  * - Sending outbound KISS frames
  * - Auto-reconnection on connection loss
+ * - Event-driven reconnect when the saved radio re-appears (ACL_CONNECTED; no polling)
  */
 public class BtConnectionManager {
 
@@ -87,17 +89,29 @@ public class BtConnectionManager {
     private final AtomicBoolean scanCompleteNotified = new AtomicBoolean(false);
     private BroadcastReceiver discoveryReceiver;
     private BroadcastReceiver bondStateReceiver;
+    private BroadcastReceiver aclReceiver;
     private boolean discoveryReceiverRegistered = false;
     private boolean bondReceiverRegistered = false;
+    private boolean aclReceiverRegistered = false;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicBoolean scanTimeoutScheduled = new AtomicBoolean(false);
     private static final long SCAN_TIMEOUT_MS = 8000L;
+    private static final long ACL_CONNECT_DEBOUNCE_MS = 1500L;
+    /** Direct connect to saved bonded MAC — no discovery scan. */
+    private static final long PASSIVE_RECONNECT_INTERVAL_MS = 60_000L;
+    /** First passive attempt after mesh boot contention ends. */
+    private static final long PASSIVE_RECONNECT_INITIAL_DELAY_MS = 3000L;
+    private Runnable pendingAclConnectRunnable;
+    private Runnable scanTimeoutRunnable;
+    private Runnable passiveReconnectRunnable;
+    private final AtomicBoolean passiveReconnectArmed = new AtomicBoolean(false);
 
     private final CopyOnWriteArrayList<ConnectionListener> listeners =
             new CopyOnWriteArrayList<>();
     private final CopyOnWriteArrayList<RawDataListener> rawDataListeners =
             new CopyOnWriteArrayList<>();
     private volatile ReconnectBlocker reconnectBlocker;
+    private volatile MeshCoexistenceListener meshCoexistenceListener;
 
     /** Invoked while the socket is still open, before streams are closed. */
     private final CopyOnWriteArrayList<Runnable> beforeDisconnectHooks =
@@ -127,6 +141,18 @@ public class BtConnectionManager {
         boolean shouldBlockReconnect();
     }
 
+    /**
+     * Notifies when a UV-PRO connect may disrupt an active MeshCore BLE session on the same
+     * phone adapter, so mesh can be restored after the radio link settles.
+     */
+    public interface MeshCoexistenceListener {
+        /** True while MeshCore BLE session is still being established. */
+        boolean isMeshConnecting();
+        /** True when MeshCore has an active BLE session. */
+        boolean isMeshConnected();
+        void onRadioConnectStartingWhileMeshUp();
+    }
+
     public BtConnectionManager(Context context, PacketRouter packetRouter) {
         // Use ATAK's activity context for BT operations — the plugin context
         // runs under a different package and lacks ATAK's runtime permissions.
@@ -138,10 +164,69 @@ public class BtConnectionManager {
         this.kissDecoder = new KissFrameDecoder();
         this.kissEncoder = new KissFrameEncoder();
         this.btAdapter = BluetoothAdapter.getDefaultAdapter();
+        registerAclReceiver();
+        // Passive radio reconnect is armed only after MeshCore releases priority (see
+        // onMeshReleased / MapComponent boot resolution), not at construction time.
+    }
+
+    /** Release broadcast receivers when the plugin shuts down. */
+    public void shutdown() {
+        cancelPendingAclConnect();
+        cancelPassiveReconnect();
+        unregisterAclReceiver();
+    }
+
+    /**
+     * Start (or keep) a low-cost passive reconnect loop: one direct connect attempt per minute
+     * to the saved bonded radio. No discovery scans. Complements ACL events, which many Classic
+     * BT radios never fire when they power on.
+     */
+    public void armPassiveReconnect() {
+        resumeRadioAutoConnect(PASSIVE_RECONNECT_INTERVAL_MS);
+    }
+
+    /** Arm passive reconnect and schedule a near-term first attempt. */
+    public void resumeRadioAutoConnect() {
+        resumeRadioAutoConnect(PASSIVE_RECONNECT_INITIAL_DELAY_MS);
+    }
+
+    private void resumeRadioAutoConnect(long firstDelayMs) {
+        if (connected.get() || connecting.get()) {
+            return;
+        }
+        passiveReconnectArmed.set(true);
+        if (passiveReconnectRunnable != null) {
+            mainHandler.removeCallbacks(passiveReconnectRunnable);
+            passiveReconnectRunnable = null;
+        }
+        Log.i(TAG, "Radio auto-connect resumed (first attempt in "
+                + (firstDelayMs / 1000) + "s, target="
+                + getSavedRadioTargetAddress() + ")");
+        scheduleNextPassiveReconnect(firstDelayMs);
     }
 
     public void setReconnectBlocker(ReconnectBlocker blocker) {
         reconnectBlocker = blocker;
+    }
+
+    public void setMeshCoexistenceListener(MeshCoexistenceListener listener) {
+        meshCoexistenceListener = listener;
+    }
+
+    /** Resume UV-PRO auto-connect once MeshCore boot contention is over. */
+    public void onMeshReleased() {
+        if (!shouldReconnect.get() || connected.get() || connecting.get()) {
+            return;
+        }
+        resumeRadioAutoConnect();
+    }
+
+    private boolean isMeshAutoConnectBlocked() {
+        MeshCoexistenceListener listener = meshCoexistenceListener;
+        if (listener == null) {
+            return false;
+        }
+        return listener.isMeshConnecting();
     }
 
     /**
@@ -298,6 +383,17 @@ public class BtConnectionManager {
             notifyError("Invalid Bluetooth device");
             return;
         }
+        String targetAddr = device.getAddress();
+        if (isConnectedToAddress(targetAddr)) {
+            Log.d(TAG, "Already connected to " + resolveName(device) + " — ignoring duplicate connect");
+            cancelPendingAclConnect();
+            return;
+        }
+        if (connecting.get() && isConnectingToAddress(targetAddr)) {
+            Log.d(TAG, "Already connecting to " + resolveName(device) + " — ignoring duplicate connect");
+            cancelPendingAclConnect();
+            return;
+        }
         if (connected.get()) {
             disconnect();
         }
@@ -309,6 +405,12 @@ public class BtConnectionManager {
         lastDevice = device;
         shouldReconnect.set(true);
         reconnectAttempts = 0;
+
+        MeshCoexistenceListener coexistence = meshCoexistenceListener;
+        if (coexistence != null && coexistence.isMeshConnected()) {
+            Log.i(TAG, "Radio connect while MeshCore is up — mesh restore will run if BLE drops");
+            coexistence.onRadioConnectStartingWhileMeshUp();
+        }
 
         int bondState = BluetoothDevice.BOND_NONE;
         try {
@@ -382,6 +484,7 @@ public class BtConnectionManager {
                 connecting.set(false);
                 reconnectAttempts = 0;
                 markIoActivity();
+                cancelPendingAclConnect();
 
                 // Reset decoder state from any previous partial frames
                 kissDecoder.reset();
@@ -448,6 +551,7 @@ public class BtConnectionManager {
         shouldReconnect.set(false);
         connecting.set(false);
         connected.set(false);
+        cancelPassiveReconnect();
         cleanup();
         notifyDisconnected("User disconnected");
     }
@@ -462,6 +566,7 @@ public class BtConnectionManager {
         connecting.set(false);
         connected.set(false);
         pendingBondDevice = null;
+        cancelPassiveReconnect();
         stopDiscoveryIfRunning();        cancelScanTimeout();
         cleanup();
         clearProbeSockets();
@@ -600,18 +705,25 @@ public class BtConnectionManager {
 
         if (shouldReconnect.get()) {
             scheduleReconnect();
+            armPassiveReconnect();
         }
     }
 
     private void scheduleReconnect() {
-        if (lastDevice == null) return;
-        if (isReconnectBlocked()) {
-            Log.i(TAG, "Auto-reconnect suppressed (external transport active)");
+        if (!isAutoReconnectEnabled()) {
             return;
         }
+        if (isMeshAutoConnectBlocked()) {
+            Log.d(TAG, "Reconnect deferred — MeshCore has priority");
+            return;
+        }
+        if (lastDevice == null) return;
         if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            Log.w(TAG, "Max reconnect attempts reached (" + MAX_RECONNECT_ATTEMPTS + "). Giving up.");
-            notifyError("Reconnect failed after " + MAX_RECONNECT_ATTEMPTS + " attempts. Tap Scan to retry.");
+            Log.w(TAG, "Max reconnect attempts reached (" + MAX_RECONNECT_ATTEMPTS
+                    + "). Falling back to passive reconnect.");
+            notifyError("Reconnect failed after " + MAX_RECONNECT_ATTEMPTS
+                    + " attempts. Will keep trying periodically.");
+            armPassiveReconnect();
             return;
         }
 
@@ -621,12 +733,9 @@ public class BtConnectionManager {
         new Thread(() -> {
             try {
                 Thread.sleep(delaySec * 1000L);
-                if (shouldReconnect.get() && !connected.get() && !connecting.get()
-                        && !isReconnectBlocked()) {
+                if (shouldReconnect.get() && !connected.get() && !connecting.get()) {
                     Log.i(TAG, "Attempting reconnect #" + reconnectAttempts + "...");
                     connect(lastDevice);
-                } else if (isReconnectBlocked()) {
-                    Log.i(TAG, "Reconnect attempt skipped (external transport active)");
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -722,6 +831,252 @@ public class BtConnectionManager {
             seenScanAddresses.add(address);
             return true;
         }
+    }
+
+    private boolean isAutoReconnectEnabled() {
+        try {
+            return SettingsFragment.isAutoReconnectEnabled(context);
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    private void registerAclReceiver() {
+        if (aclReceiverRegistered) {
+            return;
+        }
+        aclReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context ctx, Intent intent) {
+                if (intent == null) {
+                    return;
+                }
+                String action = intent.getAction();
+                if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)) {
+                    BluetoothDevice device =
+                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (device != null) {
+                        onAclConnected(device);
+                    }
+                } else if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(action)) {
+                    int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE,
+                            BluetoothAdapter.ERROR);
+                    if (state == BluetoothAdapter.STATE_ON) {
+                        onBluetoothEnabled();
+                    }
+                }
+            }
+        };
+        try {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
+            filter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
+            context.registerReceiver(aclReceiver, filter);
+            aclReceiverRegistered = true;
+            Log.d(TAG, "ACL reconnect listener registered");
+        } catch (Exception e) {
+            Log.w(TAG, "Could not register ACL receiver", e);
+        }
+    }
+
+    private void unregisterAclReceiver() {
+        if (!aclReceiverRegistered || aclReceiver == null) {
+            return;
+        }
+        try {
+            context.unregisterReceiver(aclReceiver);
+        } catch (Exception e) {
+            Log.w(TAG, "Could not unregister ACL receiver", e);
+        } finally {
+            aclReceiver = null;
+            aclReceiverRegistered = false;
+        }
+    }
+
+    private void cancelPendingAclConnect() {
+        if (pendingAclConnectRunnable != null) {
+            mainHandler.removeCallbacks(pendingAclConnectRunnable);
+            pendingAclConnectRunnable = null;
+        }
+    }
+
+    private void onAclConnected(BluetoothDevice device) {
+        if (device == null || device.getAddress() == null) {
+            return;
+        }
+        String addr = device.getAddress();
+        if (isConnectedToAddress(addr) || isConnectingToAddress(addr)) {
+            cancelPendingAclConnect();
+            return;
+        }
+        String saved = getSavedRadioTargetAddress();
+        Log.d(TAG, "ACL connected " + addr + " (saved target="
+                + (saved != null ? saved : "none") + ")");
+        if (!isSavedRadioTarget(addr)) {
+            return;
+        }
+        Log.i(TAG, "ACL connected for saved radio " + addr + " — scheduling plugin connect");
+        scheduleAclConnect(device, "acl-connected");
+    }
+
+    private void onBluetoothEnabled() {
+        if (!isAutoReconnectEnabled() || !shouldReconnect.get()) {
+            return;
+        }
+        if (connected.get() || connecting.get()) {
+            return;
+        }
+        String tgt = getSavedRadioTargetAddress();
+        if (tgt == null || tgt.isEmpty() || btAdapter == null) {
+            return;
+        }
+        try {
+            BluetoothDevice device = btAdapter.getRemoteDevice(tgt);
+            Log.i(TAG, "Bluetooth enabled — scheduling connect to saved radio " + tgt);
+            scheduleAclConnect(device, "bt-enabled");
+        } catch (Exception e) {
+            Log.w(TAG, "Could not schedule connect after BT enabled", e);
+        }
+    }
+
+    private void scheduleAclConnect(BluetoothDevice device, String reason) {
+        if (device == null) {
+            return;
+        }
+        cancelPendingAclConnect();
+        final BluetoothDevice target = device;
+        pendingAclConnectRunnable = () -> {
+            pendingAclConnectRunnable = null;
+            maybeConnectToSavedRadio(target, reason);
+        };
+        mainHandler.postDelayed(pendingAclConnectRunnable, ACL_CONNECT_DEBOUNCE_MS);
+    }
+
+    /**
+     * Connect to the saved radio when it re-appears at the BT stack (ACL) without polling.
+     * Skipped after explicit user Disconnect or when auto-reconnect is disabled in settings.
+     */
+    private void maybeConnectToSavedRadio(BluetoothDevice device, String reason) {
+        if (device == null) {
+            return;
+        }
+        if (!isAutoReconnectEnabled()) {
+            Log.d(TAG, "ACL connect skipped (" + reason + "): auto-reconnect disabled");
+            return;
+        }
+        if (!shouldReconnect.get()) {
+            Log.d(TAG, "ACL connect skipped (" + reason + "): user stopped reconnect");
+            return;
+        }
+        if (isMeshAutoConnectBlocked()) {
+            Log.d(TAG, "Radio connect skipped (" + reason + "): MeshCore has priority");
+            return;
+        }
+        String addr = device.getAddress();
+        if (isConnectedToAddress(addr) || isConnectingToAddress(addr)) {
+            Log.d(TAG, "ACL connect skipped (" + reason + "): already linked to " + addr);
+            return;
+        }
+        if (!isSavedRadioTarget(addr)) {
+            return;
+        }
+        int bondState = BluetoothDevice.BOND_NONE;
+        try {
+            bondState = device.getBondState();
+        } catch (Exception ignored) {
+        }
+        if (bondState != BluetoothDevice.BOND_BONDED) {
+            Log.d(TAG, "ACL connect skipped (" + reason + "): not bonded");
+            return;
+        }
+        reconnectAttempts = 0;
+        Log.i(TAG, "ACL trigger (" + reason + "): connecting to " + resolveName(device));
+        connect(device);
+    }
+
+    private boolean isConnectedToAddress(String address) {
+        if (!connected.get() || address == null || lastDevice == null) {
+            return false;
+        }
+        String linked = lastDevice.getAddress();
+        return linked != null && linked.equalsIgnoreCase(address);
+    }
+
+    private boolean isConnectingToAddress(String address) {
+        if (!connecting.get() || address == null || lastDevice == null) {
+            return false;
+        }
+        String linked = lastDevice.getAddress();
+        return linked != null && linked.equalsIgnoreCase(address);
+    }
+
+    private String getSavedRadioTargetAddress() {
+        try {
+            return BluetoothDeviceRegistry.getConnectTargetAddress(context);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private boolean isSavedRadioTarget(String address) {
+        if (address == null || address.isEmpty()) {
+            return false;
+        }
+        String tgt = getSavedRadioTargetAddress();
+        return tgt != null && !tgt.isEmpty() && tgt.equalsIgnoreCase(address);
+    }
+
+    private void cancelPassiveReconnect() {
+        passiveReconnectArmed.set(false);
+        if (passiveReconnectRunnable != null) {
+            mainHandler.removeCallbacks(passiveReconnectRunnable);
+            passiveReconnectRunnable = null;
+        }
+    }
+
+    private boolean shouldRunPassiveReconnect() {
+        if (!passiveReconnectArmed.get() || !isAutoReconnectEnabled() || !shouldReconnect.get()) {
+            return false;
+        }
+        if (isMeshAutoConnectBlocked()) {
+            return false;
+        }
+        if (connected.get() || connecting.get()) {
+            return false;
+        }
+        String tgt = getSavedRadioTargetAddress();
+        return tgt != null && !tgt.isEmpty();
+    }
+
+    private void scheduleNextPassiveReconnect(long delayMs) {
+        if (!shouldRunPassiveReconnect()) {
+            cancelPassiveReconnect();
+            return;
+        }
+        if (passiveReconnectRunnable != null) {
+            mainHandler.removeCallbacks(passiveReconnectRunnable);
+        }
+        passiveReconnectRunnable = () -> {
+            passiveReconnectRunnable = null;
+            if (!shouldRunPassiveReconnect()) {
+                cancelPassiveReconnect();
+                return;
+            }
+            String tgt = getSavedRadioTargetAddress();
+            if (tgt == null || tgt.isEmpty() || btAdapter == null) {
+                scheduleNextPassiveReconnect(PASSIVE_RECONNECT_INTERVAL_MS);
+                return;
+            }
+            try {
+                BluetoothDevice device = btAdapter.getRemoteDevice(tgt);
+                Log.d(TAG, "Passive reconnect attempt for saved radio " + tgt);
+                maybeConnectToSavedRadio(device, "passive-watch");
+            } catch (Exception e) {
+                Log.w(TAG, "Passive reconnect attempt failed", e);
+            }
+            scheduleNextPassiveReconnect(PASSIVE_RECONNECT_INTERVAL_MS);
+        };
+        mainHandler.postDelayed(passiveReconnectRunnable, delayMs);
     }
 
     private void registerDiscoveryReceiverIfNeeded() {
@@ -831,25 +1186,32 @@ public class BtConnectionManager {
     }
 
     private void scheduleScanTimeout() {
+        if (scanTimeoutRunnable != null) {
+            mainHandler.removeCallbacks(scanTimeoutRunnable);
+            scanTimeoutRunnable = null;
+        }
         if (!scanTimeoutScheduled.compareAndSet(false, true)) {
             return;
         }
-        mainHandler.postDelayed(() -> {
+        scanTimeoutRunnable = () -> {
             scanTimeoutScheduled.set(false);
+            scanTimeoutRunnable = null;
             if (scanCompleteNotified.get()) {
                 return;
             }
             Log.i(TAG, "Scan timeout reached; finishing discovery");
             stopDiscoveryIfRunning();
             notifyScanCompleteOnce();
-        }, SCAN_TIMEOUT_MS);
+        };
+        mainHandler.postDelayed(scanTimeoutRunnable, SCAN_TIMEOUT_MS);
     }
 
     private void cancelScanTimeout() {
-        if (!scanTimeoutScheduled.getAndSet(false)) {
-            return;
+        scanTimeoutScheduled.set(false);
+        if (scanTimeoutRunnable != null) {
+            mainHandler.removeCallbacks(scanTimeoutRunnable);
+            scanTimeoutRunnable = null;
         }
-        mainHandler.removeCallbacksAndMessages(null);
     }
 
     private void notifyScanCompleteOnce() {
@@ -928,6 +1290,7 @@ public class BtConnectionManager {
     }
 
     private void notifyConnected(BluetoothDevice device) {
+        cancelPassiveReconnect();
         for (ConnectionListener l : listeners) l.onConnected(device);
     }
 

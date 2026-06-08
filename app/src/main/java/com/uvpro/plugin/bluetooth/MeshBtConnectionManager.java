@@ -142,6 +142,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private final AtomicBoolean userInitiatedConnect = new AtomicBoolean(false);
     /** Addresses seen during the current live BLE scan (used for availability dot logic). */
     private final Set<String> liveScanAddresses = new HashSet<>();
+    private volatile BootDeferralChecker bootDeferralChecker;
 
     /** Availability result constants. */
     public static final int AVAIL_AVAILABLE = BleMeshAvailabilityProber.AVAILABLE;
@@ -150,6 +151,11 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     /** Callback for availability probe results. */
     public interface AvailabilityCallback {
         void onResult(int availability);
+    }
+
+    /** When true, boot auto-connect waits (e.g. UV-PRO has priority at startup). */
+    public interface BootDeferralChecker {
+        boolean shouldDeferBootAutoConnect();
     }
 
     private final BleMeshAvailabilityProber availabilityProber = new BleMeshAvailabilityProber();
@@ -781,13 +787,26 @@ public class MeshBtConnectionManager extends BtConnectionManager {
      * Schedule a one-shot boot auto-connect attempt after a short startup delay.
      * Cancelled immediately if the user opens Scan & Connect.
      */
+    public void setBootDeferralChecker(BootDeferralChecker checker) {
+        bootDeferralChecker = checker;
+    }
+
     public void scheduleBootAutoConnect() {
         cancelBootAutoConnect();
         bootAutoConnectRunnable = () -> {
             bootAutoConnectRunnable = null;
+            if (isBootAutoConnectDeferred()) {
+                Log.i(TAG, "Boot auto-connect deferred — UV-PRO still resolving at startup");
+                return;
+            }
             tryAutoConnectToSavedTarget();
         };
         ioHandler.postDelayed(bootAutoConnectRunnable, 2500L);
+    }
+
+    private boolean isBootAutoConnectDeferred() {
+        BootDeferralChecker checker = bootDeferralChecker;
+        return checker != null && checker.shouldDeferBootAutoConnect();
     }
 
     public void cancelBootAutoConnect() {
@@ -799,31 +818,60 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     /** Probe the saved target and silently connect if available. */
     public void tryAutoConnectToSavedTarget() {
+        autoConnectToSavedTargetInternal("Boot auto-connect", true);
+    }
+
+    /**
+     * Reconnect to the saved mesh target after a UV-PRO Classic BT connect disrupted BLE.
+     * Does not consume the one-shot boot auto-connect flag.
+     */
+    public void restoreSavedTargetConnection() {
+        autoConnectToSavedTargetInternal("Mesh restore", false, false);
+    }
+
+    /**
+     * Fast mesh restore after radio contention — skips availability probe because mesh was
+     * connected moments ago and the saved target is already bonded.
+     */
+    public void restoreSavedTargetConnectionFast() {
+        autoConnectToSavedTargetInternal("Mesh restore-fast", false, true);
+    }
+
+    private void autoConnectToSavedTargetInternal(String reason, boolean markBootAttempted) {
+        autoConnectToSavedTargetInternal(reason, markBootAttempted, false);
+    }
+
+    private void autoConnectToSavedTargetInternal(String reason, boolean markBootAttempted,
+                                                  boolean skipProbe) {
         if (scanPickerSessionActive.get()) {
-            Log.i(TAG, "tryAutoConnectToSavedTarget: scan/picker active — skipping");
+            Log.i(TAG, reason + ": scan/picker active — skipping");
+            return;
+        }
+        if (markBootAttempted && isBootAutoConnectDeferred()) {
+            Log.i(TAG, reason + ": deferred — UV-PRO still resolving at startup");
             return;
         }
         if (connected.get() || connecting.get()) {
             return;
         }
-        if (!savedTargetAutoConnectAttempted.compareAndSet(false, true)) {
-            Log.d(TAG, "tryAutoConnectToSavedTarget: already attempted this session");
+        if (markBootAttempted && !savedTargetAutoConnectAttempted.compareAndSet(false, true)) {
+            Log.d(TAG, reason + ": already attempted this session");
             return;
         }
         if (!checkBtPermissions()) {
-            Log.i(TAG, "tryAutoConnectToSavedTarget: no BT permissions yet");
+            Log.i(TAG, reason + ": no BT permissions yet");
             return;
         }
         String tgt = BluetoothDeviceRegistry.getMeshConnectTargetAddress(context);
         if (tgt == null || tgt.isEmpty()) {
-            Log.d(TAG, "tryAutoConnectToSavedTarget: no saved mesh target");
+            Log.d(TAG, reason + ": no saved mesh target");
             return;
         }
         BluetoothDevice device;
         try {
             device = btAdapter != null ? btAdapter.getRemoteDevice(tgt) : null;
         } catch (Exception e) {
-            Log.w(TAG, "tryAutoConnectToSavedTarget: bad address " + tgt, e);
+            Log.w(TAG, reason + ": bad address " + tgt, e);
             return;
         }
         if (device == null) return;
@@ -831,34 +879,44 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         // unbonded saved target in the background grabs the node's single BLE connection
         // slot and stops its advertising, which blocks the user from pairing it manually
         // (in Android settings or the MeshCore app). Leave unbonded targets alone until the
-        // user explicitly taps Scan & Connect or the favorite chip.
+        // user explicitly taps Scan & Connect.
         int savedTargetBondState = BluetoothDevice.BOND_NONE;
         try {
             savedTargetBondState = device.getBondState();
         } catch (Exception ignored) {
         }
         if (savedTargetBondState != BluetoothDevice.BOND_BONDED) {
-            Log.i(TAG, "Boot auto-connect: saved target " + tgt
+            Log.i(TAG, reason + ": saved target " + tgt
                     + " is not bonded — skipping background auto-connect (manual pairing first)");
             return;
         }
+        if (skipProbe) {
+            availabilityProber.cancelAll();
+            scheduleAutoConnectTimeout(15_000);
+            Log.i(TAG, reason + ": connecting directly to " + tgt);
+            connectInternal(device);
+            return;
+        }
         final int probeGeneration = autoConnectGeneration.get();
-        Log.i(TAG, "Boot auto-connect: probing " + tgt);
+        Log.i(TAG, reason + ": probing " + tgt);
         scheduleAutoConnectTimeout(30_000);
         AvailabilityCallback onProbeResult = availability -> {
             if (probeGeneration != autoConnectGeneration.get()) {
-                Log.i(TAG, "Boot probe result stale — Scan & Connect started, ignoring");
+                Log.i(TAG, reason + " probe result stale — Scan & Connect started, ignoring");
                 cancelAutoConnectTimeout();
                 return;
             }
             if (availability == AVAIL_AVAILABLE) {
                 if (!scanPickerSessionActive.get() && !connected.get()) {
-                    Log.i(TAG, "Boot auto-connect: connecting to " + tgt);
+                    Log.i(TAG, reason + ": connecting to " + tgt);
                     connectInternal(device);
                 }
             } else {
                 cancelAutoConnectTimeout();
-                Log.i(TAG, "Boot auto-connect: target not available");
+                Log.i(TAG, reason + ": target not available");
+                if (markBootAttempted && !connected.get()) {
+                    notifyDisconnected("Boot auto-connect unavailable");
+                }
             }
         };
         if (isSafeForAvailabilityProbe(device)) {

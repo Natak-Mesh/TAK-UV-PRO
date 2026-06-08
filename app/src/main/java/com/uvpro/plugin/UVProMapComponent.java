@@ -167,6 +167,14 @@ public class UVProMapComponent extends DropDownMapComponent {
     private Runnable iconsetReminderRunnable;
     private android.content.BroadcastReceiver beaconIntervalReceiver;
     private final SmartBeacon smartBeacon = new SmartBeacon();
+    // GPS speed/bearing via LocationManager — Doppler-based, no position-jitter artifacts.
+    private android.location.LocationManager gpsLocationManager;
+    private android.location.LocationListener gpsLocationListener;
+    private volatile android.location.Location lastGpsLocation = null;
+    // Fallback position tracking used only when GPS listener has not yet produced a fix.
+    private double lastBeaconLatDeg = Double.NaN;
+    private double lastBeaconLonDeg = Double.NaN;
+    private long   lastBeaconPositionMs = 0;
     private WifiContactKeepalive wifiContactKeepalive;
     private RfTakUplinkKeepalive rfTakUplinkKeepalive;
     /** One startup pull from radio GPS after first successful BT connect. */
@@ -605,11 +613,50 @@ try {
 
         Log.i(TAG, "UV-PRO plugin initialized successfully (callsign="
                 + callsign + ")");
+
+        startGpsSpeedListener(view.getContext());
+    }
+
+    /** Start a GPS LocationListener to get Doppler-accurate speed and bearing. */
+    private void startGpsSpeedListener(Context ctx) {
+        try {
+            gpsLocationManager = (android.location.LocationManager)
+                    ctx.getSystemService(Context.LOCATION_SERVICE);
+            if (gpsLocationManager == null) {
+                Log.w(TAG, "GPS: LocationManager unavailable");
+                return;
+            }
+            gpsLocationListener = new android.location.LocationListener() {
+                @Override public void onLocationChanged(android.location.Location loc) {
+                    lastGpsLocation = loc;
+                }
+                @Override public void onStatusChanged(String p, int s, android.os.Bundle e) {}
+                @Override public void onProviderEnabled(String p) {}
+                @Override public void onProviderDisabled(String p) {}
+            };
+            // Request updates on the main looper; 1-second / 0-meter minimum thresholds.
+            gpsLocationManager.requestLocationUpdates(
+                    android.location.LocationManager.GPS_PROVIDER,
+                    1000L, 0f, gpsLocationListener,
+                    android.os.Looper.getMainLooper());
+            Log.i(TAG, "GPS speed listener started");
+        } catch (SecurityException se) {
+            Log.w(TAG, "GPS: location permission denied — falling back to derived speed", se);
+        } catch (Exception e) {
+            Log.w(TAG, "GPS: listener start failed — falling back to derived speed", e);
+        }
     }
 
     @Override
     protected void onDestroyImpl(Context context, MapView view) {
         Log.i(TAG, "UV-PRO plugin shutting down...");
+
+        // Stop GPS speed listener
+        if (gpsLocationManager != null && gpsLocationListener != null) {
+            try { gpsLocationManager.removeUpdates(gpsLocationListener); } catch (Exception ignored) {}
+            gpsLocationManager = null;
+            gpsLocationListener = null;
+        }
 
         // Stop beacon timer
         if (beaconHandler != null && beaconRunnable != null) {
@@ -2494,18 +2541,63 @@ try {
 
             com.atakmap.coremap.maps.coords.GeoPoint gp = self.getPoint();
 
-            // Speed (m/s) and course (degrees) — use getMetaString for broad SDK compat
+            // Speed and course: prefer live GPS (Doppler-accurate, no position-jitter) when available.
+            // Fall back to position-derived only if the GPS listener hasn't produced a fix yet.
             double speedMs = 0.0, course = 0.0;
-            try { speedMs = Double.parseDouble(self.getMetaString("Speed",  "0")); } catch (Exception ignored) {}
-            try { course  = Double.parseDouble(self.getMetaString("course", "0")); } catch (Exception ignored) {}
+            String speedSrc;
+            android.location.Location gpsLoc = lastGpsLocation;
+            if (gpsLoc != null && gpsLoc.hasSpeed()) {
+                speedMs = Math.max(0.0, gpsLoc.getSpeed());
+                course  = gpsLoc.hasBearing() ? gpsLoc.getBearing() : 0.0;
+                speedSrc = "gps";
+            } else {
+                // Fallback: derive speed from successive self-marker positions.
+                double currentLat = gp.getLatitude();
+                double currentLon = gp.getLongitude();
+                long nowMs = System.currentTimeMillis();
+                speedSrc = "meta";
+                if (!Double.isNaN(lastBeaconLatDeg) && lastBeaconPositionMs > 0) {
+                    long dtMs = nowMs - lastBeaconPositionMs;
+                    if (dtMs > 500 && dtMs < 120_000L) {
+                        try {
+                            GeoPoint prev = new GeoPoint(lastBeaconLatDeg, lastBeaconLonDeg);
+                            GeoPoint curr = new GeoPoint(currentLat, currentLon);
+                            double distM = GeoCalculations.distanceTo(prev, curr);
+                            double derivedMs = distM / (dtMs / 1000.0);
+                            if (derivedMs >= 0.0 && derivedMs < 120.0) {
+                                speedMs  = derivedMs;
+                                speedSrc = "derived";
+                                course   = GeoCalculations.bearingTo(prev, curr);
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                }
+                lastBeaconLatDeg     = currentLat;
+                lastBeaconLonDeg     = currentLon;
+                lastBeaconPositionMs = nowMs;
+                if (!speedSrc.equals("derived")) {
+                    try { course = Double.parseDouble(self.getMetaString("course", "0")); } catch (Exception ignored) {}
+                }
+            }
             double speedMph = speedMs * 2.23694;
 
             Context beaconCtx = getBeaconPrefsContext();
             if (!forceImmediate && SmartBeacon.isEnabled(beaconCtx)) {
-                if (!smartBeacon.shouldBeacon(beaconCtx, speedMph, course)) return;
+                boolean smartFire = smartBeacon.shouldBeacon(beaconCtx, speedMph, course);
+                // Safety floor: if the fixed beacon interval has elapsed, send regardless.
+                // This prevents Smart Beacon from silently blocking beacons when speed
+                // cannot be determined (GPS not reporting, speed=0 while moving).
+                int fixedIntervalSec = SettingsFragment.getBeaconIntervalSec(pluginContext);
+                if (fixedIntervalSec < 1) fixedIntervalSec = 60;
+                boolean floorFire = smartBeacon.elapsedSinceLastBeaconSec() >= fixedIntervalSec;
+                Log.d(TAG, "Smart beacon check: speed=" + String.format("%.1f", speedMph)
+                        + "mph (src=" + speedSrc + ")"
+                        + " course=" + String.format("%.0f", course) + "°"
+                        + " smartFire=" + smartFire + " floorFire=" + floorFire);
+                if (!smartFire && !floorFire) return;
                 smartBeacon.recordBeacon(course);
-                Log.d(TAG, "Smart beacon fired (speed=" + String.format("%.1f", speedMph)
-                        + "mph, course=" + String.format("%.0f", course) + "°)");
+                Log.d(TAG, "Smart beacon fired (smartFire=" + smartFire
+                        + " floorFire=" + floorFire + ")");
             } else if (forceImmediate) {
                 Log.d(TAG, "Post-connect startup beacon fired (30s)");
             }

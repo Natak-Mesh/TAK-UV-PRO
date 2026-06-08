@@ -11,7 +11,7 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Dynamic CoT Stale Window** | ✅ Working | Contact `stale` timestamp now tracks current beacon policy (fixed interval or Smart Beacon profile) so receivers do not grey contacts prematurely. |
 | **Ping / Ping Reply** | ✅ Working | **Send Ping** broadcasts a discovery ping; **Send Ping Reply** (Settings) auto-replies to incoming pings with your GPS position. Replies use **slotted timing** (default 20 slots × 2.5 s) keyed by callsign hash to reduce collisions. |
 | **Net slot administration** | ✅ Working | Team leadership can set slot count/time and **Distribute to net** (`TYPE_NET_SLOT_CONFIG`); receivers auto-apply newer assignments. In **Settings → Tool Preferences → UV-PRO Settings → Administration** or **Plugin Settings** (bottom of dialog). |
-| **Bluetooth Scan & Connect** | ✅ Working | Instant picker showing previously-connected radios with live green/gray availability dots. Auto-connects to last used radio on ATAK startup. |
+| **Bluetooth Scan & Connect** | ✅ Working | Instant picker showing previously-connected radios with live green/gray availability dots. **UV-PRO auto-connects first at boot**; MeshCore follows once the radio link resolves. |
 | **Radio Connection Status Overlay** | ✅ Working | Persistent BTECH icon in the lower-right map corner (green = connected, desaturated = disconnected). **Tap the icon** to open the UV-PRO panel (same as Menu → Tools → UV-PRO). |
 | **GeoChat over RF (contact-centric)** | ✅ Working | Chat to radio peers using ATAK's native Contacts/GeoChat UI (plugin contacts route via RF transport). |
 | **Contact groups over RF** | ✅ Working | Group create/add ([UPDATED CONTACTS]) relays **full GeoChat CoT** with `hierarchy` (same as Wi‑Fi/TAK), not compact chat-only. Slotted TX uses default ping-reply slots (20 × 2.5 s). |
@@ -28,9 +28,16 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Channel grid refresh** | ✅ Working | After long-press manual channel edit/save, the channel grid re-reads that slot from the radio so labels/frequencies match what was programmed. |
 | **Channel group controls + CSV import/export** | ✅ Working | **Group** cycles the radio group and refreshes the channel grid. **Import Channels** lets the user choose a CSV from `/atak/tools/import` and writes the selected group with source-of-truth slot mapping (including explicit clears). **Export Channels** writes the current group CSV to `/atak/tools/datapackage/transfer`. |
 | **Initial Channel Group Setup** | ✅ Working | Actions panel button seeds empty groups only by programming **CH30 = APRS 144.390** so empty groups become selectable. Provides haptic + yellow pulse while running and completion popup when done. |
-| **Bluetooth Auto-Reconnect** | ✅ Working | Three-strategy SPP connection with exponential backoff reconnect (up to 5 attempts). |
+| **Bluetooth Auto-Reconnect** | ✅ Working | Three-strategy SPP connection with exponential backoff reconnect (up to 5 attempts). ACL + passive reconnect when the saved UV-PRO powers on. MeshCore auto-restores if Classic BT knocks BLE offline. |
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
+
+### 2026-06-08 Progress Update (v1.9.67)
+
+- **UV-PRO-first boot priority:** At ATAK startup, UV-PRO auto-connect runs before MeshCore. Mesh boot auto-connect is held until the radio connects, fails, has no saved target, or a ~35s watchdog expires — then MeshCore starts ~2.5s later so both transports do not fight on the same phone BT adapter.
+- **Mesh/radio BT coexistence:** Classic UV-PRO SPP can briefly drop an active MeshCore BLE session on one phone. The plugin detects contention, skips duplicate radio connect attempts, and fast-restores mesh (direct GATT reconnect, no availability probe) with retries after the radio link settles.
+- **Passive radio reconnect:** When mesh boot contention ends, UV-PRO passive reconnect arms with a **3s** first attempt (then every 60s). ACL events connect the saved bonded radio when it powers on without discovery scans.
+- **Periodic beacons (v1.9.66 carry-over):** Smart/periodic OPENRL and APRS beacons remain UV-PRO-only; a one-shot post-connect startup beacon may still use MeshCore when that transport is selected.
 
 ### 2026-06-07 Progress Update (v1.9.66)
 

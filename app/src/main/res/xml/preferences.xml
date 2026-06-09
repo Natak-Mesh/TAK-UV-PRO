@@ -135,9 +135,16 @@
 
     </PreferenceCategory>
 
+    <Preference
+        android:key="uvpro_admin_access"
+        android:title="Administrative Settings"
+        android:summary="Tap to enter password"
+        android:persistent="false"
+        android:selectable="true" />
+
     <PreferenceCategory
         android:key="uvpro_cat_administration"
-        android:title="Administration">
+        android:title="Administrative Settings">
 
         <Preference
             android:key="uvpro_admin_leadership_warning"
@@ -146,6 +153,20 @@
             android:selectable="false"
             android:persistent="false"
             android:enabled="true" />
+
+        <Preference
+            android:key="uvpro_mesh_beacon_national_warning"
+            android:title="Mesh Beacon — national activation only"
+            android:summary="Do not use unless directed by your team leader"
+            android:selectable="false"
+            android:persistent="false"
+            android:enabled="true" />
+
+        <com.atakmap.android.gui.PanCheckBoxPreference
+            android:key="uvpro_mesh_beacon_enabled"
+            android:title="Enable Mesh Beacon"
+            android:summary="Timed mesh position beacons (MeshCore transport)"
+            android:defaultValue="false" />
 
         <com.atakmap.android.gui.PanCheckBoxPreference
             android:key="uvpro_admin_settings_enabled"

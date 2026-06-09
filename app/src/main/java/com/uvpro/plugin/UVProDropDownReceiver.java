@@ -250,6 +250,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Switch switchMeshShowRepeaters;
     private Switch switchMeshShowNodes;
     private Switch switchMeshSendPositionWithAdvert;
+    private View rowMeshBeaconAdmin;
+    private Switch switchMeshBeaconEnabled;
+    private boolean suppressMeshBeaconSwitchCallbacks = false;
     private Button btnAddMeshChannel;
     private LinearLayout stripMeshChannels;
     private TextView meshChannelTitleView;
@@ -879,6 +882,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         switchMeshShowNodes = rootView.findViewById(getId("switch_mesh_show_nodes"));
         switchMeshSendPositionWithAdvert = rootView.findViewById(
                 getId("switch_mesh_send_position_with_advert"));
+        rowMeshBeaconAdmin = rootView.findViewById(getId("row_mesh_beacon_admin"));
+        switchMeshBeaconEnabled = rootView.findViewById(getId("switch_mesh_beacon_enabled"));
         switchMeshUseCallsignLocation = rootView.findViewById(
                 getId("switch_mesh_use_callsign_location"));
         textMeshUseCallsignLocation = rootView.findViewById(
@@ -1112,6 +1117,25 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     pushPhoneLocationToMeshNodeIfNeeded(true);
                 }
                 meshBtManager.requestSelfInfo();
+            });
+        }
+        if (switchMeshBeaconEnabled != null) {
+            switchMeshBeaconEnabled.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                if (suppressMeshBeaconSwitchCallbacks || !buttonView.isPressed()) {
+                    return;
+                }
+                Context ctx = getMapView() != null ? getMapView().getContext() : null;
+                if (ctx == null || !com.uvpro.plugin.ui.AdminAccessGate.isUnlocked(ctx)) {
+                    updateMeshBeaconAdminUi();
+                    return;
+                }
+                SettingsFragment.setMeshBeaconEnabled(ctx, isChecked);
+                appendLog("Mesh Beacon " + (isChecked ? "enabled" : "disabled"));
+                try {
+                    AtakBroadcast.getInstance().sendBroadcast(
+                            new Intent(UVProMapComponent.ACTION_BEACON_INTERVAL_CHANGED));
+                } catch (Exception ignored) {
+                }
             });
         }
         if (switchMeshUseCallsignLocation != null) {
@@ -3743,9 +3767,33 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         updateMeshScanButtonText();
         updateMeshGpsControlsUi();
+        updateMeshBeaconAdminUi();
         scheduleMeshGpsAugmentTick();
         scheduleMeshCallsignPositionSync();
         MeshStatusOverlay.setConnected(connected);
+    }
+
+    private void updateMeshBeaconAdminUi() {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (rowMeshBeaconAdmin == null) {
+            return;
+        }
+        boolean unlocked = ctx != null
+                && com.uvpro.plugin.ui.AdminAccessGate.isUnlocked(ctx);
+        rowMeshBeaconAdmin.setVisibility(unlocked ? View.VISIBLE : View.GONE);
+        if (!unlocked || switchMeshBeaconEnabled == null) {
+            return;
+        }
+        suppressMeshBeaconSwitchCallbacks = true;
+        try {
+            switchMeshBeaconEnabled.setChecked(SettingsFragment.isMeshBeaconEnabled(ctx));
+            boolean toggleEnabled = meshConnected;
+            switchMeshBeaconEnabled.setEnabled(toggleEnabled);
+            switchMeshBeaconEnabled.setAlpha(toggleEnabled ? 1f : 0.45f);
+            rowMeshBeaconAdmin.setAlpha(toggleEnabled ? 1f : 0.85f);
+        } finally {
+            suppressMeshBeaconSwitchCallbacks = false;
+        }
     }
 
     private void updateMeshGpsControlsUi() {
@@ -7152,8 +7200,23 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         // Team color is controlled by ATAK core settings (locationTeam). Plugin no longer overrides it.
 
-        SettingsFragment.AdministrationUi adminUi =
-                SettingsFragment.appendAdministrationSection(ctx, layout);
+        final LinearLayout adminHost = new LinearLayout(ctx);
+        adminHost.setOrientation(LinearLayout.VERTICAL);
+        layout.addView(adminHost);
+        final SettingsFragment.AdministrationUi[] adminUiHolder =
+                new SettingsFragment.AdministrationUi[1];
+        final Runnable[] refreshAdminSection = new Runnable[1];
+        refreshAdminSection[0] = () -> {
+            adminHost.removeAllViews();
+            if (com.uvpro.plugin.ui.AdminAccessGate.isUnlocked(ctx)) {
+                adminUiHolder[0] = SettingsFragment.appendAdministrationSection(ctx, adminHost);
+            } else {
+                adminUiHolder[0] = null;
+                SettingsFragment.appendAdministrativeUnlockPrompt(ctx, adminHost,
+                        refreshAdminSection[0]);
+            }
+        };
+        refreshAdminSection[0].run();
 
         scrollView.addView(layout);
 
@@ -7189,8 +7252,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
                         editor.putString(SettingsFragment.PREF_RETRY_MAX, newRetryMax);
                     }
 
-                    SettingsFragment.saveAdministrationFromUi(ctx, adminUi);
-                    SettingsFragment.refreshAdministrationStatus(ctx, adminUi);
+                    if (adminUiHolder[0] != null) {
+                        SettingsFragment.saveAdministrationFromUi(ctx, adminUiHolder[0]);
+                        SettingsFragment.refreshAdministrationStatus(ctx, adminUiHolder[0]);
+                    }
                     SettingsFragment.saveAprsSettingsFromUi(ctx, aprsUi);
 
                     editor.apply();
@@ -7634,6 +7699,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             }
             // Check for a pending QR scan result stored by QrScanActivity
             checkPendingQrResult();
+            updateMeshBeaconAdminUi();
         }
     }
 

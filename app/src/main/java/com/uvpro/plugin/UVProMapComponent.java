@@ -2717,7 +2717,7 @@ try {
 
     private void sendBeaconIfConnected(boolean forceImmediate) {
         // Startup (30s post-connect): UV-PRO or MeshCore per active transmit preference.
-        // Smart/periodic beacons: UV-PRO and APRS only — never MeshCore.
+        // Smart/periodic beacons: UV-PRO (default) or MeshCore when national Mesh Beacon is on.
         BtConnectionManager beaconTransport = forceImmediate
                 ? resolveStartupBeaconTransportManager()
                 : resolvePeriodicBeaconTransportManager();
@@ -2852,16 +2852,32 @@ try {
         }
     }
 
-    /** UV-PRO only — used for smart/periodic OPENRL and APRS beacons. */
+    /** MeshCore when national Mesh Beacon is enabled; otherwise UV-PRO only. */
     private BtConnectionManager resolvePeriodicBeaconTransportManager() {
+        Context ctx = getBeaconPrefsContext();
+        if (ctx != null && com.uvpro.plugin.ui.SettingsFragment.isMeshBeaconEnabled(ctx)) {
+            if (meshBtConnectionManager != null && meshBtConnectionManager.isConnected()
+                    && com.uvpro.plugin.ui.SettingsFragment.isMeshTransmitEnabled(ctx)) {
+                return meshBtConnectionManager;
+            }
+            return null;
+        }
         if (btConnectionManager != null && btConnectionManager.isConnected()) {
             return btConnectionManager;
         }
         return null;
     }
 
-    /** Post-connect startup beacon — may use MeshCore when that is the active transmit path. */
+    /** Post-connect startup beacon — MeshCore when Mesh Beacon enabled, else active transmit path. */
     private BtConnectionManager resolveStartupBeaconTransportManager() {
+        Context ctx = getBeaconPrefsContext();
+        if (ctx != null && com.uvpro.plugin.ui.SettingsFragment.isMeshBeaconEnabled(ctx)) {
+            if (meshBtConnectionManager != null && meshBtConnectionManager.isConnected()
+                    && com.uvpro.plugin.ui.SettingsFragment.isMeshTransmitEnabled(ctx)) {
+                return meshBtConnectionManager;
+            }
+            return null;
+        }
         return resolveBeaconTransportManager();
     }
 

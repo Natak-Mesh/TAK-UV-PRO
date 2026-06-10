@@ -2,6 +2,10 @@
 
 A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team Awareness Kit (ATAK) over Bluetooth. Team members with radios can share positions, chat, and situational awareness data entirely off-grid — no cell service or internet required.
 
+- Package: `com.uvpro.plugin`
+- Current version: `1.9.70`
+- Target ATAK: `5.5.1` (CIV)
+
 ## Features
 
 | Feature | Status | Description |
@@ -9,7 +13,7 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Position Sharing (PLI)** | ✅ Working | Your ATAK position is beaconed over radio at a configurable interval. Incoming positions appear as contacts on the map. |
 | **Smart Beaconing (APRS-style)** | ✅ Working | APRS-standard SmartBeaconing + corner pegging using live GPS Doppler speed (not position delta). Speed-proportional rate between low/high thresholds, turn detection at any speed > 0, and fixed-interval safety floor. Seven parameters in Settings → Manage Smart Beacon Settings. |
 | **Dynamic CoT Stale Window** | ✅ Working | Contact `stale` timestamp now tracks current beacon policy (fixed interval or Smart Beacon profile) so receivers do not grey contacts prematurely. |
-| **Ping / Ping Reply** | ✅ Working | **Send Ping** broadcasts a discovery ping; **Send Ping Reply** (Settings) auto-replies to incoming pings with your GPS position. Replies use **slotted timing** (default 20 slots × 2.5 s) keyed by callsign hash to reduce collisions. |
+| **Ping / Ping Reply** | ✅ Working | **Send Ping** (dropdown) broadcasts a discovery ping to all stations. **Per-contact Ping** (Connectors page or radial **Contact** submenu) sends a directed `TYPE_PING` to one callsign; only that peer should reply. **Send Ping Reply** (Settings) auto-replies to incoming pings you are targeted for. Replies use **slotted timing** (default 20 slots × 2.5 s) keyed by callsign hash. |
 | **Net slot administration** | ✅ Working | Team leadership can set slot count/time and **Distribute to net** (`TYPE_NET_SLOT_CONFIG`); receivers auto-apply newer assignments. In **Settings → Tool Preferences → UV-PRO Settings → Administration** or **Plugin Settings** (bottom of dialog). |
 | **Bluetooth Scan & Connect** | ✅ Working | Instant picker showing previously-connected radios with live green/gray availability dots. **UV-PRO auto-connects first at boot**; MeshCore follows once the radio link resolves. |
 | **Radio Connection Status Overlay** | ✅ Working | Persistent BTECH icon in the lower-right map corner (green = connected, desaturated = disconnected). **Tap the icon** to open the UV-PRO panel (same as Menu → Tools → UV-PRO). |
@@ -33,13 +37,13 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
 | **Connection battery indicators** | ✅ Working | Green percent badge beside each connected device name in the plugin panel — UV-PRO via GAIA `READ_STATUS`, MeshCore via battery/stats commands. |
 | **Per-contact Ping (Connectors page)** | ✅ Working | Contact card page 3 adds **Ping** for mesh and established RF peers; sends a directed position request to that contact's callsign over the active transport. |
-| **Radial Ping (contact submenu)** | ✅ Working | Ping action in the stock radial **Contact** submenu for RF-capable peers; same directed ping path as Connectors. |
+| **Radial Ping (contact submenu)** | ✅ Working | Long-press a contact → radial **Contact** icon → **Ping** (blue radio icon). Same directed ping as Connectors; does not replace ATAK's stock friendly menu. |
 
 ### 2026-06-10 Progress Update (v1.9.70)
 
-- **Directed contact ping:** Directed `TYPE_PING` targets only the intended peer; reply toasts on the sender are filtered to that callsign (routine beacons from other stations no longer show as ping replies).
-- **Radial Ping:** Adds **Ping** to the stock radial **Contact** submenu without replacing the friendly menu; uses the blue radio icon via cached `base64://` GL assets.
-- **Connector icons:** Ping, Send Message, and Favorite connectors cache `ic_uvpro` as `file://` URIs so icons render reliably on the Connectors page.
+- **Directed contact ping:** 12-byte `TYPE_PING` (sender + target wire callsign). Non-target stations do not schedule a ping reply. Sender reply toasts are filtered to the ping target so routine beacons from other stations are not misreported.
+- **Radial Ping:** Long-press contact → radial **Contact** submenu → **Ping** (blue `ic_uvpro` icon). Implemented via `ContactRadialMenuFactory` — injects into the stock contact submenu only; does not replace the friendly radial menu.
+- **Connector icons:** Ping, Send Message, and Favorite connectors rasterize `ic_uvpro` to cached `file://` URIs for ATAK's Connectors GL view.
 
 ### 2026-06-10 Progress Update (v1.9.69)
 

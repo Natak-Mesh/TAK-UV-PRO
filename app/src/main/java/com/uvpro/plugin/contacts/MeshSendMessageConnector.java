@@ -29,6 +29,10 @@ public final class MeshSendMessageConnector extends Connector {
 
     @Override
     public String getIconUri() {
+        String cached = ContactConnectorIcons.getUvproRadioIconUri(null);
+        if (cached != null && !cached.isEmpty()) {
+            return cached;
+        }
         return "android.resource://" + PACKAGE + "/" + R.drawable.ic_uvpro;
     }
 }

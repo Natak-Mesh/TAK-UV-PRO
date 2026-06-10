@@ -211,6 +211,7 @@ public class UVProMapComponent extends DropDownMapComponent {
         // context = plugin context, view.getContext() = map context (use for UI)
         this.pluginContext = context;
         this.mapView = view;
+        com.uvpro.plugin.contacts.ContactConnectorIcons.warmCache(context);
         applySmartBeaconV21OffMigration(getBeaconPrefsContext());
         // Persistent iconset assist: keep reminding until APRS and MeshCore imports are complete.
         startAprsIconsetReminder(context, view.getContext());

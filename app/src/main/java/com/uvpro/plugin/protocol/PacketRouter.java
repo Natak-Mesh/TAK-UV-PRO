@@ -290,10 +290,17 @@ public class PacketRouter {
                 break;
 
             case UVProPacket.TYPE_PING:
-                byte[] pingBytes = packet.getPayload();
-                String pingCall = new String(pingBytes, java.nio.charset.StandardCharsets.US_ASCII).trim();
-                java.util.Arrays.fill(pingBytes, (byte) 0);
-                Log.d(TAG, "Ping from: " + pingCall + " via " + inboundTransport);
+                UVProPacket.PingPayload pingPayload =
+                        UVProPacket.decodePingPayload(packet.getPayload());
+                if (pingPayload == null) {
+                    break;
+                }
+                String pingCall = pingPayload.sourceCallsign;
+                Log.d(TAG, "Ping from: " + pingCall
+                        + (pingPayload.isDirected()
+                        ? " (directed to " + pingPayload.targetCallsign + ")"
+                        : " (broadcast)")
+                        + " via " + inboundTransport);
                 MapView pingMv = MapView.getMapView();
                 if (pingMv != null) {
                     PingReplyNotifier.notifyPingReceived(pingMv.getContext(), pingCall);
@@ -303,7 +310,23 @@ public class PacketRouter {
                 if (!callsign.equalsIgnoreCase(pingCall)) {
                     chatBridge.onPeerActivity(pingCall);
                 }
-                schedulePingReply(inboundTransport);
+                boolean shouldReply = true;
+                if (pingPayload.isDirected() && pingMv != null) {
+                    String selfRadio = com.uvpro.plugin.util.CallsignUtil.toRadioCallsign(
+                            com.uvpro.plugin.ui.SettingsFragment.getCallsign(
+                                    pingMv.getContext()));
+                    String targetRadio = com.uvpro.plugin.util.CallsignUtil.toRadioCallsign(
+                            pingPayload.targetCallsign);
+                    if (!targetRadio.isEmpty()
+                            && !selfRadio.equalsIgnoreCase(targetRadio)) {
+                        shouldReply = false;
+                        Log.d(TAG, "Directed ping for " + pingPayload.targetCallsign
+                                + " — not this station");
+                    }
+                }
+                if (shouldReply) {
+                    schedulePingReply(inboundTransport);
+                }
                 break;
 
             case UVProPacket.TYPE_NET_SLOT_CONFIG:

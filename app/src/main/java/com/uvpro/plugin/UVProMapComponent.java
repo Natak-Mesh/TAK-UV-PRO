@@ -514,6 +514,8 @@ try {
 
         NetSlotConfig.ensureDefaults(view.getContext());
         UVProRadioServices.install(btConnectionManager, encryptionManager);
+        com.uvpro.plugin.protocol.PositionRequester.install(
+                btConnectionManager, meshBtConnectionManager, encryptionManager);
 
         // 6. Create the drop-down UI receiver
         dropDownReceiver = new UVProDropDownReceiver(
@@ -560,6 +562,7 @@ try {
         view.postDelayed(() -> {
             ChatBridge.collapseAllCallsignAliasDuplicates();
             ChatBridge.repairAllNativeContactActions();
+            com.uvpro.plugin.UVProContactHandler.repairAllContactPingConnectors();
             com.uvpro.plugin.contacts.ContactReachability.applyAllContactCommsPolicies(
                     cotBridge);
         }, 5000L);
@@ -747,6 +750,7 @@ try {
             encryptionManager = null;
         }
         UVProRadioServices.clear();
+        com.uvpro.plugin.protocol.PositionRequester.clear();
         if (mapView != null && pendingMeshRestoreRunnable != null) {
             mapView.removeCallbacks(pendingMeshRestoreRunnable);
             pendingMeshRestoreRunnable = null;

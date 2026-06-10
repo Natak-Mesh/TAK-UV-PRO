@@ -1273,6 +1273,7 @@ public class ChatBridge {
                 String callsign = contact.getName() != null ? contact.getName() : "";
                 contact.addConnector(new GeoChatConnector(buildNativeConnectorSeed(callsign)));
             }
+            com.uvpro.plugin.UVProContactHandler.ensurePingConnectorForContact(contact);
             writeDefaultConnectorPref(prefs, uid, GeoChatConnector.CONNECTOR_TYPE);
             contact.dispatchChangeEvent();
             Log.i(TAG, "preferNativeContactAction uid=" + uid
@@ -1334,6 +1335,7 @@ public class ChatBridge {
                     preferNativeContactAction(ic);
                     repaired++;
                 }
+                com.uvpro.plugin.UVProContactHandler.ensurePingConnectorForContact(ic);
             }
             Log.i(TAG, "repairAllNativeContactActions repaired=" + repaired);
         } catch (Exception e) {

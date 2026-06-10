@@ -14,8 +14,11 @@ import com.atakmap.android.preference.AtakPreferences;
 import com.atakmap.comms.NetConnectString;
 import com.atakmap.coremap.filesystem.FileSystemUtils;
 import com.uvpro.plugin.contacts.MeshFavoriteConnector;
+import com.uvpro.plugin.contacts.MeshRequestPositionConnector;
 import com.uvpro.plugin.contacts.MeshSendMessageConnector;
 import com.uvpro.plugin.contacts.PositionOnlyConnector;
+import com.uvpro.plugin.protocol.PositionRequester;
+import com.uvpro.plugin.util.CallsignUtil;
 
 import android.widget.Toast;
 
@@ -103,7 +106,8 @@ public class UVProContactHandler extends
         return FileSystemUtils.isEquals(type, PluginConnector.CONNECTOR_TYPE)
                 || FileSystemUtils.isEquals(type, GeoChatConnector.CONNECTOR_TYPE)
                 || FileSystemUtils.isEquals(type, MeshFavoriteConnector.CONNECTOR_TYPE)
-                || FileSystemUtils.isEquals(type, MeshSendMessageConnector.CONNECTOR_TYPE);
+                || FileSystemUtils.isEquals(type, MeshSendMessageConnector.CONNECTOR_TYPE)
+                || FileSystemUtils.isEquals(type, MeshRequestPositionConnector.CONNECTOR_TYPE);
     }
 
     @Override
@@ -132,6 +136,30 @@ public class UVProContactHandler extends
                             "Favorited " + ic.getName(),
                             Toast.LENGTH_SHORT).show();
                 }
+                return true;
+            }
+
+            if (FileSystemUtils.isEquals(connectorType,
+                    MeshRequestPositionConnector.CONNECTOR_TYPE)) {
+                String uid = ic.getUID();
+                if (uid != null && uid.startsWith(MESH_RPTR_UID_PREFIX)) {
+                    Toast.makeText(pluginContext,
+                            "Repeaters do not support ping",
+                            Toast.LENGTH_LONG).show();
+                    return true;
+                }
+                String target = resolveRadioCallsignForContact(ic);
+                if (target == null || target.isEmpty()) {
+                    Toast.makeText(pluginContext,
+                            "Could not resolve contact callsign",
+                            Toast.LENGTH_LONG).show();
+                    return true;
+                }
+                boolean ok = PositionRequester.requestPosition(pluginContext, target);
+                Toast.makeText(pluginContext,
+                        ok ? "Ping sent to " + target
+                                : "Ping failed (radio not connected)",
+                        Toast.LENGTH_LONG).show();
                 return true;
             }
 
@@ -194,6 +222,7 @@ public class UVProContactHandler extends
             if (ic.getConnector(MeshSendMessageConnector.CONNECTOR_TYPE) == null) {
                 ic.addConnector(new MeshSendMessageConnector());
             }
+            ensurePingConnectorForContact(ic);
             writeDefaultConnectorPref(u, GeoChatConnector.CONNECTOR_TYPE);
             if (u.startsWith("MESHCORE-NODE-") || u.startsWith("MESHCORE-RPTR-")) {
                 final IndividualContact finalIc = ic;
@@ -299,6 +328,7 @@ public class UVProContactHandler extends
             if (contact.getConnector(MeshSendMessageConnector.CONNECTOR_TYPE) == null) {
                 contact.addConnector(new MeshSendMessageConnector());
             }
+            ensurePingConnectorForContact(contact);
             if (contact.getConnector(GeoChatConnector.CONNECTOR_TYPE) == null) {
                 contact.addConnector(new GeoChatConnector(
                         buildNativeConnectorSeed(contact.getName())));
@@ -307,6 +337,78 @@ public class UVProContactHandler extends
             contact.dispatchChangeEvent();
         } catch (Exception e) {
             Log.w("UVPro.Handler", "applyMeshContactConnectors failed", e);
+        }
+    }
+
+    /** Adds the Ping connector on the Connectors page for RF-capable individual contacts. */
+    public static void ensurePingConnectorForContact(IndividualContact contact) {
+        if (contact == null) {
+            return;
+        }
+        String uid = contact.getUID();
+        if (uid == null || uid.trim().isEmpty()) {
+            return;
+        }
+        if (uid.startsWith(MESH_RPTR_UID_PREFIX)) {
+            return;
+        }
+        if (resolveRadioCallsignForContact(contact).isEmpty()) {
+            return;
+        }
+        try {
+            if (contact.getConnector(MeshRequestPositionConnector.CONNECTOR_TYPE) == null) {
+                contact.addConnector(new MeshRequestPositionConnector());
+            }
+        } catch (Exception e) {
+            Log.w("UVPro.Handler", "ensurePingConnectorForContact failed", e);
+        }
+    }
+
+    /**
+     * Resolves a 6-character radio callsign for directed ping / position request.
+     */
+    public static String resolveRadioCallsignForContact(IndividualContact contact) {
+        if (contact == null) {
+            return "";
+        }
+        String uid = contact.getUID();
+        if (uid != null && uid.startsWith("ANDROID-")) {
+            return CallsignUtil.toRadioCallsign(uid.substring("ANDROID-".length()));
+        }
+        com.atakmap.android.maps.MapView mv = com.atakmap.android.maps.MapView.getMapView();
+        if (mv != null && mv.getRootGroup() != null && uid != null) {
+            MapItem item = mv.getRootGroup().deepFindUID(uid);
+            if (item != null) {
+                String mapCall = item.getMetaString("callsign", item.getTitle());
+                if (mapCall != null && !mapCall.trim().isEmpty()) {
+                    return CallsignUtil.toRadioCallsign(mapCall.trim());
+                }
+            }
+        }
+        String name = contact.getName();
+        if (name != null && !name.trim().isEmpty()) {
+            String base = name.trim();
+            if (base.toUpperCase(Locale.US).endsWith("-MESH")) {
+                base = base.substring(0, base.length() - 5).trim();
+            }
+            return CallsignUtil.toRadioCallsign(base);
+        }
+        return "";
+    }
+
+    public static void repairAllContactPingConnectors() {
+        try {
+            java.util.List<Contact> all = Contacts.getInstance().getAllContacts();
+            if (all == null) {
+                return;
+            }
+            for (Contact c : all) {
+                if (c instanceof IndividualContact) {
+                    ensurePingConnectorForContact((IndividualContact) c);
+                }
+            }
+        } catch (Exception e) {
+            Log.w("UVPro.Handler", "repairAllContactPingConnectors failed", e);
         }
     }
 

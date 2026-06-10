@@ -184,6 +184,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private static final String PREF_MESH_MAP_SET_POSITION_LON =
             "uvpro_mesh_map_set_position_lon";
     private static final long MESH_CALLSIGN_POSITION_PUSH_INTERVAL_MS = 15_000L;
+    private static final long MESH_BATTERY_POLL_INTERVAL_MS = 30_000L;
+    private static final long UVPRO_BATTERY_POLL_INTERVAL_MS = 30_000L;
     private static final String MESH_NODE_MAP_POSITION_UID = "MESHCORE-NODE-MAP-POSITION";
     private static final String MESH_NODE_UID_PREFIX = "MESHCORE-NODE-";
     private static final String MESH_RPTR_UID_PREFIX = "MESHCORE-RPTR-";
@@ -210,10 +212,18 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private View rootView;
     private View statusDot;
     private TextView statusText;
+    private View deviceRow;
     private TextView deviceName;
+    private android.widget.ImageView uvproBatteryIcon;
+    private TextView uvproBatteryPct;
+    private int uvproBatteryPercent = -1;
     private View meshStatusDot;
     private TextView meshStatusText;
+    private View meshDeviceRow;
     private TextView meshDeviceName;
+    private android.widget.ImageView meshBatteryIcon;
+    private TextView meshBatteryPct;
+    private int meshBatteryPercent = -1;
     private TextView callsignText;
     private TextView contactsText;
     private TextView packetsText;
@@ -428,6 +438,23 @@ public class UVProDropDownReceiver extends DropDownReceiver
             } finally {
                 scheduleMeshCallsignPositionSync();
             }
+        }
+    };
+    private final Runnable uvproBatteryPollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            refreshUvproBatteryAsync();
+            scheduleUvproBatteryPoll();
+        }
+    };
+    private final Runnable meshBatteryPollRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (meshBtManager == null || !meshBtManager.isConnected()) {
+                return;
+            }
+            meshBtManager.requestBattery();
+            scheduleMeshBatteryPoll();
         }
     };
     private final Runnable meshGpsAugmentRunnable = new Runnable() {
@@ -653,6 +680,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
                             "MeshCore fix %.5f, %.5f",
                             fix.latitude, fix.longitude)));
                 }
+
+                @Override
+                public void onMeshBatteryUpdated(int batteryPercent, int batteryMv) {
+                    meshBatteryPercent = batteryPercent;
+                    getMapView().post(() -> updateMeshBatteryUi(batteryPercent));
+                }
             });
         }
     }
@@ -846,10 +879,16 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         statusDot = rootView.findViewById(getId("status_dot"));
         statusText = rootView.findViewById(getId("status_text"));
+        deviceRow = rootView.findViewById(getId("device_row"));
         deviceName = rootView.findViewById(getId("device_name"));
+        uvproBatteryIcon = rootView.findViewById(getId("uvpro_battery_icon"));
+        uvproBatteryPct = rootView.findViewById(getId("uvpro_battery_pct"));
         meshStatusDot = rootView.findViewById(getId("mesh_status_dot"));
         meshStatusText = rootView.findViewById(getId("mesh_status_text"));
+        meshDeviceRow = rootView.findViewById(getId("mesh_device_row"));
         meshDeviceName = rootView.findViewById(getId("mesh_device_name"));
+        meshBatteryIcon = rootView.findViewById(getId("mesh_battery_icon"));
+        meshBatteryPct = rootView.findViewById(getId("mesh_battery_pct"));
         callsignText = rootView.findViewById(getId("text_callsign"));
         contactsText = rootView.findViewById(getId("text_contacts"));
         packetsText = rootView.findViewById(getId("text_packets"));
@@ -3709,13 +3748,41 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (statusText != null) {
             statusText.setText(connected ? "Connected" : "Disconnected");
         }
-        if (deviceName != null) {
-            if (connected && device != null) {
+        if (connected && device != null) {
+            if (deviceName != null) {
                 deviceName.setText(device);
+            }
+            if (deviceRow != null) {
+                deviceRow.setVisibility(View.VISIBLE);
+            } else if (deviceName != null) {
                 deviceName.setVisibility(View.VISIBLE);
-            } else {
+            }
+            if (radioControlManager != null) {
+                int cached = radioControlManager.getLatestBatteryPercent();
+                if (cached >= 0) {
+                    uvproBatteryPercent = cached;
+                }
+            }
+            updateUvproBatteryUi(uvproBatteryPercent);
+        } else {
+            if (deviceRow != null) {
+                deviceRow.setVisibility(View.GONE);
+            } else if (deviceName != null) {
                 deviceName.setVisibility(View.GONE);
             }
+            uvproBatteryPercent = -1;
+            updateUvproBatteryUi(-1);
+        }
+        if (connected) {
+            refreshUvproBatteryAsync();
+            scheduleUvproBatteryPoll();
+            MapView mv = getMapView();
+            if (mv != null) {
+                mv.postDelayed(this::refreshUvproBatteryAsync, 2000L);
+                mv.postDelayed(this::refreshUvproBatteryAsync, 5000L);
+            }
+        } else {
+            stopUvproBatteryPoll();
         }
         if (btnScan != null) btnScan.setEnabled(!connected);
         if (btnDisconnect != null) btnDisconnect.setEnabled(connected);
@@ -3751,13 +3818,30 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (meshStatusText != null) {
             meshStatusText.setText(connected ? "Connected" : "Disconnected");
         }
-        if (meshDeviceName != null) {
-            if (connected && device != null) {
+        if (connected && device != null) {
+            if (meshDeviceName != null) {
                 meshDeviceName.setText(device);
+            }
+            if (meshDeviceRow != null) {
+                meshDeviceRow.setVisibility(View.VISIBLE);
+            } else if (meshDeviceName != null) {
                 meshDeviceName.setVisibility(View.VISIBLE);
-            } else {
+            }
+            if (meshBtManager != null) {
+                int cached = meshBtManager.getLatestBatteryPercent();
+                if (cached >= 0) {
+                    meshBatteryPercent = cached;
+                }
+            }
+            updateMeshBatteryUi(meshBatteryPercent);
+        } else {
+            if (meshDeviceRow != null) {
+                meshDeviceRow.setVisibility(View.GONE);
+            } else if (meshDeviceName != null) {
                 meshDeviceName.setVisibility(View.GONE);
             }
+            meshBatteryPercent = -1;
+            updateMeshBatteryUi(-1);
         }
         if (btnMeshScan != null) {
             btnMeshScan.setEnabled(!connected);
@@ -3768,9 +3852,57 @@ public class UVProDropDownReceiver extends DropDownReceiver
         updateMeshScanButtonText();
         updateMeshGpsControlsUi();
         updateMeshBeaconAdminUi();
+        if (connected) {
+            scheduleMeshBatteryPoll();
+            if (meshBtManager != null) {
+                meshBtManager.requestBattery();
+            }
+            MapView mv = getMapView();
+            if (mv != null) {
+                mv.postDelayed(() -> {
+                    if (meshBtManager != null && meshBtManager.isConnected()) {
+                        meshBtManager.requestBattery();
+                    }
+                }, 2000L);
+            }
+        } else {
+            stopMeshBatteryPoll();
+        }
         scheduleMeshGpsAugmentTick();
         scheduleMeshCallsignPositionSync();
         MeshStatusOverlay.setConnected(connected);
+    }
+
+    private void updateMeshBatteryUi(int batteryPercent) {
+        boolean show = meshConnected && batteryPercent >= 0;
+        if (meshBatteryIcon != null) {
+            meshBatteryIcon.setVisibility(show ? View.VISIBLE : View.GONE);
+        }
+        if (meshBatteryPct != null) {
+            if (show) {
+                meshBatteryPct.setText(batteryPercent + "%");
+                meshBatteryPct.setVisibility(View.VISIBLE);
+            } else {
+                meshBatteryPct.setText("");
+                meshBatteryPct.setVisibility(View.GONE);
+            }
+        }
+    }
+
+    private void scheduleMeshBatteryPoll() {
+        MapView mv = getMapView();
+        if (mv == null || !meshConnected) {
+            return;
+        }
+        mv.removeCallbacks(meshBatteryPollRunnable);
+        mv.postDelayed(meshBatteryPollRunnable, MESH_BATTERY_POLL_INTERVAL_MS);
+    }
+
+    private void stopMeshBatteryPoll() {
+        MapView mv = getMapView();
+        if (mv != null) {
+            mv.removeCallbacks(meshBatteryPollRunnable);
+        }
     }
 
     private void updateMeshBeaconAdminUi() {
@@ -5512,6 +5644,51 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 updateTxPowerButtonUi();
             });
         }, "uvpro-read-tx-power").start();
+    }
+
+    private void refreshUvproBatteryAsync() {
+        if (radioControlManager == null || !btManager.isConnected()) {
+            return;
+        }
+        new Thread(() -> {
+            int percent = radioControlManager.readBatteryPercent();
+            getMapView().post(() -> {
+                uvproBatteryPercent = percent;
+                updateUvproBatteryUi(percent);
+            });
+        }, "uvpro-read-battery").start();
+    }
+
+    private void updateUvproBatteryUi(int batteryPercent) {
+        boolean show = btManager.isConnected() && batteryPercent >= 0;
+        if (uvproBatteryIcon != null) {
+            uvproBatteryIcon.setVisibility(show ? View.VISIBLE : View.GONE);
+        }
+        if (uvproBatteryPct != null) {
+            if (show) {
+                uvproBatteryPct.setText(batteryPercent + "%");
+                uvproBatteryPct.setVisibility(View.VISIBLE);
+            } else {
+                uvproBatteryPct.setText("");
+                uvproBatteryPct.setVisibility(View.GONE);
+            }
+        }
+    }
+
+    private void scheduleUvproBatteryPoll() {
+        MapView mv = getMapView();
+        if (mv == null || !btManager.isConnected()) {
+            return;
+        }
+        mv.removeCallbacks(uvproBatteryPollRunnable);
+        mv.postDelayed(uvproBatteryPollRunnable, UVPRO_BATTERY_POLL_INTERVAL_MS);
+    }
+
+    private void stopUvproBatteryPoll() {
+        MapView mv = getMapView();
+        if (mv != null) {
+            mv.removeCallbacks(uvproBatteryPollRunnable);
+        }
     }
 
     private void cycleTxPower() {
@@ -7728,6 +7905,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
             getMapView().removeCallbacks(meshGpsAugmentRunnable);
             getMapView().removeCallbacks(meshQueuedStatusTimeoutRunnable);
             getMapView().removeCallbacks(meshCallsignPositionSyncRunnable);
+            getMapView().removeCallbacks(meshBatteryPollRunnable);
+            getMapView().removeCallbacks(uvproBatteryPollRunnable);
         }
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);

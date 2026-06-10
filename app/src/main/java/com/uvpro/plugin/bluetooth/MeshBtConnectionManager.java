@@ -82,8 +82,13 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private static final byte CMD_SET_OTHER_PARAMS = 0x26;
     private static final byte CMD_SET_SETTING_TEXT = 0x29;
     private static final byte CMD_SEND_CHANNEL_DATA = 0x3E;
+    private static final byte CMD_GET_BATTERY = 0x14;
+    private static final byte CMD_GET_STATS = 0x38;
+    private static final byte STATS_TYPE_CORE = 0x00;
 
     private static final byte RESP_CHANNEL_MSG = 0x08;
+    private static final byte RESP_BATTERY = 0x0C;
+    private static final byte RESP_CODE_STATS = 0x18;
     private static final byte RESP_CONTACT_MSG = 0x07;
     private static final byte RESP_SELF_INFO = 0x05;
     private static final byte RESP_DEVICE_INFO = 0x0D;
@@ -197,6 +202,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private volatile Boolean meshGpsEnabled = null;
     private volatile Boolean sendPositionWithAdvertEnabled = null;
     private volatile MeshNodeSettings latestNodeSettings = null;
+    private volatile int latestBatteryMv = -1;
+    private volatile int latestBatteryPercent = -1;
     private volatile MeshLocationFix latestSelfLocation = null;
     private volatile String selfPubKeyHex = "";
     private volatile int cachedManualAddContacts = 0;
@@ -253,6 +260,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         void onSendPositionWithAdvertChanged(boolean enabled);
         void onMeshNodeSettingsUpdated(MeshNodeSettings settings);
         void onMeshSelfLocationUpdated(MeshLocationFix fix);
+        void onMeshBatteryUpdated(int batteryPercent, int batteryMv);
     }
 
     public static final class MeshNodeSettings {
@@ -990,6 +998,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         sendPositionWithAdvertEnabled = null;
         latestNodeSettings = null;
         latestSelfLocation = null;
+        latestBatteryMv = -1;
+        latestBatteryPercent = -1;
         stopScanInternal();
         ioHandler.removeCallbacks(periodicMessagePoll);
         ioHandler.post(() -> {
@@ -1013,6 +1023,8 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         sendPositionWithAdvertEnabled = null;
         latestNodeSettings = null;
         latestSelfLocation = null;
+        latestBatteryMv = -1;
+        latestBatteryPercent = -1;
         stopScanInternal();
         ioHandler.removeCallbacks(periodicMessagePoll);
         ioHandler.post(() -> {
@@ -1420,6 +1432,37 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         return latestSelfLocation;
     }
 
+    public int getLatestBatteryPercent() {
+        return latestBatteryPercent;
+    }
+
+    public int getLatestBatteryMv() {
+        return latestBatteryMv;
+    }
+
+    public void requestBattery() {
+        if (!connected.get()) {
+            return;
+        }
+        enqueueCommand(new byte[]{CMD_GET_BATTERY});
+        enqueueCommand(new byte[]{CMD_GET_STATS, STATS_TYPE_CORE});
+    }
+
+    public static int meshBatteryMvToPercent(int batteryMv) {
+        if (batteryMv <= 0) {
+            return -1;
+        }
+        final int minMv = 3300;
+        final int maxMv = 4200;
+        if (batteryMv <= minMv) {
+            return 0;
+        }
+        if (batteryMv >= maxMv) {
+            return 100;
+        }
+        return Math.round(100f * (batteryMv - minMv) / (maxMv - minMv));
+    }
+
     public void queryMeshGpsEnabled() {
         if (!connected.get()) {
             return;
@@ -1590,6 +1633,15 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         for (MeshStateListener l : meshStateListeners) {
             try {
                 l.onMeshSelfLocationUpdated(fix);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void notifyMeshBatteryUpdated(int batteryMv, int batteryPercent) {
+        for (MeshStateListener l : meshStateListeners) {
+            try {
+                l.onMeshBatteryUpdated(batteryPercent, batteryMv);
             } catch (Exception ignored) {
             }
         }
@@ -1935,6 +1987,14 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         }
         if (t == RESP_SELF_INFO) {
             logSelfInfo(pkt);
+            return;
+        }
+        if (t == RESP_BATTERY) {
+            applyBatteryInfo(pkt);
+            return;
+        }
+        if (t == RESP_CODE_STATS) {
+            applyStatsBattery(pkt);
             return;
         }
         if (t == RESP_DEVICE_INFO) {
@@ -2289,6 +2349,33 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         } catch (Exception e) {
             Log.w(TAG, "SELF info parse failed", e);
         }
+    }
+
+    private void applyBatteryInfo(byte[] pkt) {
+        if (pkt == null || pkt.length < 3) {
+            return;
+        }
+        int batteryMv = (pkt[1] & 0xFF) | ((pkt[2] & 0xFF) << 8);
+        publishBatteryReading(batteryMv, "PACKET_BATTERY");
+    }
+
+    private void applyStatsBattery(byte[] pkt) {
+        if (pkt == null || pkt.length < 4 || (pkt[1] & 0xFF) != STATS_TYPE_CORE) {
+            return;
+        }
+        int batteryMv = (pkt[2] & 0xFF) | ((pkt[3] & 0xFF) << 8);
+        publishBatteryReading(batteryMv, "STATS_CORE");
+    }
+
+    private void publishBatteryReading(int batteryMv, String source) {
+        int batteryPercent = meshBatteryMvToPercent(batteryMv);
+        if (batteryPercent < 0) {
+            return;
+        }
+        latestBatteryMv = batteryMv;
+        latestBatteryPercent = batteryPercent;
+        Log.d(TAG, source + " mv=" + batteryMv + " pct=" + batteryPercent);
+        notifyMeshBatteryUpdated(batteryMv, batteryPercent);
     }
 
     private void logDeviceInfo(byte[] pkt) {

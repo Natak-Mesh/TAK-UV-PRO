@@ -23,6 +23,7 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
 
     private static final String TAG = "UVPro.RadioCtrl";
     private static final int BASIC_GROUP = 2;
+    private static final int CMD_READ_STATUS = 5;
     private static final int CMD_READ_SETTINGS = 10;
     private static final int CMD_WRITE_SETTINGS = 11;
     private static final int CMD_READ_RF_CH = 13;
@@ -40,6 +41,9 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
     private static final int EVENT_USER_ACTION = 9;
     private static final int EVENT_SYSTEM_EVENT = 10;
     private static final int STATUS_SUCCESS = 0;
+    private static final int POWER_STATUS_BATTERY_LEVEL = 1;
+    private static final int POWER_STATUS_BATTERY_VOLTAGE = 2;
+    private static final int POWER_STATUS_BATTERY_PERCENT = 4;
 
     private static final Pattern TX_FREQ_PATTERN =
             Pattern.compile("(?i)TX\\s*Frequency[^0-9]*([0-9]+(?:\\.[0-9]+)?)");
@@ -245,6 +249,7 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
     private RadioEventListener radioEventListener;
     private boolean notificationRegistrationOk = false;
     private long lastNotificationRegisterAttemptMs = 0L;
+    private volatile int latestBatteryPercent = -1;
 
     public UVProRadioControlManager(BtConnectionManager btManager) {
         this.btManager = btManager;
@@ -275,6 +280,106 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
 
     public RepeaterSpec getSelectedRepeater() {
         return selectedRepeater;
+    }
+
+    public int getLatestBatteryPercent() {
+        return latestBatteryPercent;
+    }
+
+    /**
+     * Query UV-PRO battery percentage via GAIA READ_STATUS (HT Commander protocol).
+     * @return 0-100, or -1 if unavailable
+     */
+    public int readBatteryPercent() {
+        if (!btManager.isConnected()) {
+            latestBatteryPercent = -1;
+            return -1;
+        }
+        try {
+            int percent = readBatteryPercentForStatus(POWER_STATUS_BATTERY_PERCENT);
+            if (percent < 0) {
+                percent = readBatteryPercentForStatus(POWER_STATUS_BATTERY_LEVEL);
+            }
+            if (percent < 0) {
+                int mv = readBatteryVoltageMv();
+                if (mv > 0) {
+                    percent = batteryMvToPercent(mv);
+                }
+            }
+            latestBatteryPercent = percent;
+            if (percent >= 0) {
+                Log.d(TAG, "battery percent=" + percent);
+            } else {
+                Log.d(TAG, "battery read failed (no valid READ_STATUS response)");
+            }
+            return percent;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return latestBatteryPercent;
+        }
+    }
+
+    private int readBatteryPercentForStatus(int powerStatus) throws InterruptedException {
+        byte[] req = new byte[2];
+        req[1] = (byte) powerStatus;
+        CommandReply reply = sendCommandSync(BASIC_GROUP, CMD_READ_STATUS, req, 2500);
+        return parseBatteryPercentReply(reply, powerStatus);
+    }
+
+    private int readBatteryVoltageMv() throws InterruptedException {
+        byte[] req = new byte[2];
+        req[1] = (byte) POWER_STATUS_BATTERY_VOLTAGE;
+        CommandReply reply = sendCommandSync(BASIC_GROUP, CMD_READ_STATUS, req, 2500);
+        return parseBatteryVoltageReply(reply);
+    }
+
+    private static int parseBatteryPercentReply(CommandReply reply, int expectedPowerStatus) {
+        if (reply == null || reply.status != STATUS_SUCCESS
+                || reply.payload == null || reply.payload.length < 3) {
+            return -1;
+        }
+        // HT Commander uses big-endian shorts: GetShort(d,p) = (d[p]<<8)|d[p+1]
+        int powerType = ((reply.payload[0] & 0xFF) << 8) | (reply.payload[1] & 0xFF);
+        int percent = reply.payload[2] & 0xFF;
+        if (powerType == expectedPowerStatus && percent >= 0 && percent <= 100) {
+            return percent;
+        }
+        // Some firmware builds return the percent without a matching type field.
+        if (percent >= 0 && percent <= 100) {
+            return percent;
+        }
+        return -1;
+    }
+
+    private static int parseBatteryVoltageReply(CommandReply reply) {
+        if (reply == null || reply.status != STATUS_SUCCESS
+                || reply.payload == null || reply.payload.length < 4) {
+            return -1;
+        }
+        int powerType = ((reply.payload[0] & 0xFF) << 8) | (reply.payload[1] & 0xFF);
+        int mv = ((reply.payload[2] & 0xFF) << 8) | (reply.payload[3] & 0xFF);
+        if (powerType == POWER_STATUS_BATTERY_VOLTAGE && mv > 0) {
+            return mv;
+        }
+        if (mv > 0) {
+            return mv;
+        }
+        return -1;
+    }
+
+    private static int batteryMvToPercent(int batteryMv) {
+        if (batteryMv <= 0) {
+            return -1;
+        }
+        final int minMv = 3300;
+        final int maxMv = 4200;
+        if (batteryMv <= minMv) {
+            return 0;
+        }
+        if (batteryMv >= maxMv) {
+            return 100;
+        }
+        return Math.round(100f * (batteryMv - minMv) / (maxMv - minMv));
     }
 
     public void onMapItemClicked(MapItem item) {

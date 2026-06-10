@@ -31,6 +31,14 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Bluetooth Auto-Reconnect** | ✅ Working | Three-strategy SPP connection with exponential backoff reconnect (up to 5 attempts). ACL + passive reconnect when the saved UV-PRO powers on. MeshCore auto-restores if Classic BT knocks BLE offline. |
 | **Radio Silence (TX Kill Switch)** | ✅ Working | Long-press control in the Radio panel that blocks all outbound TX while still receiving beacons/pings/chat/CoT. Long-press again to restore TX. |
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
+| **Connection battery indicators** | ✅ Working | Green percent badge beside each connected device name in the plugin panel — UV-PRO via GAIA `READ_STATUS`, MeshCore via battery/stats commands. |
+| **Per-contact Ping (Connectors page)** | ✅ Working | Contact card page 3 adds **Ping** for mesh and established RF peers; sends a directed position request to that contact's callsign over the active transport. |
+
+### 2026-06-10 Progress Update (v1.9.69)
+
+- **Connection battery indicators:** UV-PRO battery polled via GAIA `READ_STATUS`; MeshCore via battery/stats BLE commands. Percent shown in green beside each connected device name in the dropdown panel.
+- **Per-contact Ping:** New **Ping** connector on the contact card Connectors page (page 3) for `MESHCORE-NODE-*` and established RF ATAK peers. Sends directed `TYPE_PING` with sender + target callsign over UV-PRO or MeshCore.
+- **Contact handling (carry-over):** Native GeoChat default connector, single notification per inbound message, map icon repair for mesh contacts.
 
 ### 2026-06-08 Progress Update (v1.9.67)
 

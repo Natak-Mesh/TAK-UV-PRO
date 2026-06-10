@@ -33,6 +33,13 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **RF -> TAK Uplink Relay** | ✅ Working | Optional uplink path: forward inbound RF CoT/chat from radio-only users to TAK network when SA Relay + uplink toggle are enabled. |
 | **Connection battery indicators** | ✅ Working | Green percent badge beside each connected device name in the plugin panel — UV-PRO via GAIA `READ_STATUS`, MeshCore via battery/stats commands. |
 | **Per-contact Ping (Connectors page)** | ✅ Working | Contact card page 3 adds **Ping** for mesh and established RF peers; sends a directed position request to that contact's callsign over the active transport. |
+| **Radial Ping (contact submenu)** | ✅ Working | Ping action in the stock radial **Contact** submenu for RF-capable peers; same directed ping path as Connectors. |
+
+### 2026-06-10 Progress Update (v1.9.70)
+
+- **Directed contact ping:** Directed `TYPE_PING` targets only the intended peer; reply toasts on the sender are filtered to that callsign (routine beacons from other stations no longer show as ping replies).
+- **Radial Ping:** Adds **Ping** to the stock radial **Contact** submenu without replacing the friendly menu; uses the blue radio icon via cached `base64://` GL assets.
+- **Connector icons:** Ping, Send Message, and Favorite connectors cache `ic_uvpro` as `file://` URIs so icons render reliably on the Connectors page.
 
 ### 2026-06-10 Progress Update (v1.9.69)
 

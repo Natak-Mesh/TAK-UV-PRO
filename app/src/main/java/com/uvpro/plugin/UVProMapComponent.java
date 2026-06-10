@@ -182,6 +182,7 @@ public class UVProMapComponent extends DropDownMapComponent {
     private Handler iconsetReminderHandler;
     private Runnable iconsetReminderRunnable;
     private android.content.BroadcastReceiver beaconIntervalReceiver;
+    private android.content.BroadcastReceiver radialPingReceiver;
     private final SmartBeacon smartBeacon = new SmartBeacon();
     // GPS speed/bearing via LocationManager — Doppler-based, no position-jitter artifacts.
     private android.location.LocationManager gpsLocationManager;
@@ -650,6 +651,8 @@ try {
         cotBridge.startOutgoingRelay();
 
         // Listen for runtime preference changes that require rescheduling timers.
+        com.uvpro.plugin.contacts.ContactRadialMenuUtil.init(context);
+
         try {
             beaconIntervalReceiver = new android.content.BroadcastReceiver() {
                 @Override
@@ -672,6 +675,29 @@ try {
                     .registerReceiver(beaconIntervalReceiver, beaconFilter);
         } catch (Exception e) {
             Log.e(TAG, "Failed to register beacon interval receiver", e);
+        }
+
+        try {
+            radialPingReceiver = new android.content.BroadcastReceiver() {
+                @Override
+                public void onReceive(Context ctx, Intent i) {
+                    if (i == null) {
+                        return;
+                    }
+                    if (com.uvpro.plugin.contacts.ContactRadialMenuUtil.ACTION_RADIAL_PING_CONTACT
+                            .equals(i.getAction())) {
+                        com.uvpro.plugin.contacts.ContactRadialMenuUtil.handleRadialPingContact(
+                                ctx, i.getStringExtra("uid"));
+                    }
+                }
+            };
+            AtakBroadcast.DocumentedIntentFilter pingFilter =
+                    new AtakBroadcast.DocumentedIntentFilter();
+            pingFilter.addAction(
+                    com.uvpro.plugin.contacts.ContactRadialMenuUtil.ACTION_RADIAL_PING_CONTACT);
+            AtakBroadcast.getInstance().registerReceiver(radialPingReceiver, pingFilter);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to register radial ping receiver", e);
         }
 
         Log.i(TAG, "UV-PRO plugin initialized successfully (callsign="
@@ -818,6 +844,13 @@ try {
             } catch (Exception ignored) {
             }
             beaconIntervalReceiver = null;
+        }
+        if (radialPingReceiver != null) {
+            try {
+                AtakBroadcast.getInstance().unregisterReceiver(radialPingReceiver);
+            } catch (Exception ignored) {
+            }
+            radialPingReceiver = null;
         }
         if (mapItemClickListener != null && view != null) {
             try {

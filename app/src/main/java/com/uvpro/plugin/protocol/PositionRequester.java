@@ -38,9 +38,20 @@ public final class PositionRequester {
     }
 
     public static boolean requestPosition(Context context, String targetCallsign) {
-        BtConnectionManager tx = resolveActiveTransmitManager(context);
+        return requestPosition(context, null, targetCallsign);
+    }
+
+    /**
+     * @param contactUid used to pick MeshCore vs UV-PRO transport and for diagnostics
+     */
+    public static boolean requestPosition(Context context, String contactUid,
+                                          String targetCallsign) {
+        if (targetCallsign == null || targetCallsign.trim().isEmpty()) {
+            return false;
+        }
+        BtConnectionManager tx = resolveTransport(contactUid);
         if (tx == null || !tx.isConnected()) {
-            Log.w(TAG, "Request position: not connected");
+            Log.w(TAG, "Request position: no connected radio transport");
             return false;
         }
         Context ctx = resolveContext(context);
@@ -48,13 +59,21 @@ public final class PositionRequester {
             return false;
         }
         String sender = SettingsFragment.getCallsign(ctx);
-        String targetRadio = CallsignUtil.toRadioCallsign(
-                targetCallsign != null ? targetCallsign.trim() : "");
+        String atakTarget = targetCallsign.trim();
+        String targetRadio = CallsignUtil.toRadioCallsign(atakTarget);
         if (targetRadio.isEmpty()) {
             return false;
         }
+        Log.i(TAG, "Directed ping uid=" + contactUid
+                + " atak=" + atakTarget + " wire=" + targetRadio);
         try {
-            UVProPacket packet = UVProPacket.createDirectedPingPacket(sender, targetRadio);
+            UVProPacket packet = UVProPacket.createDirectedPingPacket(sender, atakTarget);
+            byte[] payload = packet.getPayload();
+            if (payload == null || payload.length != 12) {
+                Log.e(TAG, "Directed ping encode failed: payloadLen="
+                        + (payload == null ? 0 : payload.length));
+                return false;
+            }
             byte[] packetBytes = packet.encode();
             EncryptionManager em = encryptionManager;
             if (em != null && em.isEnabled()) {
@@ -68,7 +87,7 @@ public final class PositionRequester {
             boolean ok = tx.sendKissFrame(frame.encode());
             if (ok) {
                 String transportLabel = tx == meshTransport ? "MeshCore" : "UV-PRO";
-                PingReplyNotifier.noteDirectedPingSent(ctx, targetRadio, transportLabel);
+                PingReplyNotifier.noteDirectedPingSent(ctx, atakTarget, transportLabel);
             }
             return ok;
         } catch (Exception e) {
@@ -77,20 +96,22 @@ public final class PositionRequester {
         }
     }
 
-    private static BtConnectionManager resolveActiveTransmitManager(Context context) {
-        Context ctx = resolveContext(context);
-        boolean meshPreferred = ctx != null && SettingsFragment.isMeshTransmitEnabled(ctx);
-        BtConnectionManager preferred = meshPreferred && meshTransport != null
-                ? meshTransport
-                : uvproTransport;
-        BtConnectionManager alternate = preferred == meshTransport ? uvproTransport : meshTransport;
-        if (preferred != null && preferred.isConnected()) {
-            return preferred;
+    private static BtConnectionManager resolveTransport(String contactUid) {
+        boolean meshContact = contactUid != null
+                && (contactUid.startsWith("MESHCORE-NODE-")
+                || contactUid.startsWith("MESHCORE-RPTR-"));
+        BtConnectionManager mesh = meshTransport;
+        BtConnectionManager uv = uvproTransport;
+        if (meshContact && mesh != null && mesh.isConnected()) {
+            return mesh;
         }
-        if (alternate != null && alternate.isConnected()) {
-            return alternate;
+        if (uv != null && uv.isConnected()) {
+            return uv;
         }
-        return preferred != null ? preferred : alternate;
+        if (mesh != null && mesh.isConnected()) {
+            return mesh;
+        }
+        return null;
     }
 
     private static Context resolveContext(Context context) {

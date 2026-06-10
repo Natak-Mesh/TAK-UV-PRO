@@ -295,34 +295,36 @@ public class PacketRouter {
                 if (pingPayload == null) {
                     break;
                 }
+                byte[] pingRawPayload = packet.getPayload();
+                int pingPayloadLen = pingRawPayload != null ? pingRawPayload.length : 0;
                 String pingCall = pingPayload.sourceCallsign;
                 Log.d(TAG, "Ping from: " + pingCall
                         + (pingPayload.isDirected()
                         ? " (directed to " + pingPayload.targetCallsign + ")"
                         : " (broadcast)")
+                        + " payloadLen=" + pingPayloadLen
                         + " via " + inboundTransport);
                 MapView pingMv = MapView.getMapView();
-                if (pingMv != null) {
+                boolean shouldReply = !pingPayload.isDirected();
+                if (pingPayload.isDirected() && pingMv != null) {
+                    String selfAtak = com.uvpro.plugin.ui.SettingsFragment.getCallsign(
+                            pingMv.getContext());
+                    shouldReply = com.uvpro.plugin.util.CallsignUtil.isSameRadioStation(
+                            selfAtak, pingPayload.targetCallsign);
+                    if (!shouldReply) {
+                        Log.d(TAG, "Directed ping for " + pingPayload.targetCallsign
+                                + " — not this station (self="
+                                + com.uvpro.plugin.util.CallsignUtil.toRadioCallsign(selfAtak)
+                                + ")");
+                    }
+                }
+                if (pingMv != null && (shouldReply || !pingPayload.isDirected())) {
                     PingReplyNotifier.notifyPingReceived(pingMv.getContext(), pingCall);
                 }
                 contactTracker.handlePing(pingCall);
                 chatBridge.onPeerActivity(callsign);
                 if (!callsign.equalsIgnoreCase(pingCall)) {
                     chatBridge.onPeerActivity(pingCall);
-                }
-                boolean shouldReply = true;
-                if (pingPayload.isDirected() && pingMv != null) {
-                    String selfRadio = com.uvpro.plugin.util.CallsignUtil.toRadioCallsign(
-                            com.uvpro.plugin.ui.SettingsFragment.getCallsign(
-                                    pingMv.getContext()));
-                    String targetRadio = com.uvpro.plugin.util.CallsignUtil.toRadioCallsign(
-                            pingPayload.targetCallsign);
-                    if (!targetRadio.isEmpty()
-                            && !selfRadio.equalsIgnoreCase(targetRadio)) {
-                        shouldReply = false;
-                        Log.d(TAG, "Directed ping for " + pingPayload.targetCallsign
-                                + " — not this station");
-                    }
                 }
                 if (shouldReply) {
                     schedulePingReply(inboundTransport);
@@ -685,6 +687,8 @@ public class PacketRouter {
                 if (item != null) {
                     item.setMetaBoolean("sendable", true);
                     item.setMetaString("endpoint", ChatBridge.ACTION_PLUGIN_CONTACT_GEOCHAT_SEND);
+                    com.uvpro.plugin.contacts.ContactRadialMenuUtil
+                            .applyPingCapableRadialMenu(item, ic);
                     ic.setMapItem(item);
                     ic.dispatchChangeEvent();
                     removeDuplicateSyntheticContact(contacts, syntheticUid, ic.getUID());
@@ -719,6 +723,8 @@ public class PacketRouter {
             if (item != null) {
                 item.setMetaBoolean("sendable", true);
                 item.setMetaString("endpoint", ChatBridge.ACTION_PLUGIN_CONTACT_GEOCHAT_SEND);
+                com.uvpro.plugin.contacts.ContactRadialMenuUtil
+                        .applyPingCapableRadialMenu(item, c);
             }
             ChatBridge.collapseDuplicateContactsForCallsign(normalized, uid);
         } catch (Exception e) {

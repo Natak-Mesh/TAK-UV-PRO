@@ -313,6 +313,74 @@ public class CotBridge {
     }
 
     /**
+     * Best ATAK callsign alias registered for a specific contact UID (reverse of
+     * {@link #registerBtechContactId}). Prefers full callsign forms over compact wire keys
+     * so directed pings target the intended peer, not a colliding 6-character alias.
+     */
+    public String resolveRegisteredCallsignForUid(String uid, String preferredNameHint) {
+        if (uid == null || uid.trim().isEmpty()) {
+            return null;
+        }
+        String uidKey = uid.trim();
+        java.util.ArrayList<String> keys = new java.util.ArrayList<>();
+        for (java.util.Map.Entry<String, String> e : btechIdToUid.entrySet()) {
+            if (e == null || e.getKey() == null || e.getValue() == null) {
+                continue;
+            }
+            if (uidKey.equalsIgnoreCase(e.getValue().trim())) {
+                keys.add(e.getKey());
+            }
+        }
+        if (keys.isEmpty()) {
+            return null;
+        }
+        if (preferredNameHint != null && !preferredNameHint.trim().isEmpty()) {
+            String hint = preferredNameHint.trim();
+            String hintUpper = hint.toUpperCase(Locale.US);
+            String hintFlat = hintUpper.replace("_", "").replace("-", "");
+            for (String key : keys) {
+                if (key.equalsIgnoreCase(hint)) {
+                    return key;
+                }
+                String keyFlat = key.replace("_", "").replace("-", "");
+                if (keyFlat.equalsIgnoreCase(hintFlat)) {
+                    return key;
+                }
+            }
+        }
+        String best = keys.get(0);
+        int bestScore = scoreRegisteredCallsignKey(best);
+        for (int i = 1; i < keys.size(); i++) {
+            String candidate = keys.get(i);
+            int score = scoreRegisteredCallsignKey(candidate);
+            if (score > bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    private static int scoreRegisteredCallsignKey(String key) {
+        if (key == null || key.isEmpty()) {
+            return 0;
+        }
+        int score = key.length();
+        if (key.indexOf('_') >= 0 || key.indexOf('-') >= 0) {
+            score += 1000;
+        }
+        if (key.length() > 6) {
+            score += 500;
+        }
+        return score;
+    }
+
+    /** True for opaque Wi-Fi device ids ({@code ANDROID-b726a98286ca1d08} suffix). */
+    public static boolean isOpaqueDeviceUid(String value) {
+        return isOpaqueDeviceId(value);
+    }
+
+    /**
      * After contact-list merge, register the keeper for RF routing and alias lookup.
      */
     public void registerMergedContact(IndividualContact contact) {
@@ -1936,7 +2004,12 @@ public class CotBridge {
                 com.atakmap.android.maps.MapItem item =
                         this.mapView.getRootGroup().deepFindUID(uid);
                 if (item != null) {
-                    item.setMetaString("menu", "menus/default_item_w_type.xml");
+                    if (uid.startsWith("MESHCORE-RPTR-")) {
+                        item.setMetaString("menu", "menus/default_item_w_type.xml");
+                    } else {
+                        com.uvpro.plugin.contacts.ContactRadialMenuUtil
+                                .applyPingCapableRadialMenu(item, uid);
+                    }
                     item.setMetaBoolean("sendable", true);
                     if (displayName != null && !displayName.trim().isEmpty()) {
                         item.setTitle(displayName.trim());

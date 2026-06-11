@@ -31,6 +31,7 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -103,6 +104,9 @@ public class BtConnectionManager {
     private final AtomicBoolean scanTimeoutScheduled = new AtomicBoolean(false);
     private static final long SCAN_TIMEOUT_MS = 12000L;
     private static final long ACL_CONNECT_DEBOUNCE_MS = 1500L;
+    /** Startup window to reconnect the last connected radio without user action. */
+    private static final long BOOT_AUTO_CONNECT_WINDOW_MS = 5000L;
+    private static final long[] BOOT_AUTO_CONNECT_ATTEMPT_DELAYS_MS = {0L, 1500L, 3000L};
     /** Direct connect to saved bonded MAC — no discovery scan. */
     private static final long PASSIVE_RECONNECT_INTERVAL_MS = 60_000L;
     /** First passive attempt after mesh boot contention ends. */
@@ -112,6 +116,10 @@ public class BtConnectionManager {
             3000L, 8000L, 15000L, 30000L, 60000L
     };
     private int passiveReconnectAttempt = 0;
+    private final AtomicBoolean bootAutoConnectActive = new AtomicBoolean(false);
+    private final AtomicBoolean bootAutoConnectScheduled = new AtomicBoolean(false);
+    private final AtomicInteger bootAutoConnectGeneration = new AtomicInteger(0);
+    private Runnable bootAutoConnectTimeoutRunnable;
     private Runnable pendingAclConnectRunnable;
     private Runnable scanTimeoutRunnable;
     private Runnable passiveReconnectRunnable;
@@ -134,6 +142,8 @@ public class BtConnectionManager {
         void onError(String error);
         void onDeviceFound(BluetoothDevice device);
         default void onScanComplete() {}
+        default void onBootAutoConnectWindowStarted() {}
+        default void onBootAutoConnectWindowEnded(boolean connected) {}
     }
 
     /**
@@ -183,7 +193,111 @@ public class BtConnectionManager {
     public void shutdown() {
         cancelPendingAclConnect();
         cancelPassiveReconnect();
+        cancelBootAutoConnect();
         unregisterAclReceiver();
+    }
+
+    /** True while the startup reconnect window is active (up to {@link #BOOT_AUTO_CONNECT_WINDOW_MS}). */
+    public boolean isBootAutoConnectWindowActive() {
+        return bootAutoConnectActive.get();
+    }
+
+    /**
+     * On plugin startup, try to reconnect the last connected bonded radio for up to five seconds.
+     * No-op when already connected, no remembered MAC, or boot auto-connect already ran.
+     */
+    public void scheduleBootAutoConnect() {
+        if (!bootAutoConnectScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        if (connected.get() || connecting.get()) {
+            return;
+        }
+        BluetoothDevice device = resolveSavedRadioDevice();
+        if (device == null) {
+            Log.d(TAG, "Boot auto-connect skipped: no remembered radio");
+            return;
+        }
+        int bondState = BluetoothDevice.BOND_NONE;
+        try {
+            bondState = device.getBondState();
+        } catch (Exception ignored) {
+        }
+        if (bondState != BluetoothDevice.BOND_BONDED) {
+            Log.d(TAG, "Boot auto-connect skipped: remembered radio not bonded");
+            return;
+        }
+        shouldReconnect.set(true);
+        bootAutoConnectActive.set(true);
+        bootAutoConnectGeneration.incrementAndGet();
+        final int generation = bootAutoConnectGeneration.get();
+        final String target = device.getAddress();
+        Log.i(TAG, "Boot auto-connect started for remembered radio " + target
+                + " (" + (BOOT_AUTO_CONNECT_WINDOW_MS / 1000) + "s window)");
+        notifyBootAutoConnectWindowStarted();
+        for (long delayMs : BOOT_AUTO_CONNECT_ATTEMPT_DELAYS_MS) {
+            scheduleBootAutoConnectAttempt(device, generation, delayMs);
+        }
+        if (bootAutoConnectTimeoutRunnable != null) {
+            mainHandler.removeCallbacks(bootAutoConnectTimeoutRunnable);
+        }
+        bootAutoConnectTimeoutRunnable = () -> endBootAutoConnectWindow(connected.get());
+        mainHandler.postDelayed(bootAutoConnectTimeoutRunnable, BOOT_AUTO_CONNECT_WINDOW_MS);
+    }
+
+    /** Stop the startup reconnect window (e.g. user tapped Scan and Connect). */
+    public void cancelBootAutoConnect() {
+        if (!bootAutoConnectActive.get()) {
+            bootAutoConnectGeneration.incrementAndGet();
+            if (bootAutoConnectTimeoutRunnable != null) {
+                mainHandler.removeCallbacks(bootAutoConnectTimeoutRunnable);
+                bootAutoConnectTimeoutRunnable = null;
+            }
+            return;
+        }
+        endBootAutoConnectWindow(false);
+    }
+
+    private void scheduleBootAutoConnectAttempt(BluetoothDevice device, int generation, long delayMs) {
+        mainHandler.postDelayed(() -> {
+            if (generation != bootAutoConnectGeneration.get()
+                    || !bootAutoConnectActive.get()
+                    || connected.get()
+                    || connecting.get()) {
+                return;
+            }
+            if (isMeshAutoConnectBlocked()) {
+                Log.d(TAG, "Boot auto-connect deferred — MeshCore has priority");
+                return;
+            }
+            Log.i(TAG, "Boot auto-connect attempt for " + device.getAddress());
+            maybeConnectToSavedRadio(device, "boot-auto-connect");
+        }, delayMs);
+    }
+
+    private void endBootAutoConnectWindow(boolean connectedNow) {
+        if (!bootAutoConnectActive.getAndSet(false)) {
+            return;
+        }
+        bootAutoConnectGeneration.incrementAndGet();
+        if (bootAutoConnectTimeoutRunnable != null) {
+            mainHandler.removeCallbacks(bootAutoConnectTimeoutRunnable);
+            bootAutoConnectTimeoutRunnable = null;
+        }
+        Log.i(TAG, "Boot auto-connect window ended (connected=" + connectedNow + ")");
+        notifyBootAutoConnectWindowEnded(connectedNow);
+    }
+
+    private void notifyBootAutoConnectWindowStarted() {
+        for (ConnectionListener l : listeners) {
+            l.onBootAutoConnectWindowStarted();
+        }
+    }
+
+    private void notifyBootAutoConnectWindowEnded(boolean connectedNow) {
+        for (ConnectionListener l : listeners) {
+            l.onBootAutoConnectWindowEnded(connectedNow);
+        }
     }
 
     /**
@@ -654,10 +768,10 @@ public class BtConnectionManager {
      * Connect to the last known device.
      */
     public void connectToLastDevice() {
-        if (lastDevice != null) {
-            connect(lastDevice);
+        BluetoothDevice device = resolveSavedRadioDevice();
+        if (device != null) {
+            connect(device);
         } else {
-            // Try to find a BTECH radio in paired devices
             startScan();
         }
     }
@@ -1540,6 +1654,9 @@ public class BtConnectionManager {
 
     protected void notifyConnected(BluetoothDevice device) {
         cancelPassiveReconnect();
+        if (bootAutoConnectActive.get()) {
+            endBootAutoConnectWindow(true);
+        }
         persistRememberedRadioMac(device);
         for (ConnectionListener l : listeners) l.onConnected(device);
     }

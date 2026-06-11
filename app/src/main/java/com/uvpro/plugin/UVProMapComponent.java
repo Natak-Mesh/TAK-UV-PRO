@@ -297,6 +297,7 @@ try {
 
         // 5. BtConnectionManager (needs context + PacketRouter)
         btConnectionManager = new BtConnectionManager(context, packetRouter);
+        view.post(btConnectionManager::scheduleBootAutoConnect);
         meshBtConnectionManager = new MeshBtConnectionManager(context, packetRouter);
         packetRouter.setInboundTransports(btConnectionManager, meshBtConnectionManager);
         repeaterAdvertListener = advert -> {

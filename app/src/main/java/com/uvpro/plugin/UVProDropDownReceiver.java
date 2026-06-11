@@ -825,6 +825,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         updateDigitalOnlyButtonUi();
         updateTxPowerButtonUi();
         updateScanButtonText();
+        if (btManager.isBootAutoConnectWindowActive() && !btManager.isConnected()) {
+            requestScanConnectButtonPulse();
+        }
         updateMeshScanButtonText();
         updateMeshChannelButtonLabel();
         updateSelectedRepeaterUi();
@@ -1388,6 +1391,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btManager.isConnected()) {
             return;
         }
+        btManager.cancelBootAutoConnect();
         if (btManager.isConnecting()) {
             appendLog("Cancelling current connection attempt...");
             btManager.cancelConnectionAttempts();
@@ -3602,6 +3606,28 @@ public class UVProDropDownReceiver extends DropDownReceiver
             stopScanConnectButtonPulse(true);
             pruneUnbondedDiscoveryPhantoms();
             showDevicePicker();
+        });
+    }
+
+    @Override
+    public void onBootAutoConnectWindowStarted() {
+        getMapView().post(() -> {
+            if (!btManager.isConnected()) {
+                requestScanConnectButtonPulse();
+                updateScanButtonText();
+                appendLog("Looking for last connected radio...");
+            }
+        });
+    }
+
+    @Override
+    public void onBootAutoConnectWindowEnded(boolean connected) {
+        getMapView().post(() -> {
+            stopScanConnectButtonPulse(true);
+            updateScanButtonText();
+            if (!connected) {
+                appendLog("Last radio not found — tap Scan and Connect.");
+            }
         });
     }
 

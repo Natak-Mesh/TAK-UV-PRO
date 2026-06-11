@@ -61,7 +61,10 @@ import com.atakmap.coremap.filesystem.FileSystemUtils;
 
 import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.beacon.SmartBeacon;
+import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
+import com.uvpro.plugin.bluetooth.MeshBleDeviceMatcher;
+import com.uvpro.plugin.bluetooth.MeshBluetoothForgetAll;
 import com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
 import com.uvpro.plugin.bluetooth.UvProBtDeviceMatcher;
 import com.uvpro.plugin.bluetooth.UvProRadioIdentCache;
@@ -318,9 +321,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Button btnSetPassphrase;
 
     private final List<BluetoothDevice> foundDevices = new ArrayList<>();
+    private final List<BluetoothDevice> meshFoundDevices = new ArrayList<>();
     private ValueAnimator scanConnectPulseAnimator;
     private GradientDrawable scanConnectPulseDrawable;
     private final Runnable deferredScanConnectPulseStart = this::startScanConnectButtonPulse;
+    private final Runnable deferredMeshScanPulseStart = this::startMeshScanButtonPulse;
+    private ValueAnimator meshConnectPulseAnimator;
+    private GradientDrawable meshConnectPulseDrawable;
     private AlertDialog radioPickerDialog;
 
     private final LinkedList<String> logLines = new LinkedList<>();
@@ -537,7 +544,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 @Override
                 public void onConnected(BluetoothDevice device) {
                     String name = device != null
-                            ? resolveDeviceDisplayName(getMapView().getContext(), device)
+                            ? resolveMeshDeviceDisplayName(getMapView().getContext(), device)
                             : "MeshCore";
                     meshConnected = true;
                     meshGpsEnabledState = null;
@@ -547,7 +554,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     meshSendPositionWithAdvertRequested =
                             getMeshSendPositionWithAdvertPreference(getMapView().getContext());
                     meshNodeSettingsState = null;
+                    if (device != null) {
+                        Context ctx = getMapView().getContext();
+                        BluetoothDeviceRegistry.recordConnection(ctx, device, false);
+                        BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx, device.getAddress());
+                    }
                     getMapView().post(() -> {
+                        stopMeshConnectButtonPulse(true);
                         updateMeshConnectionUI(true, name);
                         applyActiveTransmitTransport();
                         tryApplyStartupTransmitDefaults();
@@ -579,6 +592,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                             getMeshSendPositionWithAdvertPreference(getMapView().getContext());
                     meshNodeSettingsState = null;
                     getMapView().post(() -> {
+                        stopMeshConnectButtonPulse(true);
                         updateMeshConnectionUI(false, null);
                         applyActiveTransmitTransport();
                         appendLog("MeshCore disconnected: " + reason);
@@ -592,6 +606,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 @Override
                 public void onError(String error) {
                     getMapView().post(() -> {
+                        stopMeshConnectButtonPulse(true);
                         appendLog("MeshCore error: " + error);
                         updateMeshScanButtonText();
                     });
@@ -599,6 +614,24 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
                 @Override
                 public void onDeviceFound(BluetoothDevice device) {
+                    if (device != null) {
+                        String addr = device.getAddress();
+                        for (BluetoothDevice existing : meshFoundDevices) {
+                            if (existing != null && addr != null
+                                    && addr.equalsIgnoreCase(existing.getAddress())) {
+                                return;
+                            }
+                        }
+                        meshFoundDevices.add(device);
+                    }
+                }
+
+                @Override
+                public void onScanComplete() {
+                    getMapView().post(() -> {
+                        stopMeshConnectButtonPulse(true);
+                        showMeshDevicePicker();
+                    });
                 }
             });
             meshBtManager.addMeshStateListener(new MeshBtConnectionManager.MeshStateListener() {
@@ -1414,23 +1447,31 @@ public class UVProDropDownReceiver extends DropDownReceiver
             appendLog("MeshCore transport unavailable");
             return;
         }
+        meshBtManager.cancelAvailabilityProbes();
         if (meshBtManager.isConnected()) {
-            appendLog("MeshCore already connected");
-            updateMeshConnectionUI(true, meshBtManager.getConnectedDeviceName());
             return;
         }
         if (meshBtManager.isConnecting()) {
             appendLog("Cancelling current MeshCore connection attempt...");
             meshBtManager.cancelConnectionAttempts();
+            stopMeshConnectButtonPulse(true);
         }
-        appendLog("UV-PRO Bluetooth connect removed — rebuild in progress");
+        if (BluetoothAdapter.getDefaultAdapter() == null) {
+            appendLog("Bluetooth not available");
+            return;
+        }
+        meshFoundDevices.clear();
         updateMeshScanButtonText();
+        appendLog("Scanning for MeshCore devices...");
+        requestMeshScanButtonPulse();
+        meshBtManager.startScan();
     }
 
     private void onMeshDisconnectClicked() {
         if (meshBtManager != null) {
             meshBtManager.disconnect();
         }
+        stopMeshConnectButtonPulse(true);
         meshConnected = false;
         updateMeshConnectionUI(false, null);
         appendLog("MeshCore disconnected");
@@ -1475,7 +1516,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnMeshScan == null || meshBtManager == null) {
             return;
         }
-        btnMeshScan.setText("CONNECT");
+        if (meshBtManager.isConnected()) {
+            btnMeshScan.setText("Connected");
+        } else {
+            btnMeshScan.setText("Scan and Connect");
+        }
     }
 
     private void onMeshcoreChannelsClicked() {
@@ -6808,9 +6853,169 @@ public class UVProDropDownReceiver extends DropDownReceiver
         repeaterLoadFocusAnimator.start();
     }
 
-    /** Returns the Bluetooth broadcast name, or the MAC address when name is unavailable. */
+    /** UV-PRO Classic picker / status label (model + radio ID). */
     private String resolveDeviceDisplayName(Context ctx, BluetoothDevice device) {
         return UvProBtDeviceMatcher.formatPickerLabel(device);
+    }
+
+    /** MeshCore BLE picker / status label (MeshCore- name or MAC). */
+    private String resolveMeshDeviceDisplayName(Context ctx, BluetoothDevice device) {
+        if (device == null) {
+            return "MeshCore";
+        }
+        String name = MeshBleDeviceMatcher.resolveName(null, device);
+        if (name != null && !name.trim().isEmpty()) {
+            return name.trim();
+        }
+        try {
+            String addr = device.getAddress();
+            if (addr != null && !addr.trim().isEmpty()) {
+                return addr.trim();
+            }
+        } catch (Exception ignored) {
+        }
+        return "MeshCore";
+    }
+
+    private android.view.View buildMeshPickerTitle(Context ctx) {
+        android.widget.LinearLayout col = new android.widget.LinearLayout(ctx);
+        col.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int pad = dip(ctx, 16);
+        col.setPadding(pad, dip(ctx, 12), pad, dip(ctx, 4));
+
+        android.widget.TextView title = new android.widget.TextView(ctx);
+        title.setText("Select MeshCore");
+        title.setTextColor(0xFFFFFFFF);
+        title.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 18);
+        title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
+        col.addView(title);
+
+        android.widget.TextView hint = new android.widget.TextView(ctx);
+        hint.setText(MeshBleDeviceMatcher.pinGuidance());
+        hint.setTextColor(0xFFB0B0B0);
+        hint.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
+        android.widget.LinearLayout.LayoutParams hp = new android.widget.LinearLayout.LayoutParams(
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT);
+        hp.topMargin = dip(ctx, 4);
+        hint.setLayoutParams(hp);
+        col.addView(hint);
+
+        return col;
+    }
+
+    private void showMeshDevicePicker() {
+        if (meshFoundDevices.isEmpty()) {
+            stopMeshConnectButtonPulse(true);
+            appendLog("No MeshCore devices found");
+            meshBtManager.endScanPickerSession();
+            try {
+                new AlertDialog.Builder(getMapView().getContext())
+                        .setTitle("Scan MeshCore")
+                        .setMessage("No MeshCore devices found.\n\n"
+                                + "Put the node in pairing mode, then tap Scan and Connect again.")
+                        .setPositiveButton(android.R.string.ok, null)
+                        .show();
+            } catch (Exception e) {
+                Log.e(TAG, "Could not show empty mesh scan dialog", e);
+            }
+            updateMeshScanButtonText();
+            return;
+        }
+        Context ctx = getMapView().getContext();
+
+        final int count = meshFoundDevices.size();
+        final String[] names = new String[count];
+        final int[] dotColors = new int[count];
+        final int DOT_UNSEEN = 0xFFAAAAAA;
+        final int DOT_AVAILABLE = 0xFF4CAF50;
+        final int DOT_BUSY = 0xFFF44336;
+
+        for (int i = 0; i < count; i++) {
+            BluetoothDevice dev = meshFoundDevices.get(i);
+            names[i] = resolveMeshDeviceDisplayName(ctx, dev);
+            dotColors[i] = DOT_UNSEEN;
+        }
+
+        android.widget.ArrayAdapter<String> adapter = new android.widget.ArrayAdapter<String>(
+                ctx, android.R.layout.select_dialog_singlechoice, names) {
+            @Override
+            public android.view.View getView(int pos, android.view.View convertView,
+                                             android.view.ViewGroup parent) {
+                android.view.View v = super.getView(pos, convertView, parent);
+                android.widget.TextView tv = v instanceof android.widget.TextView
+                        ? (android.widget.TextView) v
+                        : v.findViewById(android.R.id.text1);
+                if (tv != null) {
+                    int color = dotColors[pos];
+                    android.graphics.drawable.GradientDrawable dot =
+                            new android.graphics.drawable.GradientDrawable();
+                    dot.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+                    dot.setColor(color);
+                    int dp8 = (int) (8 * ctx.getResources().getDisplayMetrics().density);
+                    dot.setSize(dp8, dp8);
+                    tv.setCompoundDrawablesWithIntrinsicBounds(dot, null, null, null);
+                    tv.setCompoundDrawablePadding(dp8);
+                }
+                return v;
+            }
+        };
+
+        try {
+            new AlertDialog.Builder(ctx)
+                    .setCustomTitle(buildMeshPickerTitle(ctx))
+                    .setAdapter(adapter, (d, which) -> {
+                        if (which < 0 || which >= meshFoundDevices.size()) {
+                            return;
+                        }
+                        BluetoothDevice selected = meshFoundDevices.get(which);
+                        BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx,
+                                selected.getAddress());
+                        appendLog("Connecting MeshCore to " + names[which] + "...");
+                        updateMeshScanButtonText();
+                        startMeshConnectButtonPulse();
+                        meshBtManager.connectUserSelected(selected);
+                    })
+                    .setNeutralButton("Forget All", (d, w) -> onMeshForgetAllClicked())
+                    .setNegativeButton("Cancel", (d, w) -> meshBtManager.endScanPickerSession())
+                    .setOnCancelListener(d -> meshBtManager.endScanPickerSession())
+                    .show();
+
+            meshBtManager.prepareForAvailabilityProbes();
+            for (int i = 0; i < count; i++) {
+                final int idx = i;
+                BluetoothDevice dev = meshFoundDevices.get(i);
+                if (!meshBtManager.isLiveScanDevice(dev)) {
+                    dotColors[idx] = DOT_UNSEEN;
+                    adapter.notifyDataSetChanged();
+                    continue;
+                }
+                meshBtManager.probeDeviceAvailabilityForPicker(dev, availability ->
+                        getMapView().post(() -> {
+                            dotColors[idx] = (availability == MeshBtConnectionManager.AVAIL_AVAILABLE)
+                                    ? DOT_AVAILABLE : DOT_BUSY;
+                            adapter.notifyDataSetChanged();
+                        }));
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error showing MeshCore picker", e);
+            appendLog("Error showing MeshCore picker");
+            meshBtManager.endScanPickerSession();
+        }
+    }
+
+    private void onMeshForgetAllClicked() {
+        Context ctx = getMapView().getContext();
+        BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
+        MeshBluetoothForgetAll.Result result =
+                MeshBluetoothForgetAll.forgetAll(ctx, adapter);
+        appendLog("MeshCore registry cleared (" + result.registryEntriesCleared + " entries).");
+        if (result.needsAndroidSettingsReminder()) {
+            appendLog("Some devices could not be unpaired automatically. "
+                    + "Remove them in Android Bluetooth settings if needed.");
+        }
+        meshBtManager.endScanPickerSession();
+        updateMeshScanButtonText();
     }
 
     private void showDevicePicker() {
@@ -7028,6 +7233,68 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 btnScan.setBackgroundResource(bgId);
             } else {
                 applyPillButtonBackground(btnScan, COLOR_PILL_BUTTON_PRIMARY);
+            }
+        }
+    }
+
+    private void startMeshConnectButtonPulse() {
+        stopMeshConnectButtonPulse(true);
+    }
+
+    private void requestMeshScanButtonPulse() {
+        if (getMapView() == null) {
+            startMeshScanButtonPulse();
+            return;
+        }
+        getMapView().removeCallbacks(deferredMeshScanPulseStart);
+        getMapView().postDelayed(deferredMeshScanPulseStart, 60L);
+    }
+
+    private void startMeshScanButtonPulse() {
+        if (btnMeshScan == null) {
+            return;
+        }
+        stopMeshConnectButtonPulse(false);
+        btnMeshScan.setBackgroundTintList(null);
+        meshConnectPulseDrawable = buildVfoButtonBackground(
+                COLOR_PILL_BUTTON_PRIMARY, 0x00F44336, EDIT_SELECTION_STROKE_DP);
+        btnMeshScan.setBackground(meshConnectPulseDrawable);
+        meshConnectPulseAnimator = ValueAnimator.ofObject(
+                new ArgbEvaluator(),
+                0x11F44336,
+                0xFFF44336);
+        meshConnectPulseAnimator.setDuration(260L);
+        meshConnectPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        meshConnectPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
+        meshConnectPulseAnimator.addUpdateListener(animation -> {
+            if (meshConnectPulseDrawable == null || btnMeshScan == null) {
+                return;
+            }
+            int color = (Integer) animation.getAnimatedValue();
+            meshConnectPulseDrawable.setStroke(
+                    dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
+            btnMeshScan.invalidate();
+        });
+        meshConnectPulseAnimator.start();
+    }
+
+    private void stopMeshConnectButtonPulse(boolean restoreBackground) {
+        if (getMapView() != null) {
+            getMapView().removeCallbacks(deferredMeshScanPulseStart);
+        }
+        ValueAnimator animator = meshConnectPulseAnimator;
+        meshConnectPulseAnimator = null;
+        if (animator != null) {
+            animator.cancel();
+        }
+        meshConnectPulseDrawable = null;
+        if (restoreBackground && btnMeshScan != null) {
+            int bgId = pluginContext.getResources().getIdentifier(
+                    "bg_uvpro_connection_button", "drawable", pluginContext.getPackageName());
+            if (bgId != 0) {
+                btnMeshScan.setBackgroundResource(bgId);
+            } else {
+                applyPillButtonBackground(btnMeshScan, 0xFF455A64);
             }
         }
     }

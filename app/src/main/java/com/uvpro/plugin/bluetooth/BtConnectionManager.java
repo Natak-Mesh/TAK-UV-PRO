@@ -191,10 +191,34 @@ public class BtConnectionManager {
 
     /** Release broadcast receivers when the plugin shuts down. */
     public void shutdown() {
+        detachClassicBtAutoConnect();
+    }
+
+    /**
+     * Tear down UV-PRO Classic auto-connect receivers on this manager instance.
+     * {@link MeshBtConnectionManager} calls this so mesh does not register duplicate ACL/passive
+     * listeners that compete with UV-PRO startup connect.
+     */
+    protected void detachClassicBtAutoConnect() {
         cancelPendingAclConnect();
         cancelPassiveReconnect();
         cancelBootAutoConnect();
         unregisterAclReceiver();
+        unregisterBondReceiver();
+    }
+
+    private void unregisterBondReceiver() {
+        if (!bondReceiverRegistered || bondStateReceiver == null) {
+            return;
+        }
+        try {
+            context.unregisterReceiver(bondStateReceiver);
+        } catch (Exception e) {
+            Log.w(TAG, "Could not unregister bond receiver", e);
+        } finally {
+            bondStateReceiver = null;
+            bondReceiverRegistered = false;
+        }
     }
 
     /** True while the startup reconnect window is active (up to {@link #BOOT_AUTO_CONNECT_WINDOW_MS}). */

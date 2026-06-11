@@ -47,7 +47,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * - Reading incoming KISS frames in a background thread
  * - Sending outbound KISS frames
  * - Auto-reconnection on connection loss
- * - Event-driven reconnect when the saved radio re-appears (ACL_CONNECTED; no polling)
+ * - Event-driven reconnect when the saved radio re-appears (ACL / UUID / BT enabled)
+ * - Staggered direct SPP attempts when Classic radios power on without ACL broadcasts
  */
 public class BtConnectionManager {
 
@@ -106,6 +107,11 @@ public class BtConnectionManager {
     private static final long PASSIVE_RECONNECT_INTERVAL_MS = 60_000L;
     /** First passive attempt after mesh boot contention ends. */
     private static final long PASSIVE_RECONNECT_INITIAL_DELAY_MS = 3000L;
+    /** Staggered SPP attempts when ACL/UUID events are silent (Classic power-on). */
+    private static final long[] PASSIVE_RECONNECT_BACKOFF_MS = {
+            3000L, 8000L, 15000L, 30000L, 60000L
+    };
+    private int passiveReconnectAttempt = 0;
     private Runnable pendingAclConnectRunnable;
     private Runnable scanTimeoutRunnable;
     private Runnable passiveReconnectRunnable;
@@ -199,6 +205,7 @@ public class BtConnectionManager {
             return;
         }
         passiveReconnectArmed.set(true);
+        passiveReconnectAttempt = 0;
         if (passiveReconnectRunnable != null) {
             mainHandler.removeCallbacks(passiveReconnectRunnable);
             passiveReconnectRunnable = null;
@@ -833,12 +840,16 @@ public class BtConnectionManager {
 
     private void handleConnectionLost() {
         connected.set(false);
+        connecting.set(false);
         cleanup();
         notifyDisconnected("Connection lost");
 
         if (shouldReconnect.get()) {
-            scheduleReconnect();
-            armPassiveReconnect();
+            cancelPendingAclConnect();
+            requestSdpRefreshForSavedRadio();
+            Log.i(TAG, "Link lost — saved radio " + getSavedRadioTargetAddress()
+                    + "; ACL/SDP watch + direct SPP recovery armed");
+            resumeRadioAutoConnect(PASSIVE_RECONNECT_INITIAL_DELAY_MS);
         }
     }
 
@@ -995,8 +1006,9 @@ public class BtConnectionManager {
         return rssi >= MIN_DISCOVERY_RSSI_DBM;
     }
 
+    /** User Disconnect sets {@link #shouldReconnect} false; link-loss keeps it true for ACL reconnect. */
     private boolean isAutoReconnectEnabled() {
-        return false;
+        return shouldReconnect.get();
     }
 
     private void registerAclReceiver() {
@@ -1016,6 +1028,18 @@ public class BtConnectionManager {
                     if (device != null) {
                         onAclConnected(device);
                     }
+                } else if (BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) {
+                    BluetoothDevice device =
+                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (device != null) {
+                        onAclDisconnected(device);
+                    }
+                } else if (BluetoothDevice.ACTION_UUID.equals(action)) {
+                    BluetoothDevice device =
+                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (device != null) {
+                        onRadioUuidAvailable(device);
+                    }
                 } else if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(action)) {
                     int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE,
                             BluetoothAdapter.ERROR);
@@ -1028,10 +1052,16 @@ public class BtConnectionManager {
         try {
             IntentFilter filter = new IntentFilter();
             filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
+            filter.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
+            filter.addAction(BluetoothDevice.ACTION_UUID);
             filter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
-            context.registerReceiver(aclReceiver, filter);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(aclReceiver, filter, Context.RECEIVER_EXPORTED);
+            } else {
+                context.registerReceiver(aclReceiver, filter);
+            }
             aclReceiverRegistered = true;
-            Log.d(TAG, "ACL reconnect listener registered");
+            Log.d(TAG, "ACL/SDP reconnect listener registered");
         } catch (Exception e) {
             Log.w(TAG, "Could not register ACL receiver", e);
         }
@@ -1055,6 +1085,49 @@ public class BtConnectionManager {
         if (pendingAclConnectRunnable != null) {
             mainHandler.removeCallbacks(pendingAclConnectRunnable);
             pendingAclConnectRunnable = null;
+        }
+    }
+
+    private void onAclDisconnected(BluetoothDevice device) {
+        if (device == null || device.getAddress() == null) {
+            return;
+        }
+        String addr = device.getAddress();
+        if (!isSavedRadioTarget(addr)) {
+            return;
+        }
+        Log.d(TAG, "ACL disconnected " + addr);
+        requestSdpRefreshForSavedRadio();
+    }
+
+    private void onRadioUuidAvailable(BluetoothDevice device) {
+        if (device == null || device.getAddress() == null) {
+            return;
+        }
+        if (!isAutoReconnectEnabled() || !shouldReconnect.get()) {
+            return;
+        }
+        if (connected.get() || connecting.get()) {
+            return;
+        }
+        String addr = device.getAddress();
+        if (!isSavedRadioTarget(addr)) {
+            return;
+        }
+        Log.i(TAG, "UUID update for saved radio " + addr + " — scheduling plugin connect");
+        scheduleAclConnect(device, "uuid-available");
+    }
+
+    private void requestSdpRefreshForSavedRadio() {
+        BluetoothDevice device = resolveSavedRadioDevice();
+        if (device == null) {
+            return;
+        }
+        try {
+            device.fetchUuidsWithSdp();
+            Log.d(TAG, "SDP refresh requested for " + device.getAddress());
+        } catch (Exception e) {
+            Log.w(TAG, "SDP refresh failed", e);
         }
     }
 
@@ -1084,12 +1157,12 @@ public class BtConnectionManager {
         if (connected.get() || connecting.get()) {
             return;
         }
-        String tgt = getSavedRadioTargetAddress();
-        if (tgt == null || tgt.isEmpty() || btAdapter == null) {
+        BluetoothDevice device = resolveSavedRadioDevice();
+        if (device == null) {
             return;
         }
         try {
-            BluetoothDevice device = btAdapter.getRemoteDevice(tgt);
+            String tgt = device.getAddress();
             Log.i(TAG, "Bluetooth enabled — scheduling connect to saved radio " + tgt);
             scheduleAclConnect(device, "bt-enabled");
         } catch (Exception e) {
@@ -1161,19 +1234,28 @@ public class BtConnectionManager {
     }
 
     private boolean isConnectingToAddress(String address) {
-        if (!connecting.get() || address == null || lastDevice == null) {
+        if (!connecting.get() || address == null) {
             return false;
         }
-        String linked = lastDevice.getAddress();
-        return linked != null && linked.equalsIgnoreCase(address);
+        String tgt = getSavedRadioTargetAddress();
+        return tgt != null && tgt.equalsIgnoreCase(address);
+    }
+
+    @Nullable
+    private BluetoothDevice resolveSavedRadioDevice() {
+        if (lastDevice != null) {
+            return lastDevice;
+        }
+        return loadRememberedRadioDevice();
     }
 
     private String getSavedRadioTargetAddress() {
-        if (lastDevice == null) {
+        BluetoothDevice device = resolveSavedRadioDevice();
+        if (device == null) {
             return null;
         }
         try {
-            return lastDevice.getAddress();
+            return UvProBtDeviceMatcher.normalizeMacAddress(device.getAddress());
         } catch (Exception e) {
             return null;
         }
@@ -1189,6 +1271,7 @@ public class BtConnectionManager {
 
     private void cancelPassiveReconnect() {
         passiveReconnectArmed.set(false);
+        passiveReconnectAttempt = 0;
         if (passiveReconnectRunnable != null) {
             mainHandler.removeCallbacks(passiveReconnectRunnable);
             passiveReconnectRunnable = null;
@@ -1223,21 +1306,29 @@ public class BtConnectionManager {
                 cancelPassiveReconnect();
                 return;
             }
-            String tgt = getSavedRadioTargetAddress();
-            if (tgt == null || tgt.isEmpty() || btAdapter == null) {
-                scheduleNextPassiveReconnect(PASSIVE_RECONNECT_INTERVAL_MS);
+            BluetoothDevice device = resolveSavedRadioDevice();
+            if (device == null || btAdapter == null) {
+                scheduleNextPassiveReconnect(nextPassiveReconnectDelay());
                 return;
             }
             try {
-                BluetoothDevice device = btAdapter.getRemoteDevice(tgt);
-                Log.d(TAG, "Passive reconnect attempt for saved radio " + tgt);
+                String tgt = device.getAddress();
+                Log.i(TAG, "Direct SPP recovery attempt for saved radio " + tgt);
                 maybeConnectToSavedRadio(device, "passive-watch");
             } catch (Exception e) {
                 Log.w(TAG, "Passive reconnect attempt failed", e);
             }
-            scheduleNextPassiveReconnect(PASSIVE_RECONNECT_INTERVAL_MS);
+            scheduleNextPassiveReconnect(nextPassiveReconnectDelay());
         };
         mainHandler.postDelayed(passiveReconnectRunnable, delayMs);
+    }
+
+    private long nextPassiveReconnectDelay() {
+        int idx = passiveReconnectAttempt++;
+        if (idx < PASSIVE_RECONNECT_BACKOFF_MS.length) {
+            return PASSIVE_RECONNECT_BACKOFF_MS[idx];
+        }
+        return PASSIVE_RECONNECT_INTERVAL_MS;
     }
 
     private void registerDiscoveryReceiverIfNeeded() {

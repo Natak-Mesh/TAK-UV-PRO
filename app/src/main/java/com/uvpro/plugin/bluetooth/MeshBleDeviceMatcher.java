@@ -3,18 +3,16 @@ package com.uvpro.plugin.bluetooth;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanResult;
-import android.content.Context;
 import android.os.ParcelUuid;
 
 import androidx.annotation.Nullable;
-
-import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry.BtDeviceRecord;
 
 import java.util.Locale;
 import java.util.UUID;
 
 /**
  * Identifies MeshCore companion radios during BLE discovery.
+ * Preserved for a future scan/connect rebuild; not wired to live connection logic.
  */
 public final class MeshBleDeviceMatcher {
 
@@ -48,10 +46,7 @@ public final class MeshBleDeviceMatcher {
     /**
      * Name-based fallback for chipsets/Android versions that don't surface the service UUID in
      * the parsed scan record. MeshCore firmware always prefixes the BLE name with
-     * {@code "MeshCore-"} ({@code BLE_NAME_PREFIX} in companion_radio/MyMesh.h), so we only match
-     * that. Generic hardware-brand keywords were removed because they matched unrelated BLE gear
-     * and produced false positives. Real nodes with custom firmware are still caught by the
-     * primary service-UUID filter.
+     * {@code "MeshCore-"} ({@code BLE_NAME_PREFIX} in companion_radio/MyMesh.h).
      */
     public static boolean matchesMeshName(@Nullable String name) {
         if (name == null) return false;
@@ -75,35 +70,21 @@ public final class MeshBleDeviceMatcher {
         return name;
     }
 
-    public static boolean isMeshDevice(@Nullable Context context,
-                                       @Nullable ScanResult result,
+    public static boolean isMeshDevice(@Nullable ScanResult result,
                                        @Nullable BluetoothDevice device,
                                        boolean trustHardwareFilter) {
         if (device == null) return false;
-        if (context != null && isKnownMeshAddress(context, device.getAddress())) return true;
         if (trustHardwareFilter || advertisesMeshService(result)) return true;
         return matchesMeshName(resolveName(result, device));
     }
 
-    public static boolean isMeshDevice(@Nullable Context context,
-                                       @Nullable ScanResult result,
+    public static boolean isMeshDevice(@Nullable ScanResult result,
                                        @Nullable BluetoothDevice device) {
-        return isMeshDevice(context, result, device, false);
+        return isMeshDevice(result, device, false);
     }
 
-    public static boolean isMeshDevice(@Nullable Context context,
-                                       @Nullable BluetoothDevice device) {
-        return isMeshDevice(context, null, device, false);
-    }
-
-    public static boolean isKnownMeshAddress(@Nullable Context context,
-                                             @Nullable String address) {
-        if (context == null || address == null || address.trim().isEmpty()) return false;
-        return BluetoothDeviceRegistry.find(context, address) != null;
-    }
-
-    public static boolean isKnownMeshRecord(@Nullable BtDeviceRecord record) {
-        return record != null;
+    public static boolean isMeshDevice(@Nullable BluetoothDevice device) {
+        return isMeshDevice(null, device, false);
     }
 
     public static String pairingHintMessage(@Nullable BluetoothDevice device) {

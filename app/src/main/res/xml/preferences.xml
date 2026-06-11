@@ -123,18 +123,6 @@
 
     </PreferenceCategory>
 
-    <PreferenceCategory
-        android:key="uvpro_cat_bluetooth"
-        android:title="Bluetooth">
-
-        <com.atakmap.android.gui.PanCheckBoxPreference
-            android:key="uvpro_auto_reconnect"
-            android:title="Auto-Reconnect"
-            android:summary="Automatically reconnect to last known radio"
-            android:defaultValue="true" />
-
-    </PreferenceCategory>
-
     <Preference
         android:key="uvpro_admin_access"
         android:title="Administrative Settings"

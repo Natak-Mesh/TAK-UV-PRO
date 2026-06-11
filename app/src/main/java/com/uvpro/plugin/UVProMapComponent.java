@@ -47,8 +47,6 @@ import com.uvpro.plugin.location.RadioPositionFix;
 import com.uvpro.plugin.network.RfTakUplinkKeepalive;
 import com.uvpro.plugin.network.WifiContactKeepalive;
 import com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
-import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry;
-import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry.BtDeviceRecord;
 
 import java.util.List;
 import java.util.Locale;
@@ -158,22 +156,6 @@ public class UVProMapComponent extends DropDownMapComponent {
     private SharedPreferences.OnSharedPreferenceChangeListener meshMapPrefsListener;
     private final Set<String> meshRepeaterMapUids = new HashSet<>();
     private final Set<String> meshNodeMapUids = new HashSet<>();
-    /** UV-PRO Classic BT connect can knock BLE mesh offline; restore after link settles. */
-    private final AtomicBoolean meshRestoreAfterRadioContention = new AtomicBoolean(false);
-    private Runnable pendingMeshRestoreRunnable;
-    private static final long MESH_RESTORE_AFTER_RADIO_DELAY_MS = 2000L;
-    private static final long MESH_RESTORE_RETRY_MS = 5000L;
-    private static final int MESH_RESTORE_MAX_ATTEMPTS = 5;
-    private int meshRestoreAttempts;
-    /**
-     * Boot-only: hold MeshCore auto-connect until UV-PRO connects or gives up (~35s), so both
-     * transports do not fight during startup. Cleared once radio resolves — mesh connects second.
-     */
-    private final AtomicBoolean meshHoldBootAutoConnect = new AtomicBoolean(true);
-    private final AtomicBoolean meshEverConnectedThisSession = new AtomicBoolean(false);
-    private Runnable releaseMeshBootHoldRunnable;
-    private static final long RADIO_BOOT_RESOLVE_MS = 35_000L;
-    private static final long MESH_BOOT_AFTER_RADIO_DELAY_MS = 2500L;
     private MapEventDispatcher.MapEventDispatchListener mapItemClickListener;
     private Handler beaconHandler;
     private Runnable beaconRunnable;
@@ -317,24 +299,6 @@ try {
         btConnectionManager = new BtConnectionManager(context, packetRouter);
         meshBtConnectionManager = new MeshBtConnectionManager(context, packetRouter);
         packetRouter.setInboundTransports(btConnectionManager, meshBtConnectionManager);
-        btConnectionManager.setMeshCoexistenceListener(new BtConnectionManager.MeshCoexistenceListener() {
-            @Override
-            public boolean isMeshConnecting() {
-                return meshBtConnectionManager != null
-                        && meshBtConnectionManager.isConnecting();
-            }
-
-            @Override
-            public boolean isMeshConnected() {
-                return meshBtConnectionManager != null
-                        && meshBtConnectionManager.isConnected();
-            }
-
-            @Override
-            public void onRadioConnectStartingWhileMeshUp() {
-                meshRestoreAfterRadioContention.set(true);
-            }
-        });
         repeaterAdvertListener = advert -> {
             if (advert == null || !advert.hasValidPosition()) {
                 return;
@@ -363,8 +327,6 @@ try {
                         advert.name);
             }
         };
-        meshBtConnectionManager.setBootDeferralChecker(
-                () -> meshHoldBootAutoConnect.get());
         meshBtConnectionManager.addRepeaterAdvertListener(repeaterAdvertListener);
         meshBtConnectionManager.addMeshAdvertListener(meshAdvertListener);
         SharedPreferences meshPrefs = PreferenceManager.getDefaultSharedPreferences(view.getContext());
@@ -400,11 +362,6 @@ try {
             public void onConnected(android.bluetooth.BluetoothDevice device) {
                 Log.d(TAG, "StatusOverlay: radio connected");
                 RadioStatusOverlay.setConnected(true);
-                if (meshHoldBootAutoConnect.get()) {
-                    releaseMeshBootHoldAndConnectMesh(view, context);
-                } else {
-                    scheduleMeshRestoreAfterRadioContention(view);
-                }
                 // Anchor first periodic beacon to connection time.
                 startBeaconTimer();
                 applyActiveTransmitTransportFromPreference();
@@ -426,16 +383,9 @@ try {
                 if (!isAnyTransportConnected()) {
                     stopBeaconTimer();
                 }
-                if (meshHoldBootAutoConnect.get() && !meshEverConnectedThisSession.get()) {
-                    releaseMeshBootHoldAndConnectMesh(view, context);
-                }
             }
             @Override
-            public void onError(String error) {
-                if (meshHoldBootAutoConnect.get() && !meshEverConnectedThisSession.get()) {
-                    releaseMeshBootHoldAndConnectMesh(view, context);
-                }
-            }
+            public void onError(String error) {}
             @Override
             public void onDeviceFound(android.bluetooth.BluetoothDevice device) {}
         });
@@ -444,8 +394,6 @@ try {
             public void onConnected(android.bluetooth.BluetoothDevice device) {
                 Log.d(TAG, "StatusOverlay: mesh connected");
                 MeshStatusOverlay.setConnected(true);
-                meshEverConnectedThisSession.set(true);
-                cancelReleaseMeshBootHold();
                 // Keep periodic beacon behavior consistent with UV-PRO transport:
                 // first beacon 30s after a successful mesh connection.
                 startBeaconTimer();
@@ -470,11 +418,6 @@ try {
                 MeshStatusOverlay.setConnected(false);
                 if ("User disconnected".equals(reason) && btConnectionManager != null) {
                     btConnectionManager.onMeshReleased();
-                } else if (!"User disconnected".equals(reason)) {
-                    if (btConnectionManager != null && btConnectionManager.isConnected()) {
-                        meshRestoreAfterRadioContention.set(true);
-                    }
-                    scheduleMeshRestoreAfterRadioContention(view);
                 }
                 if (!isAnyTransportConnected()) {
                     stopBeaconTimer();
@@ -487,19 +430,6 @@ try {
             @Override
             public void onDeviceFound(android.bluetooth.BluetoothDevice device) {}
         });
-
-        // UV-PRO first at boot, then MeshCore once the radio link resolves.
-        view.postDelayed(() -> {
-            autoConnectLastRadio(context);
-            if (btConnectionManager != null) {
-                btConnectionManager.resumeRadioAutoConnect();
-            }
-        }, 4000);
-        if (meshBtConnectionManager != null) {
-            scheduleReleaseMeshBootHoldIfRadioNeverResolves(view);
-        } else {
-            meshHoldBootAutoConnect.set(false);
-        }
 
         // Defer trust + prefs to the next frame and again on long delays so cert DB import wins races
         // with startup. Repo sync behavior remains one silent attempt per process (see
@@ -778,13 +708,6 @@ try {
         }
         UVProRadioServices.clear();
         com.uvpro.plugin.protocol.PositionRequester.clear();
-        if (mapView != null && pendingMeshRestoreRunnable != null) {
-            mapView.removeCallbacks(pendingMeshRestoreRunnable);
-            pendingMeshRestoreRunnable = null;
-        }
-        cancelReleaseMeshBootHold();
-        meshRestoreAfterRadioContention.set(false);
-        meshHoldBootAutoConnect.set(false);
         if (btConnectionManager != null) {
             btConnectionManager.shutdown();
             btConnectionManager.disconnect();
@@ -2428,238 +2351,6 @@ try {
             }
         } catch (Exception e) {
             Log.w(TAG, "clearSocketFactoriesCache failed: " + e.getMessage());
-        }
-    }
-
-    private void scheduleReleaseMeshBootHoldIfRadioNeverResolves(MapView view) {
-        cancelReleaseMeshBootHold();
-        if (view == null) {
-            return;
-        }
-        final Context ctx = view.getContext();
-        releaseMeshBootHoldRunnable = () -> {
-            if (meshEverConnectedThisSession.get()) {
-                releaseMeshBootHoldRunnable = null;
-                meshHoldBootAutoConnect.set(false);
-                return;
-            }
-            if (btConnectionManager != null && btConnectionManager.isConnecting()) {
-                view.postDelayed(releaseMeshBootHoldRunnable, 5000L);
-                return;
-            }
-            if (btConnectionManager != null && btConnectionManager.isConnected()) {
-                releaseMeshBootHoldRunnable = null;
-                return;
-            }
-            releaseMeshBootHoldRunnable = null;
-            Log.i(TAG, "UV-PRO did not connect at boot — starting MeshCore auto-connect");
-            releaseMeshBootHoldAndConnectMesh(view, ctx);
-        };
-        view.postDelayed(releaseMeshBootHoldRunnable, RADIO_BOOT_RESOLVE_MS);
-    }
-
-    /** UV-PRO boot finished — let MeshCore auto-connect after a short BT stack settle. */
-    private void releaseMeshBootHoldAndConnectMesh(MapView view, Context context) {
-        cancelReleaseMeshBootHold();
-        if (view == null || meshBtConnectionManager == null) {
-            meshHoldBootAutoConnect.set(false);
-            return;
-        }
-        if (meshEverConnectedThisSession.get()) {
-            meshHoldBootAutoConnect.set(false);
-            return;
-        }
-        if (!meshHoldBootAutoConnect.getAndSet(false)) {
-            return;
-        }
-        Log.i(TAG, "UV-PRO boot resolved — scheduling MeshCore auto-connect");
-        view.postDelayed(() -> {
-            if (meshBtConnectionManager != null && !meshEverConnectedThisSession.get()) {
-                meshBtConnectionManager.scheduleBootAutoConnect();
-            }
-        }, MESH_BOOT_AFTER_RADIO_DELAY_MS);
-    }
-
-    private void cancelReleaseMeshBootHold() {
-        if (mapView != null && releaseMeshBootHoldRunnable != null) {
-            mapView.removeCallbacks(releaseMeshBootHoldRunnable);
-            releaseMeshBootHoldRunnable = null;
-        }
-    }
-
-    /**
-     * Classic UV-PRO SPP connect can drop the active MeshCore BLE session on the same phone.
-     * When that happens, reconnect mesh once the radio link has settled.
-     */
-    private void scheduleMeshRestoreAfterRadioContention(MapView view) {
-        if (view == null || meshBtConnectionManager == null) {
-            return;
-        }
-        boolean radioUp = btConnectionManager != null && btConnectionManager.isConnected();
-        if (!meshRestoreAfterRadioContention.get() && !radioUp) {
-            return;
-        }
-        if (meshBtConnectionManager.isConnected()) {
-            // Mesh may drop shortly after the radio SPP socket comes up — watch once.
-            if (pendingMeshRestoreRunnable != null) {
-                return;
-            }
-            pendingMeshRestoreRunnable = () -> {
-                pendingMeshRestoreRunnable = null;
-                if (meshBtConnectionManager.isConnected()) {
-                    return;
-                }
-                if (btConnectionManager != null && btConnectionManager.isConnected()) {
-                    meshRestoreAfterRadioContention.set(true);
-                    meshRestoreAttempts = 0;
-                    scheduleMeshRestoreAfterRadioContention(view);
-                }
-            };
-            view.postDelayed(pendingMeshRestoreRunnable, 800L);
-            return;
-        }
-        if (pendingMeshRestoreRunnable != null) {
-            view.removeCallbacks(pendingMeshRestoreRunnable);
-        }
-        pendingMeshRestoreRunnable = () -> {
-            pendingMeshRestoreRunnable = null;
-            if (meshBtConnectionManager.isConnected()) {
-                meshRestoreAfterRadioContention.set(false);
-                meshRestoreAttempts = 0;
-                return;
-            }
-            if (btConnectionManager == null || !btConnectionManager.isConnected()) {
-                meshRestoreAfterRadioContention.set(false);
-                meshRestoreAttempts = 0;
-                return;
-            }
-            meshRestoreAttempts++;
-            Log.i(TAG, "Restoring MeshCore after UV-PRO radio connect (attempt "
-                    + meshRestoreAttempts + "/" + MESH_RESTORE_MAX_ATTEMPTS + ")");
-            meshBtConnectionManager.restoreSavedTargetConnectionFast();
-            if (meshRestoreAttempts < MESH_RESTORE_MAX_ATTEMPTS
-                    && !meshBtConnectionManager.isConnected()) {
-                meshRestoreAfterRadioContention.set(true);
-                view.postDelayed(() -> scheduleMeshRestoreAfterRadioContention(view),
-                        MESH_RESTORE_RETRY_MS);
-            } else {
-                meshRestoreAfterRadioContention.set(false);
-                meshRestoreAttempts = 0;
-            }
-        };
-        view.postDelayed(pendingMeshRestoreRunnable, MESH_RESTORE_AFTER_RADIO_DELAY_MS);
-    }
-
-    /** Auto-connect to the last used radio on startup if one is saved. */
-    private void autoConnectLastRadio(Context context) {
-        try {
-            String tgt = BluetoothDeviceRegistry.getConnectTargetAddress(context);
-            String meshTgt = BluetoothDeviceRegistry.getMeshConnectTargetAddress(context);
-            if (tgt != null && meshTgt != null && tgt.equalsIgnoreCase(meshTgt)) {
-                // Recovery path: if Mesh connect was previously persisted as UV-PRO target,
-                // fall back to the most recent non-Mesh record.
-                String fallback = findMostRecentUvProAddress(context);
-                if (fallback != null) {
-                    tgt = fallback;
-                    BluetoothDeviceRegistry.setConnectTargetAddress(context, fallback);
-                    Log.i(TAG, "Auto-connect: repaired UV-PRO target from Mesh collision: " + fallback);
-                } else {
-                    BluetoothDeviceRegistry.setConnectTargetAddress(context, "");
-                    tgt = null;
-                    Log.w(TAG, "Auto-connect: UV-PRO target matched Mesh target; no non-Mesh fallback.");
-                }
-            }
-            if (tgt == null || tgt.isEmpty()) {
-                Log.d(TAG, "Auto-connect: no saved radio address");
-                if (mapView != null) {
-                    releaseMeshBootHoldAndConnectMesh(mapView, context);
-                }
-                return;
-            }
-            android.bluetooth.BluetoothAdapter adapter =
-                    android.bluetooth.BluetoothAdapter.getDefaultAdapter();
-            if (adapter == null || !adapter.isEnabled()) {
-                Log.d(TAG, "Auto-connect: Bluetooth not available");
-                return;
-            }
-            android.bluetooth.BluetoothDevice device = adapter.getRemoteDevice(tgt);
-            Log.i(TAG, "Auto-connecting to last radio: " + tgt);
-            btConnectionManager.connect(device);
-        } catch (Exception e) {
-            Log.w(TAG, "Auto-connect failed: " + e.getMessage());
-        }
-    }
-
-    private String findMostRecentUvProAddress(Context context) {
-        try {
-            List<BtDeviceRecord> devices = BluetoothDeviceRegistry.getAllSortedForDisplay(context);
-            for (BtDeviceRecord r : devices) {
-                if (r == null || r.address == null || r.address.isEmpty()) {
-                    continue;
-                }
-                if (!isLikelyMeshRecord(r)) {
-                    return r.address;
-                }
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "Could not compute UV-PRO fallback address: " + e.getMessage());
-        }
-        return null;
-    }
-
-    private boolean isLikelyMeshRecord(BtDeviceRecord r) {
-        if (r == null) {
-            return false;
-        }
-        String[] hints = {
-                "meshcore", "meshtastic", "wismesh", "rak", "heltec", "lilygo",
-                "seeed", "seed", "sensecap", "t-echo", "tdeck", "t-deck", "mesh"
-        };
-        String[] candidates = new String[]{
-                r.customName,
-                r.lastSystemName,
-                BluetoothDeviceRegistry.getDisplayTitle(r)
-        };
-        for (String candidate : candidates) {
-            if (candidate == null) {
-                continue;
-            }
-            String n = candidate.toLowerCase(Locale.US);
-            for (String hint : hints) {
-                if (n.contains(hint)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    /** Auto-connect to the last used MeshCore device on startup if one is saved. */
-    private void autoConnectLastMesh(Context context) {
-        try {
-            if (meshBtConnectionManager == null
-                    || meshBtConnectionManager.isConnected()
-                    || meshBtConnectionManager.isConnecting()) {
-                return;
-            }
-            String tgt = com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry
-                    .getMeshConnectTargetAddress(context);
-            if (tgt == null || tgt.isEmpty()) {
-                Log.d(TAG, "Auto-connect mesh: no saved address");
-                return;
-            }
-            android.bluetooth.BluetoothAdapter adapter =
-                    android.bluetooth.BluetoothAdapter.getDefaultAdapter();
-            if (adapter == null || !adapter.isEnabled()) {
-                Log.d(TAG, "Auto-connect mesh: Bluetooth not available");
-                return;
-            }
-            android.bluetooth.BluetoothDevice device = adapter.getRemoteDevice(tgt);
-            Log.i(TAG, "Auto-connecting to last mesh device: " + tgt);
-            meshBtConnectionManager.scheduleAutoConnectTimeout(30_000);
-            meshBtConnectionManager.connect(device);
-        } catch (Exception e) {
-            Log.w(TAG, "Auto-connect mesh failed: " + e.getMessage());
         }
     }
 

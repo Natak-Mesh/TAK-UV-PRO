@@ -1,12 +1,9 @@
 package com.uvpro.plugin;
 
 import android.app.AlertDialog;
-import com.uvpro.plugin.bluetooth.MeshBluetoothForgetAll;
-import com.uvpro.plugin.bluetooth.MeshBleDeviceMatcher;
 import android.animation.ArgbEvaluator;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
-import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -41,7 +38,6 @@ import android.widget.GridLayout;
 import android.widget.CheckBox;
 import android.widget.Switch;
 import android.widget.EditText;
-import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
@@ -65,8 +61,6 @@ import com.atakmap.coremap.filesystem.FileSystemUtils;
 import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.beacon.SmartBeacon;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
-import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry;
-import com.uvpro.plugin.bluetooth.BluetoothDeviceRegistry.BtDeviceRecord;
 import com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
 import com.uvpro.plugin.bluetooth.TransmitTransportResolver;
 import com.uvpro.plugin.chat.ChatBridge;
@@ -152,10 +146,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private static final int TARGET_A = 0;
     private static final int TARGET_B = 1;
     private static final int TARGET_DIGITAL = 2;
-    private static final String[] MESH_DEVICE_NAME_HINTS = {
-            "meshcore", "meshtastic", "wismesh", "rak", "heltec", "lilygo",
-            "seeed", "sensecap", "t-echo", "tdeck", "t-deck", "mesh"
-    };
     private static final String PREF_AUGMENT_GPS_FROM_MESHCORE =
             "uvpro_augment_gps_from_meshcore";
     private static final String PREF_ATAK_WIFI_TRANSMIT =
@@ -315,14 +305,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Switch switchMeshUseCustomNodePosition;
     private TextView textMeshUseCallsignLocation;
 
-    private TextView favoritesLabel;
-    private HorizontalScrollView favoritesScroll;
-    private LinearLayout favoritesStrip;
-    private TextView meshFavoritesLabel;
-    private HorizontalScrollView meshFavoritesScroll;
-    private LinearLayout meshFavoritesStrip;
-    private TextView connectModeHint;
-
     private Switch switchEncryption;
     private View passphraseRow;
     private EditText editPassphrase;
@@ -344,9 +326,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 } catch (Exception ignored) {
                 }
             };
-    private final List<BluetoothDevice> foundDevices = new ArrayList<>();
-    private final List<BluetoothDevice> meshFoundDevices = new ArrayList<>();
-    private boolean scanForNewRadioOnly = false;
     private int txCount = 0;
     private int rxCount = 0;
     private UVProRadioControlManager radioControlManager;
@@ -381,12 +360,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private ValueAnimator updateGpsButtonPulseAnimator;
     private GradientDrawable updateGpsButtonPulseDrawable;
     private Button updateGpsPulseTargetButton;
-    private ValueAnimator scanConnectPulseAnimator;
-    private GradientDrawable scanConnectPulseDrawable;
-    private final Runnable deferredScanConnectPulseStart = this::startScanConnectButtonPulse;
-    private final Runnable deferredMeshScanPulseStart = this::startMeshScanButtonPulse;
-    private ValueAnimator meshConnectPulseAnimator;
-    private GradientDrawable meshConnectPulseDrawable;
     private ValueAnimator initialGroupSetupPulseAnimator;
     private GradientDrawable initialGroupSetupPulseDrawable;
     private final AtomicBoolean snapshotReadInFlight = new AtomicBoolean(false);
@@ -561,19 +534,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     meshSendPositionWithAdvertRequested =
                             getMeshSendPositionWithAdvertPreference(getMapView().getContext());
                     meshNodeSettingsState = null;
-                    if (device != null) {
-                        Context ctx = getMapView().getContext();
-                        BluetoothDeviceRegistry.recordConnection(ctx, device, false);
-                        BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx, device.getAddress());
-                    }
                     getMapView().post(() -> {
-                        stopMeshConnectButtonPulse(true);
                         updateMeshConnectionUI(true, name);
                         applyActiveTransmitTransport();
                         tryApplyStartupTransmitDefaults();
                         ChatBridge.collapseAllCallsignAliasDuplicates();
                         appendLog("MeshCore connected to " + name);
-                        refreshFavoriteStrip();
                         updateMeshScanButtonText();
                         scheduleMeshGpsAugmentTick();
                         scheduleMeshCallsignPositionSync();
@@ -600,7 +566,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
                             getMeshSendPositionWithAdvertPreference(getMapView().getContext());
                     meshNodeSettingsState = null;
                     getMapView().post(() -> {
-                        stopMeshConnectButtonPulse(true);
                         updateMeshConnectionUI(false, null);
                         applyActiveTransmitTransport();
                         appendLog("MeshCore disconnected: " + reason);
@@ -614,7 +579,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 @Override
                 public void onError(String error) {
                     getMapView().post(() -> {
-                        stopMeshConnectButtonPulse(true);
                         appendLog("MeshCore error: " + error);
                         updateMeshScanButtonText();
                     });
@@ -622,24 +586,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
                 @Override
                 public void onDeviceFound(BluetoothDevice device) {
-                    if (device != null) {
-                        String addr = device.getAddress();
-                        for (BluetoothDevice existing : meshFoundDevices) {
-                            if (existing != null && addr != null
-                                    && addr.equalsIgnoreCase(existing.getAddress())) {
-                                return;
-                            }
-                        }
-                        meshFoundDevices.add(device);
-                    }
-                }
-
-                @Override
-                public void onScanComplete() {
-                    getMapView().post(() -> {
-                        stopMeshConnectButtonPulse(true);
-                        showMeshDevicePicker();
-                    });
                 }
             });
             meshBtManager.addMeshStateListener(new MeshBtConnectionManager.MeshStateListener() {
@@ -817,7 +763,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
             if (meshGpsEnableRequested) {
                 meshBtManager.setMeshGpsEnabled(true);
             }
-            stopMeshConnectButtonPulse(true);
         } else {
             meshConnected = false;
             meshGpsEnabledState = null;
@@ -827,11 +772,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     getMeshSendPositionWithAdvertPreference(getMapView().getContext());
             meshNodeSettingsState = null;
             updateMeshConnectionUI(false, null);
-            if (meshBtManager != null && meshBtManager.isConnecting()) {
-                startMeshConnectButtonPulse();
-            } else {
-                stopMeshConnectButtonPulse(true);
-            }
         }
         updateMeshGpsControlsUi();
         Context mapCtx = getMapView().getContext();
@@ -871,7 +811,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
         updateDigitalEditGuardUi();
         updateDigitalOnlyButtonUi();
         updateTxPowerButtonUi();
-        refreshFavoriteStrip();
         updateScanButtonText();
         updateMeshScanButtonText();
         updateMeshChannelButtonLabel();
@@ -994,14 +933,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 getId("switch_mesh_use_custom_node_position"));
         switchAugmentGpsFromMeshcore = rootView.findViewById(getId("switch_augment_gps_from_meshcore"));
         rowAugmentGpsFromMeshcore = rootView.findViewById(getId("row_augment_gps_from_meshcore"));
-
-        favoritesLabel = rootView.findViewById(getId("favorites_label"));
-        favoritesScroll = rootView.findViewById(getId("favorites_scroll"));
-        favoritesStrip = rootView.findViewById(getId("favorites_strip"));
-        meshFavoritesLabel = rootView.findViewById(getId("mesh_favorites_label"));
-        meshFavoritesScroll = rootView.findViewById(getId("mesh_favorites_scroll"));
-        meshFavoritesStrip = rootView.findViewById(getId("mesh_favorites_strip"));
-        connectModeHint = rootView.findViewById(getId("connect_mode_hint"));
 
         // Interactive switches
         switchEncryption = rootView.findViewById(getId("switch_encryption"));
@@ -1449,23 +1380,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
             appendLog("Cancelling current connection attempt...");
             btManager.cancelConnectionAttempts();
         }
-        Context ctx = getMapView().getContext();
-        BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
-        if (adapter == null) {
-            appendLog("Bluetooth not available");
-            return;
-        }
-
-        // Favorites/direct-connect retired: the radio button always scans and discovers radios.
-        // The saved last-connected target is preserved (used for silent startup auto-connect) and
-        // is recorded again on the next successful connect.
-        foundDevices.clear();
-        scanForNewRadioOnly = true;
-        refreshFavoriteStrip();
+        appendLog("UV-PRO Bluetooth connect removed — rebuild in progress");
         updateScanButtonText();
-        appendLog("Scanning for radios...");
-        requestScanConnectButtonPulse();
-        btManager.startScan();
     }
 
     private void onMeshScanOrConnectClicked() {
@@ -1473,8 +1389,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
             appendLog("MeshCore transport unavailable");
             return;
         }
-        // User is taking manual control — cancel any background auto-connect timeout.
-        meshBtManager.cancelAutoConnectTimeout();
         if (meshBtManager.isConnected()) {
             appendLog("MeshCore already connected");
             updateMeshConnectionUI(true, meshBtManager.getConnectedDeviceName());
@@ -1483,27 +1397,15 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (meshBtManager.isConnecting()) {
             appendLog("Cancelling current MeshCore connection attempt...");
             meshBtManager.cancelConnectionAttempts();
-            stopMeshConnectButtonPulse(true);
         }
-        if (BluetoothAdapter.getDefaultAdapter() == null) {
-            appendLog("Bluetooth not available");
-            return;
-        }
-        // Favorites removed: this button always scans and opens the picker. The saved
-        // last-connected target is preserved (used for silent startup auto-connect) and is shown
-        // in the picker (greyed if not currently advertising); it is NOT cleared here.
-        meshFoundDevices.clear();
+        appendLog("UV-PRO Bluetooth connect removed — rebuild in progress");
         updateMeshScanButtonText();
-        appendLog("Scanning for MeshCore devices...");
-        requestMeshScanButtonPulse();
-        meshBtManager.startScan();
     }
 
     private void onMeshDisconnectClicked() {
         if (meshBtManager != null) {
             meshBtManager.disconnect();
         }
-        stopMeshConnectButtonPulse(true);
         meshConnected = false;
         updateMeshConnectionUI(false, null);
         appendLog("MeshCore disconnected");
@@ -1535,17 +1437,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private void updateScanButtonText() {
         if (btnScan == null) return;
-        // Favorites/direct-connect retired: the radio button is always "SCAN & CONNECT".
-        btnScan.setText("SCAN & CONNECT");
+        btnScan.setText("CONNECT");
     }
 
     private void updateMeshScanButtonText() {
         if (btnMeshScan == null || meshBtManager == null) {
             return;
         }
-        // Favorites removed: the mesh button is always SCAN & CONNECT (opens the picker). Auto-
-        // connect to the last device happens silently at startup only, not via this button.
-        btnMeshScan.setText("SCAN & CONNECT");
+        btnMeshScan.setText("CONNECT");
     }
 
     private void onMeshcoreChannelsClicked() {
@@ -3578,33 +3477,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
         return v == null ? "-" : Integer.toString(v);
     }
 
-    private void refreshFavoriteStrip() {
-        // Favorites were retired for both UV-PRO radio and MeshCore. Auto-connect now always
-        // targets the last successfully connected device (saved on every connect), so there is no
-        // favorites UI. Keep both strips hidden; the connect buttons always "SCAN & CONNECT".
-        if (favoritesStrip != null) {
-            favoritesStrip.removeAllViews();
-        }
-        if (favoritesLabel != null) {
-            favoritesLabel.setVisibility(View.GONE);
-        }
-        if (favoritesScroll != null) {
-            favoritesScroll.setVisibility(View.GONE);
-        }
-        if (connectModeHint != null) {
-            connectModeHint.setVisibility(View.GONE);
-        }
-        if (meshFavoritesStrip != null) {
-            meshFavoritesStrip.removeAllViews();
-        }
-        if (meshFavoritesLabel != null) {
-            meshFavoritesLabel.setVisibility(View.GONE);
-        }
-        if (meshFavoritesScroll != null) {
-            meshFavoritesScroll.setVisibility(View.GONE);
-        }
-    }
-
     private int getId(String name) {
         return pluginContext.getResources().getIdentifier(
                 name, "id", pluginContext.getPackageName());
@@ -3615,31 +3487,17 @@ public class UVProDropDownReceiver extends DropDownReceiver
     @Override
     public void onConnected(BluetoothDevice device) {
         radioGpsAugmentController.onRadioConnected();
-        if (device != null) {
-            BluetoothDeviceRegistry.recordConnection(getMapView().getContext(),
-                    device);
-        }
         String displayName = "Radio";
         if (device != null) {
-            BtDeviceRecord rec = BluetoothDeviceRegistry.find(
-                    getMapView().getContext(), device.getAddress());
-            if (rec != null) {
-                displayName = BluetoothDeviceRegistry.getDisplayTitle(rec);
-            } else {
-                String name = device.getName();
-                displayName = name != null ? name : device.getAddress();
-            }
+            displayName = resolveDeviceDisplayName(getMapView().getContext(), device);
         }
         final String finalDisplay = displayName;
         getMapView().post(() -> {
-            scanForNewRadioOnly = false;
-            stopScanConnectButtonPulse(true);
             updateConnectionUI(true, finalDisplay);
             applyActiveTransmitTransport();
             tryApplyStartupTransmitDefaults();
             appendLog("Connected to " + finalDisplay);
             refreshChannelGroupFromRadioAsync(true);
-            refreshFavoriteStrip();
             updateScanButtonText();
             refreshTxPowerFromRadioAsync();
             // Follow-up read: some radios return channel/settings a moment later.
@@ -3653,8 +3511,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
     public void onDisconnected(String reason) {
         radioGpsAugmentController.onRadioDisconnected();
         getMapView().post(() -> {
-            scanForNewRadioOnly = false;
-            stopScanConnectButtonPulse(true);
             clearDigitalOnlyStateUiOnly();
             updateConnectionUI(false, null);
             applyActiveTransmitTransport();
@@ -3664,38 +3520,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     @Override
     public void onError(String error) {
-        getMapView().post(() -> {
-            stopScanConnectButtonPulse(true);
-            appendLog("Error: " + error);
-        });
+        getMapView().post(() -> appendLog("Error: " + error));
     }
 
     @Override
     public void onDeviceFound(BluetoothDevice device) {
-        if (isLikelyMeshNamedDevice(device)) {
-            return;
-        }
-        String addr = device != null ? device.getAddress() : null;
-        if (addr != null) {
-            for (BluetoothDevice existing : foundDevices) {
-                if (existing != null && addr.equalsIgnoreCase(existing.getAddress())) {
-                    return;
-                }
-            }
-        }
-        foundDevices.add(device);
-        String name = device != null ? device.getName() : "Unknown";
-        final String display = addr != null ? (name + " [" + addr + "]") : name;
-        getMapView().post(() -> appendLog("Found: " + display));
-    }
-
-    @Override
-    public void onScanComplete() {
-        getMapView().post(() -> {
-            scanForNewRadioOnly = false;
-            stopScanConnectButtonPulse(true);
-            showDevicePicker();
-        });
     }
 
     // --- Contact Listener callbacks ---
@@ -3790,7 +3619,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnChannelGroup != null) btnChannelGroup.setEnabled(true);
         if (btnImportChannels != null) btnImportChannels.setEnabled(true);
         if (btnExportChannels != null) btnExportChannels.setEnabled(true);
-        refreshFavoriteStrip();
         updateScanButtonText();
         if (!connected) {
             renderChannelGrid(null);
@@ -4196,144 +4024,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 uvproTransmitEnabled,
                 meshBtManager,
                 btManager);
-    }
-
-    /**
-     * Builds a two-line title for the MeshCore picker: the heading plus persistent PIN guidance.
-     * Shown here (before the system pairing dialog steals focus) because a toast/log line is
-     * hidden behind Android's modal PIN prompt and never seen by the user.
-     */
-    private android.view.View buildMeshPickerTitle(Context ctx) {
-        android.widget.LinearLayout col = new android.widget.LinearLayout(ctx);
-        col.setOrientation(android.widget.LinearLayout.VERTICAL);
-        int pad = dip(ctx, 16);
-        col.setPadding(pad, dip(ctx, 12), pad, dip(ctx, 4));
-
-        android.widget.TextView title = new android.widget.TextView(ctx);
-        title.setText("Select MeshCore");
-        title.setTextColor(0xFFFFFFFF);
-        title.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 18);
-        title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
-        col.addView(title);
-
-        android.widget.TextView hint = new android.widget.TextView(ctx);
-        hint.setText(MeshBleDeviceMatcher.pinGuidance());
-        hint.setTextColor(0xFFB0B0B0);
-        hint.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
-        android.widget.LinearLayout.LayoutParams hp = new android.widget.LinearLayout.LayoutParams(
-                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
-                android.widget.LinearLayout.LayoutParams.WRAP_CONTENT);
-        hp.topMargin = dip(ctx, 4);
-        hint.setLayoutParams(hp);
-        col.addView(hint);
-
-        return col;
-    }
-
-    private void showMeshDevicePicker() {
-        if (meshFoundDevices.isEmpty()) {
-            appendLog("No MeshCore devices found");
-            meshBtManager.endScanPickerSession();
-            return;
-        }
-        Context ctx = getMapView().getContext();
-
-        final int count = meshFoundDevices.size();
-        final String[] names = new String[count];
-        final int[] dotColors = new int[count];
-        final int DOT_UNSEEN = 0xFFAAAAAA;   // grey
-        final int DOT_AVAILABLE = 0xFF4CAF50; // green
-        final int DOT_BUSY = 0xFFF44336;      // red
-
-        for (int i = 0; i < count; i++) {
-            BluetoothDevice dev = meshFoundDevices.get(i);
-            names[i] = resolveDeviceDisplayName(ctx, dev);
-            dotColors[i] = meshBtManager.isLiveScanDevice(dev) ? DOT_UNSEEN : DOT_UNSEEN;
-        }
-
-        android.widget.ArrayAdapter<String> adapter = new android.widget.ArrayAdapter<String>(
-                ctx, android.R.layout.select_dialog_singlechoice, names) {
-            @Override
-            public android.view.View getView(int pos, android.view.View convertView,
-                                             android.view.ViewGroup parent) {
-                android.view.View v = super.getView(pos, convertView, parent);
-                android.widget.TextView tv = v instanceof android.widget.TextView
-                        ? (android.widget.TextView) v
-                        : v.findViewById(android.R.id.text1);
-                if (tv != null) {
-                    int color = dotColors[pos];
-                    android.graphics.drawable.GradientDrawable dot =
-                            new android.graphics.drawable.GradientDrawable();
-                    dot.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-                    dot.setColor(color);
-                    int dp8 = (int) (8 * ctx.getResources().getDisplayMetrics().density);
-                    dot.setSize(dp8, dp8);
-                    tv.setCompoundDrawablesWithIntrinsicBounds(dot, null, null, null);
-                    tv.setCompoundDrawablePadding(dp8);
-                }
-                return v;
-            }
-        };
-
-        try {
-            android.app.AlertDialog dialog = new android.app.AlertDialog.Builder(ctx)
-                    .setCustomTitle(buildMeshPickerTitle(ctx))
-                    .setAdapter(adapter, (d, which) -> {
-                        if (which < 0 || which >= meshFoundDevices.size()) return;
-                        BluetoothDevice selected = meshFoundDevices.get(which);
-                        BluetoothDeviceRegistry.setMeshConnectTargetAddress(ctx,
-                                selected.getAddress());
-                        appendLog("Connecting MeshCore to " + names[which] + "...");
-                        updateMeshScanButtonText();
-                        startMeshConnectButtonPulse();
-                        meshBtManager.connectUserSelected(selected);
-                    })
-                    .setNeutralButton("Forget All", (d, w) -> onMeshForgetAllClicked())
-                    .setNegativeButton("Cancel", (d, w) -> meshBtManager.endScanPickerSession())
-                    .setOnCancelListener(d -> meshBtManager.endScanPickerSession())
-                    .show();
-
-            // Only probe devices actually seen in the live scan (in-range / advertising). The
-            // saved last-connected device, if it isn't advertising right now, stays grey ("not
-            // seen") rather than being probed — probing a non-advertising node is pointless and
-            // would falsely show red.
-            meshBtManager.prepareForAvailabilityProbes();
-            for (int i = 0; i < count; i++) {
-                final int idx = i;
-                BluetoothDevice dev = meshFoundDevices.get(i);
-                if (!meshBtManager.isLiveScanDevice(dev)) {
-                    dotColors[idx] = DOT_UNSEEN;
-                    adapter.notifyDataSetChanged();
-                    continue;
-                }
-                meshBtManager.probeDeviceAvailabilityForPicker(dev, availability ->
-                        getMapView().post(() -> {
-                            dotColors[idx] = (availability == MeshBtConnectionManager.AVAIL_AVAILABLE)
-                                    ? DOT_AVAILABLE : DOT_BUSY;
-                            adapter.notifyDataSetChanged();
-                        }));
-            }
-        } catch (Exception e) {
-            Log.e(TAG, "Error showing MeshCore picker", e);
-            appendLog("Error showing MeshCore picker");
-            meshBtManager.endScanPickerSession();
-        }
-    }
-
-    private void onMeshForgetAllClicked() {
-        Context ctx = getMapView().getContext();
-        android.bluetooth.BluetoothAdapter adapter =
-                android.bluetooth.BluetoothAdapter.getDefaultAdapter();
-        MeshBluetoothForgetAll.Result result =
-                MeshBluetoothForgetAll.forgetAll(ctx, adapter);
-        appendLog("MeshCore registry cleared (" + result.registryEntriesCleared + " entries).");
-        if (result.needsAndroidSettingsReminder()) {
-            appendLog("Some devices could not be unpaired automatically. "
-                    + "Remove them in Android Bluetooth settings if needed.");
-        }
-        meshBtManager.endScanPickerSession();
-        refreshFavoriteStrip();
-        updateMeshScanButtonText();
     }
 
     private void updateContactCount() {
@@ -6988,297 +6678,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
         repeaterLoadFocusAnimator.start();
     }
 
-    // --- Actions ---
-
-    private void showDevicePicker() {
-        if (foundDevices.isEmpty()) {
-            stopScanConnectButtonPulse(true);
-            Context ctx = getMapView().getContext();
-            if (btManager != null && !btManager.hasBondedUvProRadio()) {
-                appendLog("No paired UV-PRO radio in Android Bluetooth settings");
-                try {
-                    new AlertDialog.Builder(ctx)
-                            .setTitle("UV-PRO")
-                            .setMessage("Pair your radio in android bluetooth settings")
-                            .setPositiveButton(android.R.string.ok, null)
-                            .show();
-                } catch (Exception e) {
-                    Log.e(TAG, "Could not show pair-radio dialog", e);
-                }
-            } else {
-                appendLog("No UV-PRO radios found");
-            }
-            return;
-        }
-
-        Context ctx = getMapView().getContext();
-
-        if (foundDevices.size() == 1) {
-            stopScanConnectButtonPulse(true);
-            BluetoothDevice device = foundDevices.get(0);
-            String name = resolveDeviceDisplayName(ctx, device);
-            appendLog("Connecting to " + name + "...");
-            btManager.connect(device);
-            return;
-        }
-
-        // Multiple devices — show picker with live green/gray availability dots.
-        // Dialog appears instantly; dots update as background probes respond.
-        final int count = foundDevices.size();
-        final int[] dotColors = new int[count];
-        final String[] names = new String[count];
-        for (int i = 0; i < count; i++) {
-            names[i] = resolveDeviceDisplayName(ctx, foundDevices.get(i));
-            dotColors[i] = 0xFF888888; // gray = unknown
-        }
-
-        // Custom adapter that renders "● Name" with a colored dot
-        android.widget.ArrayAdapter<String> adapter =
-                new android.widget.ArrayAdapter<String>(ctx,
-                        android.R.layout.simple_list_item_1, names) {
-                    @Override
-                    public android.view.View getView(int pos, android.view.View cv,
-                            android.view.ViewGroup parent) {
-                        TextView tv = (TextView) super.getView(pos, cv, parent);
-                        android.text.SpannableStringBuilder sb =
-                                new android.text.SpannableStringBuilder(
-                                        "\u25CF  " + names[pos]);
-                        sb.setSpan(
-                                new android.text.style.ForegroundColorSpan(dotColors[pos]),
-                                0, 1,
-                                android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-                        tv.setText(sb);
-                        tv.setTextColor(0xFFFFFFFF);
-                        tv.setTextSize(16);
-                        return tv;
-                    }
-                };
-
-        try {
-            new AlertDialog.Builder(ctx)
-                    .setTitle("Select Radio")
-                    .setAdapter(adapter, (dialog, which) -> {
-                        BluetoothDevice selected = foundDevices.get(which);
-                        appendLog("Connecting to " + names[which] + "...");
-                        btManager.connect(selected);
-                    })
-                    .setNegativeButton("Cancel", (d, w) -> btManager.clearProbeSockets())
-                    .setOnCancelListener(d -> btManager.clearProbeSockets())
-                    .show();
-        } catch (Exception e) {
-            Log.e(TAG, "Error showing device picker", e);
-            appendLog("Error showing device picker");
-            return;
-        }
-
-        // Background probes — update dot color when each device responds
-        btManager.clearProbeSockets();
-        BluetoothAdapter btAdapter = BluetoothAdapter.getDefaultAdapter();
-        if (btAdapter != null && btAdapter.isDiscovering()) btAdapter.cancelDiscovery();
-        for (int i = 0; i < count; i++) {
-            final int idx = i;
-            final BluetoothDevice device = foundDevices.get(i);
-            new Thread(() -> {
-                android.bluetooth.BluetoothSocket socket = null;
-                try {
-                    socket = device.createRfcommSocketToServiceRecord(
-                            java.util.UUID.fromString("00001101-0000-1000-8000-00805F9B34FB"));
-                    socket.connect();
-                    btManager.addProbeSocket(device.getAddress(), socket);
-                    getMapView().post(() -> {
-                        dotColors[idx] = 0xFF00CC44; // green = available
-                        adapter.notifyDataSetChanged();
-                    });
-                } catch (Exception e) {
-                    if (socket != null) try { socket.close(); } catch (Exception ignored) {}
-                    getMapView().post(() -> {
-                        dotColors[idx] = 0xFF884444; // dim red = unavailable
-                        adapter.notifyDataSetChanged();
-                    });
-                }
-            }, "bt-probe-" + device.getAddress()).start();
-        }
-    }
-
-    /** Returns the user-assigned name for a device if one exists, otherwise the broadcast name. */
+    /** Returns the Bluetooth broadcast name, or the MAC address when name is unavailable. */
     private String resolveDeviceDisplayName(Context ctx, BluetoothDevice device) {
-        try {
-            BluetoothDeviceRegistry.BtDeviceRecord r =
-                    BluetoothDeviceRegistry.find(ctx, device.getAddress());
-            if (r != null) {
-                return BluetoothDeviceRegistry.getDisplayTitle(r);
-            }
-        } catch (Exception ignored) {
+        if (device == null) {
+            return "Unknown";
         }
         String n = device.getName();
         return n != null ? n : device.getAddress();
-    }
-
-    private boolean isLikelyMeshNamedDevice(BluetoothDevice device) {
-        if (device == null) {
-            return false;
-        }
-        String name = null;
-        try {
-            name = device.getName();
-        } catch (Exception ignored) {
-        }
-        if (name == null) {
-            return false;
-        }
-        String n = name.toLowerCase(Locale.US);
-        for (String hint : MESH_DEVICE_NAME_HINTS) {
-            if (n.contains(hint)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean isLikelyMeshRecord(BtDeviceRecord record) {
-        if (record == null) {
-            return false;
-        }
-        String[] candidates = new String[]{
-                record.customName,
-                record.lastSystemName,
-                BluetoothDeviceRegistry.getDisplayTitle(record)
-        };
-        for (String candidate : candidates) {
-            if (candidate == null) {
-                continue;
-            }
-            String n = candidate.toLowerCase(Locale.US);
-            for (String hint : MESH_DEVICE_NAME_HINTS) {
-                if (n.contains(hint)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private void requestScanConnectButtonPulse() {
-        if (getMapView() == null) {
-            startScanConnectButtonPulse();
-            return;
-        }
-        // Start after press-state is released so the pulse remains visible until picker display.
-        getMapView().removeCallbacks(deferredScanConnectPulseStart);
-        getMapView().postDelayed(deferredScanConnectPulseStart, 60L);
-    }
-
-    private void startMeshConnectButtonPulse() {
-        // Keep MeshCore connect button stable (no flashing animation) during connect attempts.
-        stopMeshConnectButtonPulse(true);
-    }
-
-    private void requestMeshScanButtonPulse() {
-        if (getMapView() == null) {
-            startMeshScanButtonPulse();
-            return;
-        }
-        // Start after press-state is released so pulse persists until device picker appears.
-        getMapView().removeCallbacks(deferredMeshScanPulseStart);
-        getMapView().postDelayed(deferredMeshScanPulseStart, 60L);
-    }
-
-    private void startMeshScanButtonPulse() {
-        if (btnMeshScan == null) {
-            return;
-        }
-        stopMeshConnectButtonPulse(false);
-        btnMeshScan.setBackgroundTintList(null);
-        meshConnectPulseDrawable = buildVfoButtonBackground(
-                COLOR_PILL_BUTTON_PRIMARY, 0x00F44336, EDIT_SELECTION_STROKE_DP);
-        btnMeshScan.setBackground(meshConnectPulseDrawable);
-        meshConnectPulseAnimator = ValueAnimator.ofObject(
-                new ArgbEvaluator(),
-                0x11F44336,
-                0xFFF44336);
-        meshConnectPulseAnimator.setDuration(260L);
-        meshConnectPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
-        meshConnectPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
-        meshConnectPulseAnimator.addUpdateListener(animation -> {
-            if (meshConnectPulseDrawable == null || btnMeshScan == null) {
-                return;
-            }
-            int color = (Integer) animation.getAnimatedValue();
-            meshConnectPulseDrawable.setStroke(
-                    dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
-            btnMeshScan.invalidate();
-        });
-        meshConnectPulseAnimator.start();
-    }
-
-    private void startScanConnectButtonPulse() {
-        if (btnScan == null) {
-            return;
-        }
-        stopScanConnectButtonPulse(false);
-        btnScan.setBackgroundTintList(null);
-        scanConnectPulseDrawable = buildVfoButtonBackground(
-                COLOR_PILL_BUTTON_PRIMARY, 0x00FFEB3B, EDIT_SELECTION_STROKE_DP);
-        btnScan.setBackground(scanConnectPulseDrawable);
-        scanConnectPulseAnimator = ValueAnimator.ofObject(
-                new ArgbEvaluator(),
-                0x11FFEB3B,
-                0xFFFFEB3B);
-        scanConnectPulseAnimator.setDuration(260L);
-        scanConnectPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
-        scanConnectPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
-        scanConnectPulseAnimator.addUpdateListener(animation -> {
-            if (scanConnectPulseDrawable == null || btnScan == null) {
-                return;
-            }
-            int color = (Integer) animation.getAnimatedValue();
-            scanConnectPulseDrawable.setStroke(
-                    dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
-            btnScan.invalidate();
-        });
-        scanConnectPulseAnimator.start();
-    }
-
-    private void stopScanConnectButtonPulse(boolean restoreBackground) {
-        if (getMapView() != null) {
-            getMapView().removeCallbacks(deferredScanConnectPulseStart);
-        }
-        ValueAnimator animator = scanConnectPulseAnimator;
-        scanConnectPulseAnimator = null;
-        if (animator != null) {
-            animator.cancel();
-        }
-        scanConnectPulseDrawable = null;
-        if (restoreBackground && btnScan != null) {
-            int bgId = pluginContext.getResources().getIdentifier(
-                    "bg_uvpro_connection_button", "drawable", pluginContext.getPackageName());
-            if (bgId != 0) {
-                btnScan.setBackgroundResource(bgId);
-            } else {
-                applyPillButtonBackground(btnScan, COLOR_PILL_BUTTON_PRIMARY);
-            }
-        }
-    }
-
-    private void stopMeshConnectButtonPulse(boolean restoreBackground) {
-        if (getMapView() != null) {
-            getMapView().removeCallbacks(deferredMeshScanPulseStart);
-        }
-        ValueAnimator animator = meshConnectPulseAnimator;
-        meshConnectPulseAnimator = null;
-        if (animator != null) {
-            animator.cancel();
-        }
-        meshConnectPulseDrawable = null;
-        if (restoreBackground && btnMeshScan != null) {
-            int bgId = pluginContext.getResources().getIdentifier(
-                    "bg_uvpro_connection_button", "drawable", pluginContext.getPackageName());
-            if (bgId != 0) {
-                btnMeshScan.setBackgroundResource(bgId);
-            } else {
-                applyPillButtonBackground(btnMeshScan, 0xFF455A64);
-            }
-        }
     }
 
     private void showSettingsDialog() {
@@ -7897,8 +7303,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
-        stopScanConnectButtonPulse(true);
-        stopMeshConnectButtonPulse(true);
         stopInitialGroupSetupPulse(true);
         if (repeaterLoadFocusAnimator != null) {
             repeaterLoadFocusAnimator.cancel();
@@ -7968,7 +7372,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
-        stopScanConnectButtonPulse(true);
         stopInitialGroupSetupPulse(true);
         if (repeaterLoadFocusAnimator != null) {
             repeaterLoadFocusAnimator.cancel();

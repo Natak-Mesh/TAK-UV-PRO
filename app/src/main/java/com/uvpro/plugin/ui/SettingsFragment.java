@@ -52,7 +52,6 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String TOOL_SETTINGS_KEY = "uvproPreference";
 
     public static final String PREF_BEACON_INTERVAL = "uvpro_beacon_interval";
-    public static final String PREF_AUTO_RECONNECT = "uvpro_auto_reconnect";
     public static final String PREF_ENCRYPTION_ENABLED = "uvpro_encryption_enabled";
     public static final String PREF_ENCRYPTION_PASSPHRASE = "uvpro_encryption_passphrase";
     public static final String PREF_RETRY_INTERVAL_MIN = "uvpro_retry_interval_min";
@@ -92,7 +91,6 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String KEY_CAT_RADIO = "uvpro_cat_radio";
 
     public static final String DEFAULT_BEACON_INTERVAL = "600";
-    public static final boolean DEFAULT_AUTO_RECONNECT = true;
     public static final String DEFAULT_RETRY_INTERVAL_MIN = "2";
     public static final String DEFAULT_RETRY_MAX = "3";
 
@@ -534,11 +532,6 @@ public class SettingsFragment extends PluginPreferenceFragment
         } catch (NumberFormatException e) {
             return 3;
         }
-    }
-
-    public static boolean isAutoReconnectEnabled(Context context) {
-        return getPrefs(context)
-                .getBoolean(PREF_AUTO_RECONNECT, DEFAULT_AUTO_RECONNECT);
     }
 
     /**

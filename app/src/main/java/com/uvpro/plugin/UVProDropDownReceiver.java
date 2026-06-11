@@ -4,6 +4,7 @@ import android.app.AlertDialog;
 import android.animation.ArgbEvaluator;
 import android.animation.ObjectAnimator;
 import android.animation.ValueAnimator;
+import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.content.DialogInterface;
@@ -62,6 +63,8 @@ import com.uvpro.plugin.aprs.AprsTrackManager;
 import com.uvpro.plugin.beacon.SmartBeacon;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
 import com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
+import com.uvpro.plugin.bluetooth.UvProBtDeviceMatcher;
+import com.uvpro.plugin.bluetooth.UvProRadioIdentCache;
 import com.uvpro.plugin.bluetooth.TransmitTransportResolver;
 import com.uvpro.plugin.chat.ChatBridge;
 import com.uvpro.plugin.location.RadioGpsAugmentController;
@@ -119,6 +122,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private static final String TAG = "UVPro.UI";
     private static final int MAX_LOG_LINES = 50;
+    /** Picker list rows: light surface + dark label (ATAK theme text is often white). */
+    private static final int RADIO_PICKER_ROW_BG = 0xFFF0F0F0;
+    private static final int RADIO_PICKER_LABEL_COLOR = 0xFF1A1A1A;
+    private static final String[] MESH_DEVICE_NAME_HINTS = {"meshcore", "mesh core", "meshtastic"};
     private static final int COLOR_A_ACTIVE = 0xFF00897B;       // Teal
     private static final int COLOR_A_SUBDUED = 0xFF2E6B63;      // Teal (subdued)
     private static final int COLOR_B_ACTIVE = 0xFF4CAF50;       // Bright Green
@@ -309,6 +316,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private View passphraseRow;
     private EditText editPassphrase;
     private Button btnSetPassphrase;
+
+    private final List<BluetoothDevice> foundDevices = new ArrayList<>();
+    private ValueAnimator scanConnectPulseAnimator;
+    private GradientDrawable scanConnectPulseDrawable;
+    private final Runnable deferredScanConnectPulseStart = this::startScanConnectButtonPulse;
+    private AlertDialog radioPickerDialog;
 
     private final LinkedList<String> logLines = new LinkedList<>();
     private final CompoundButton.OnCheckedChangeListener smartBeaconCheckedListener =
@@ -1380,8 +1393,17 @@ public class UVProDropDownReceiver extends DropDownReceiver
             appendLog("Cancelling current connection attempt...");
             btManager.cancelConnectionAttempts();
         }
-        appendLog("UV-PRO Bluetooth connect removed — rebuild in progress");
+        if (BluetoothAdapter.getDefaultAdapter() == null) {
+            appendLog("Bluetooth not available");
+            return;
+        }
+        foundDevices.clear();
+        UvProBtDeviceMatcher.clearPickerModelCache();
+        dismissRadioPickerDialog();
         updateScanButtonText();
+        appendLog("Scanning for UV-PRO / UV-50 / VR-N76 radios...");
+        requestScanConnectButtonPulse();
+        btManager.startScan();
     }
 
     private void onMeshScanOrConnectClicked() {
@@ -1437,7 +1459,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private void updateScanButtonText() {
         if (btnScan == null) return;
-        btnScan.setText("CONNECT");
+        if (btManager.isConnected()) {
+            btnScan.setText("DISCONNECT");
+        } else if (btManager.isConnecting()) {
+            btnScan.setText("CANCEL");
+        } else {
+            btnScan.setText("SCAN & CONNECT");
+        }
     }
 
     private void updateMeshScanButtonText() {
@@ -3497,14 +3525,42 @@ public class UVProDropDownReceiver extends DropDownReceiver
             applyActiveTransmitTransport();
             tryApplyStartupTransmitDefaults();
             appendLog("Connected to " + finalDisplay);
+            stopScanConnectButtonPulse(true);
+            dismissRadioPickerDialog();
             refreshChannelGroupFromRadioAsync(true);
             updateScanButtonText();
             refreshTxPowerFromRadioAsync();
             // Follow-up read: some radios return channel/settings a moment later.
             getMapView().postDelayed(this::refreshChannelGridAsync, 900L);
         });
+        refreshRadioIdentAfterConnect(device);
         AtakBroadcast.getInstance().sendBroadcast(
                 new Intent(UVProMapComponent.ACTION_BEACON_INTERVAL_CHANGED));
+    }
+
+    /** Reads BSS Ident ID after connect; does not probe during scan. */
+    private void refreshRadioIdentAfterConnect(BluetoothDevice device) {
+        if (device == null || radioControlManager == null) {
+            return;
+        }
+        final String mac = device.getAddress();
+        getMapView().postDelayed(() -> new Thread(() -> {
+            if (!btManager.isConnected()) {
+                return;
+            }
+            String ident = radioControlManager.readUserRadioId();
+            if (ident == null || ident.isEmpty()) {
+                return;
+            }
+            UvProRadioIdentCache.put(mac, ident);
+            final String label = UvProBtDeviceMatcher.formatPickerLabel(device);
+            getMapView().post(() -> {
+                if (btManager.isConnected()) {
+                    updateConnectionUI(true, label);
+                    appendLog("Radio ident: " + ident);
+                }
+            });
+        }, "uvpro-read-ident").start(), 900L);
     }
 
     @Override
@@ -3525,6 +3581,55 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     @Override
     public void onDeviceFound(BluetoothDevice device) {
+        if (isLikelyMeshNamedDevice(device)) {
+            return;
+        }
+        String addr = device != null ? device.getAddress() : null;
+        if (addr != null) {
+            for (BluetoothDevice existing : foundDevices) {
+                if (existing != null && addr.equalsIgnoreCase(existing.getAddress())) {
+                    return;
+                }
+            }
+        }
+        foundDevices.add(device);
+        final String display = UvProBtDeviceMatcher.formatPickerLabel(device);
+        getMapView().post(() -> appendLog("Found: " + display));
+    }
+
+    @Override
+    public void onScanComplete() {
+        getMapView().post(() -> {
+            stopScanConnectButtonPulse(true);
+            pruneUnbondedDiscoveryPhantoms();
+            showDevicePicker();
+        });
+    }
+
+    /** Drops unbonded rows that never had a credible live discovery hit (stale BT cache). */
+    private void pruneUnbondedDiscoveryPhantoms() {
+        java.util.Iterator<BluetoothDevice> it = foundDevices.iterator();
+        while (it.hasNext()) {
+            BluetoothDevice device = it.next();
+            if (device == null) {
+                it.remove();
+                continue;
+            }
+            int bondState = BluetoothDevice.BOND_NONE;
+            try {
+                bondState = device.getBondState();
+            } catch (Exception ignored) {
+            }
+            if (bondState == BluetoothDevice.BOND_BONDED
+                    || btManager.isRememberedScanRow(device.getAddress())) {
+                continue;
+            }
+            if (!btManager.wasSeenInLiveDiscovery(device.getAddress())) {
+                Log.i(TAG, "Pruning phantom discovery: "
+                        + UvProBtDeviceMatcher.formatPickerLabel(device));
+                it.remove();
+            }
+        }
     }
 
     // --- Contact Listener callbacks ---
@@ -6680,11 +6785,226 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     /** Returns the Bluetooth broadcast name, or the MAC address when name is unavailable. */
     private String resolveDeviceDisplayName(Context ctx, BluetoothDevice device) {
-        if (device == null) {
-            return "Unknown";
+        return UvProBtDeviceMatcher.formatPickerLabel(device);
+    }
+
+    private void showDevicePicker() {
+        if (foundDevices.isEmpty()) {
+            stopScanConnectButtonPulse(true);
+            Context ctx = getMapView().getContext();
+            appendLog("No supported radios found");
+            try {
+                new AlertDialog.Builder(ctx)
+                        .setTitle("Scan Radios")
+                        .setMessage("No UV-PRO, UV-50, or VR-N76 radios found.\n\n"
+                                + "Put the radio in pairing mode, then tap Scan & Connect again.")
+                        .setPositiveButton(android.R.string.ok, null)
+                        .show();
+            } catch (Exception e) {
+                Log.e(TAG, "Could not show empty-scan dialog", e);
+            }
+            return;
         }
-        String n = device.getName();
-        return n != null ? n : device.getAddress();
+
+        Context ctx = getMapView().getContext();
+        final int count = foundDevices.size();
+        final int[] dotColors = new int[count];
+        final String[] names = new String[count];
+        refreshPickerLabelsAndDots(ctx, names, dotColors);
+        Log.i(TAG, "Radio picker: " + count + " device(s): " + String.join(", ", names));
+
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(ctx,
+                android.R.layout.simple_list_item_1, names) {
+            @Override
+            public View getView(int pos, View cv, ViewGroup parent) {
+                TextView tv = (TextView) super.getView(pos, cv, parent);
+                bindRadioPickerRow(tv, names[pos], dotColors[pos]);
+                return tv;
+            }
+        };
+
+        try {
+            dismissRadioPickerDialog();
+            radioPickerDialog = new AlertDialog.Builder(ctx)
+                    .setTitle("Select Radio")
+                    // Do not combine setMessage + setAdapter — on many builds the list height collapses to zero.
+                    .setAdapter(adapter, (dialog, which) -> {
+                        BluetoothDevice selected = foundDevices.get(which);
+                        appendLog("Connecting to " + names[which] + "...");
+                        stopScanConnectButtonPulse(true);
+                        btManager.connect(selected);
+                    })
+                    .setNegativeButton("Cancel", (d, w) -> btManager.clearProbeSockets())
+                    .setOnCancelListener(d -> btManager.clearProbeSockets())
+                    .create();
+            radioPickerDialog.show();
+            appendLog("Select a radio (green = pair, red = in range, grey = off): "
+                    + String.join(", ", names));
+        } catch (Exception e) {
+            Log.e(TAG, "Error showing device picker", e);
+            appendLog("Error showing device picker");
+            return;
+        }
+
+        startPickerNameRefresh(adapter, names, dotColors);
+    }
+
+    private void bindRadioPickerRow(TextView tv, String name, int dotColor) {
+        Context ctx = tv.getContext();
+        SpannableStringBuilder sb = new SpannableStringBuilder("\u25CF  " + name);
+        sb.setSpan(
+                new android.text.style.ForegroundColorSpan(dotColor),
+                0, 1,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sb.setSpan(
+                new android.text.style.ForegroundColorSpan(RADIO_PICKER_LABEL_COLOR),
+                2, sb.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        tv.setText(sb);
+        tv.setTextSize(16);
+        tv.setBackgroundColor(RADIO_PICKER_ROW_BG);
+        tv.setPadding(dip(ctx, 16), dip(ctx, 12), dip(ctx, 16), dip(ctx, 12));
+        tv.setMinHeight(dip(ctx, 48));
+    }
+
+    private void refreshPickerLabelsAndDots(Context ctx, String[] names, int[] dotColors) {
+        for (int i = 0; i < foundDevices.size(); i++) {
+            BluetoothDevice device = foundDevices.get(i);
+            names[i] = UvProBtDeviceMatcher.formatPickerLabel(device);
+            int bondState = BluetoothDevice.BOND_NONE;
+            try {
+                bondState = device.getBondState();
+            } catch (Exception ignored) {
+            }
+            dotColors[i] = UvProBtDeviceMatcher.availabilityDotColor(
+                    bondState, btManager.wasSeenInLiveDiscovery(device.getAddress()));
+        }
+    }
+
+    private void startPickerNameRefresh(ArrayAdapter<String> adapter,
+                                        String[] names,
+                                        int[] dotColors) {
+        final Context ctx = getMapView().getContext();
+        final long deadline = System.currentTimeMillis() + 4000L;
+        new Thread(() -> {
+            while (System.currentTimeMillis() < deadline && radioPickerDialog != null
+                    && radioPickerDialog.isShowing()) {
+                boolean changed = false;
+                for (int i = 0; i < foundDevices.size(); i++) {
+                    BluetoothDevice device = foundDevices.get(i);
+                    String next = UvProBtDeviceMatcher.formatPickerLabel(device);
+                    if (!next.equals(names[i])) {
+                        names[i] = next;
+                        changed = true;
+                    }
+                    int bondState = BluetoothDevice.BOND_NONE;
+                    try {
+                        bondState = device.getBondState();
+                    } catch (Exception ignored) {
+                    }
+                    int nextDot = UvProBtDeviceMatcher.availabilityDotColor(
+                            bondState, btManager.wasSeenInLiveDiscovery(device.getAddress()));
+                    if (nextDot != dotColors[i]) {
+                        dotColors[i] = nextDot;
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    getMapView().post(adapter::notifyDataSetChanged);
+                }
+                try {
+                    Thread.sleep(350L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }, "uvpro-radio-picker-refresh").start();
+    }
+
+    private void dismissRadioPickerDialog() {
+        if (radioPickerDialog != null) {
+            try {
+                radioPickerDialog.dismiss();
+            } catch (Exception ignored) {
+            }
+            radioPickerDialog = null;
+        }
+    }
+
+    private boolean isLikelyMeshNamedDevice(BluetoothDevice device) {
+        if (device == null) {
+            return false;
+        }
+        String name = UvProBtDeviceMatcher.safeDeviceName(device);
+        if (name == null) {
+            return false;
+        }
+        String n = name.toLowerCase(Locale.US);
+        for (String hint : MESH_DEVICE_NAME_HINTS) {
+            if (n.contains(hint)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void requestScanConnectButtonPulse() {
+        if (getMapView() == null) {
+            startScanConnectButtonPulse();
+            return;
+        }
+        getMapView().removeCallbacks(deferredScanConnectPulseStart);
+        getMapView().postDelayed(deferredScanConnectPulseStart, 60L);
+    }
+
+    private void startScanConnectButtonPulse() {
+        if (btnScan == null) {
+            return;
+        }
+        stopScanConnectButtonPulse(false);
+        btnScan.setBackgroundTintList(null);
+        scanConnectPulseDrawable = buildVfoButtonBackground(
+                COLOR_PILL_BUTTON_PRIMARY, 0x00FFEB3B, EDIT_SELECTION_STROKE_DP);
+        btnScan.setBackground(scanConnectPulseDrawable);
+        scanConnectPulseAnimator = ValueAnimator.ofObject(
+                new ArgbEvaluator(),
+                0x11FFEB3B,
+                0xFFFFEB3B);
+        scanConnectPulseAnimator.setDuration(260L);
+        scanConnectPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        scanConnectPulseAnimator.setRepeatCount(ValueAnimator.INFINITE);
+        scanConnectPulseAnimator.addUpdateListener(animation -> {
+            if (scanConnectPulseDrawable == null || btnScan == null) {
+                return;
+            }
+            int color = (Integer) animation.getAnimatedValue();
+            scanConnectPulseDrawable.setStroke(
+                    dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
+            btnScan.invalidate();
+        });
+        scanConnectPulseAnimator.start();
+    }
+
+    private void stopScanConnectButtonPulse(boolean restoreBackground) {
+        if (getMapView() != null) {
+            getMapView().removeCallbacks(deferredScanConnectPulseStart);
+        }
+        ValueAnimator animator = scanConnectPulseAnimator;
+        scanConnectPulseAnimator = null;
+        if (animator != null) {
+            animator.cancel();
+        }
+        scanConnectPulseDrawable = null;
+        if (restoreBackground && btnScan != null) {
+            int bgId = pluginContext.getResources().getIdentifier(
+                    "bg_uvpro_connection_button", "drawable", pluginContext.getPackageName());
+            if (bgId != 0) {
+                btnScan.setBackgroundResource(bgId);
+            } else {
+                applyPillButtonBackground(btnScan, COLOR_PILL_BUTTON_PRIMARY);
+            }
+        }
     }
 
     private void showSettingsDialog() {

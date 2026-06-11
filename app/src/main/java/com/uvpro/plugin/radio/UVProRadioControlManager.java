@@ -4,6 +4,7 @@ import android.util.Log;
 
 import com.atakmap.android.maps.MapItem;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
+import com.uvpro.plugin.bluetooth.UvProRadioIdentCache;
 import com.uvpro.plugin.location.RadioGpsBridge;
 import com.uvpro.plugin.location.RadioPositionFix;
 
@@ -32,6 +33,7 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
     private static final int CMD_SET_REGION = 60;
     private static final int CMD_GET_POSITION = 76;
     private static final int CMD_GET_DEV_INFO = 4;
+    private static final int CMD_READ_BSS_SETTINGS = 33;
     private static final int CMD_REGISTER_NOTIFICATION = 6;
     private static final int CMD_EVENT_NOTIFICATION = 9;
     private static final int EVENT_HT_STATUS_CHANGED = 1;
@@ -463,6 +465,33 @@ public class UVProRadioControlManager implements BtConnectionManager.RawDataList
         } catch (Exception e) {
             Log.e(TAG, "programSelectedRepeaterAndTune failed", e);
             return new ProgramResult(false, "Programming error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Identification Information from BSS ({@code PttReleaseIdInfo}), e.g. {@code UV2}.
+     * Requires an active SPP session; returns null when unset or unreadable.
+     */
+    public String readUserRadioId() {
+        if (!btManager.isConnected()) {
+            return null;
+        }
+        try {
+            CommandReply reply = sendCommandSync(
+                    BASIC_GROUP, CMD_READ_BSS_SETTINGS, new byte[0], 3000);
+            if (reply == null || reply.status != STATUS_SUCCESS || reply.payload == null) {
+                Log.d(TAG, "READ_BSS_SETTINGS unavailable status="
+                        + (reply != null ? reply.status : "timeout"));
+                return null;
+            }
+            String ident = UvProRadioIdentCache.parseBssIdent(reply.payload);
+            if (ident != null) {
+                Log.i(TAG, "BSS Identification Information: " + ident);
+            }
+            return ident;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
         }
     }
 

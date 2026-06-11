@@ -117,6 +117,8 @@ public class BtConnectionManager {
     };
     private int passiveReconnectAttempt = 0;
     private final AtomicBoolean bootAutoConnectActive = new AtomicBoolean(false);
+    /** True while the startup boot connect attempt is still running (may outlive the 5s window). */
+    private final AtomicBoolean bootAutoConnectResolving = new AtomicBoolean(false);
     private final AtomicBoolean bootAutoConnectScheduled = new AtomicBoolean(false);
     private final AtomicInteger bootAutoConnectGeneration = new AtomicInteger(0);
     private Runnable bootAutoConnectTimeoutRunnable;
@@ -144,6 +146,8 @@ public class BtConnectionManager {
         default void onScanComplete() {}
         default void onBootAutoConnectWindowStarted() {}
         default void onBootAutoConnectWindowEnded(boolean connected) {}
+        /** Boot startup connect thread finished (success or all strategies exhausted). */
+        default void onBootAutoConnectAttemptFinished(boolean connected) {}
     }
 
     /**
@@ -226,6 +230,11 @@ public class BtConnectionManager {
         return bootAutoConnectActive.get();
     }
 
+    /** True during the initial startup connect attempt (including after the 5s window ends). */
+    public boolean isBootAutoConnectResolving() {
+        return bootAutoConnectResolving.get();
+    }
+
     /**
      * On plugin startup, try to reconnect the last connected bonded radio for up to five seconds.
      * No-op when already connected, no remembered MAC, or boot auto-connect already ran.
@@ -253,6 +262,7 @@ public class BtConnectionManager {
         }
         shouldReconnect.set(true);
         bootAutoConnectActive.set(true);
+        bootAutoConnectResolving.set(true);
         bootAutoConnectGeneration.incrementAndGet();
         final int generation = bootAutoConnectGeneration.get();
         final String target = device.getAddress();
@@ -277,6 +287,7 @@ public class BtConnectionManager {
                 mainHandler.removeCallbacks(bootAutoConnectTimeoutRunnable);
                 bootAutoConnectTimeoutRunnable = null;
             }
+            bootAutoConnectResolving.set(false);
             return;
         }
         endBootAutoConnectWindow(false);
@@ -309,7 +320,17 @@ public class BtConnectionManager {
             bootAutoConnectTimeoutRunnable = null;
         }
         Log.i(TAG, "Boot auto-connect window ended (connected=" + connectedNow + ")");
+        if (connectedNow || !connecting.get()) {
+            finishBootAutoConnectAttempt(connectedNow);
+        }
         notifyBootAutoConnectWindowEnded(connectedNow);
+    }
+
+    private void finishBootAutoConnectAttempt(boolean connectedNow) {
+        if (!bootAutoConnectResolving.getAndSet(false)) {
+            return;
+        }
+        notifyBootAutoConnectAttemptFinished(connectedNow);
     }
 
     private void notifyBootAutoConnectWindowStarted() {
@@ -321,6 +342,12 @@ public class BtConnectionManager {
     private void notifyBootAutoConnectWindowEnded(boolean connectedNow) {
         for (ConnectionListener l : listeners) {
             l.onBootAutoConnectWindowEnded(connectedNow);
+        }
+    }
+
+    private void notifyBootAutoConnectAttemptFinished(boolean connectedNow) {
+        for (ConnectionListener l : listeners) {
+            l.onBootAutoConnectAttemptFinished(connectedNow);
         }
     }
 
@@ -778,6 +805,7 @@ public class BtConnectionManager {
                     notifyError("All connection methods failed for " + devName
                             + ". Try turning the radio off/on and re-pairing.");
                     connecting.set(false);
+                    finishBootAutoConnectAttempt(false);
                     if (shouldReconnect.get()) {
                         scheduleReconnect();
                     }
@@ -807,6 +835,7 @@ public class BtConnectionManager {
                 notifyError("Connection failed: " + e.getMessage());
                 cleanup();
                 connecting.set(false);
+                finishBootAutoConnectAttempt(false);
 
                 // Auto-reconnect
                 if (shouldReconnect.get()) {
@@ -870,6 +899,7 @@ public class BtConnectionManager {
     public void cancelConnectionAttempts() {
         shouldReconnect.set(false);
         reconnectAttempts = 0;
+        bootAutoConnectResolving.set(false);
         connecting.set(false);
         connected.set(false);
         pendingBondDevice = null;
@@ -1731,6 +1761,8 @@ public class BtConnectionManager {
         cancelPassiveReconnect();
         if (bootAutoConnectActive.get()) {
             endBootAutoConnectWindow(true);
+        } else {
+            finishBootAutoConnectAttempt(true);
         }
         if (shouldPersistUvProRadioOnConnect()) {
             persistRememberedRadioMac(device);

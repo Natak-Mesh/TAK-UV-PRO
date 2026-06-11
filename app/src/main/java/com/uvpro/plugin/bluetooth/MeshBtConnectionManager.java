@@ -166,7 +166,15 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         void onUserScanStarting();
     }
 
+    /** UI hook for startup mesh auto-connect (7s fallback or post-UV-PRO). */
+    public interface MeshBootAutoConnectListener {
+        void onMeshBootAutoConnectStarted(String reason);
+        void onMeshBootAutoConnectFinished(boolean connected);
+    }
+
     private volatile BootScheduleListener bootScheduleListener;
+    private volatile MeshBootAutoConnectListener meshBootAutoConnectListener;
+    private final AtomicBoolean meshBootAutoConnectResolving = new AtomicBoolean(false);
 
     private final BleMeshAvailabilityProber availabilityProber = new BleMeshAvailabilityProber();
 
@@ -227,6 +235,14 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     public void setBootScheduleListener(BootScheduleListener listener) {
         bootScheduleListener = listener;
+    }
+
+    public void setMeshBootAutoConnectListener(MeshBootAutoConnectListener listener) {
+        meshBootAutoConnectListener = listener;
+    }
+
+    public boolean isMeshBootAutoConnectResolving() {
+        return meshBootAutoConnectResolving.get();
     }
 
     public MeshBtConnectionManager(Context context, PacketRouter packetRouter) {
@@ -794,6 +810,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         if (bootListener != null) {
             bootListener.onUserScanStarting();
         }
+        finishMeshBootAutoConnect(false);
         scanPickerSessionActive.set(true);
         scanSessionGeneration.incrementAndGet();
         autoConnectGeneration.incrementAndGet();
@@ -837,6 +854,27 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     public void cancelBootAutoConnect() {
         autoConnectGeneration.incrementAndGet();
         cancelAutoConnectTimeout();
+        meshBootAutoConnectResolving.set(false);
+    }
+
+    private void beginMeshBootAutoConnect(String reason) {
+        if (!meshBootAutoConnectResolving.compareAndSet(false, true)) {
+            return;
+        }
+        MeshBootAutoConnectListener listener = meshBootAutoConnectListener;
+        if (listener != null) {
+            listener.onMeshBootAutoConnectStarted(reason);
+        }
+    }
+
+    private void finishMeshBootAutoConnect(boolean connected) {
+        if (!meshBootAutoConnectResolving.getAndSet(false)) {
+            return;
+        }
+        MeshBootAutoConnectListener listener = meshBootAutoConnectListener;
+        if (listener != null) {
+            listener.onMeshBootAutoConnectFinished(connected);
+        }
     }
 
     private void autoConnectToSavedTargetInternal(String reason, boolean markBootAttempted) {
@@ -885,6 +923,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             return;
         }
         final int probeGeneration = autoConnectGeneration.get();
+        beginMeshBootAutoConnect(reason);
         Log.i(TAG, reason + ": probing " + tgt);
         scheduleAutoConnectTimeout(30_000);
         AvailabilityCallback onProbeResult = availability -> {
@@ -905,6 +944,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             } else {
                 cancelAutoConnectTimeout();
                 Log.i(TAG, reason + ": target not available");
+                finishMeshBootAutoConnect(false);
                 if (markBootAttempted && !connected.get()) {
                     notifyDisconnected("Boot auto-connect unavailable");
                 }
@@ -923,6 +963,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             if (!connected.get()) {
                 Log.i(TAG, "Auto-connect timeout reached — giving up");
                 connecting.set(false);
+                finishMeshBootAutoConnect(false);
                 notifyDisconnected("Auto-connect timed out");
             }
         };
@@ -1020,6 +1061,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     @Override
     public void cancelConnectionAttempts() {
         autoConnectGeneration.incrementAndGet();
+        finishMeshBootAutoConnect(false);
         cancelBootAutoConnect();
         cancelAutoConnectTimeout();
         availabilityProber.cancelAll();
@@ -1099,6 +1141,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     }
 
     private void handleConnectionLost() {
+        finishMeshBootAutoConnect(false);
         connected.set(false);
         connecting.set(false);
         ioHandler.removeCallbacks(periodicMessagePoll);
@@ -1526,6 +1569,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     protected void notifyConnected(BluetoothDevice device) {
         userInitiatedConnect.set(false);
         cancelAutoConnectTimeout();
+        finishMeshBootAutoConnect(true);
         if (device != null && device.getAddress() != null) {
             try {
                 BluetoothDeviceRegistry.setMeshConnectTargetAddress(context, device.getAddress());

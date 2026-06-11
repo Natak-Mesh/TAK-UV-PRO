@@ -540,6 +540,27 @@ public class UVProDropDownReceiver extends DropDownReceiver
         contactTracker.setListener(this);
         if (meshBtManager != null) {
             meshBtManager.addMeshChannelListener(meshChannelListener);
+            meshBtManager.setMeshBootAutoConnectListener(new MeshBtConnectionManager.MeshBootAutoConnectListener() {
+                @Override
+                public void onMeshBootAutoConnectStarted(String reason) {
+                    getMapView().post(() -> {
+                        requestMeshScanButtonPulse();
+                        updateMeshScanButtonText();
+                        appendLog("Looking for last connected MeshCore node...");
+                    });
+                }
+
+                @Override
+                public void onMeshBootAutoConnectFinished(boolean connected) {
+                    getMapView().post(() -> {
+                        if (!connected) {
+                            stopMeshConnectButtonPulse(true);
+                            updateMeshScanButtonText();
+                            appendLog("Last MeshCore node not found — tap Scan and Connect.");
+                        }
+                    });
+                }
+            });
             meshBtManager.addListener(new BtConnectionManager.ConnectionListener() {
                 @Override
                 public void onConnected(BluetoothDevice device) {
@@ -858,8 +879,12 @@ public class UVProDropDownReceiver extends DropDownReceiver
         updateDigitalOnlyButtonUi();
         updateTxPowerButtonUi();
         updateScanButtonText();
-        if (btManager.isBootAutoConnectWindowActive() && !btManager.isConnected()) {
+        if (btManager.isBootAutoConnectResolving() && !btManager.isConnected()) {
             requestScanConnectButtonPulse();
+        }
+        if (meshBtManager != null && meshBtManager.isMeshBootAutoConnectResolving()
+                && !meshBtManager.isConnected()) {
+            requestMeshScanButtonPulse();
         }
         updateMeshScanButtonText();
         updateMeshChannelButtonLabel();
@@ -1505,7 +1530,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnScan == null) return;
         if (btManager.isConnected()) {
             btnScan.setText("Connected");
-        } else if (btManager.isConnecting()) {
+        } else if (btManager.isConnecting() && !btManager.isBootAutoConnectResolving()) {
             btnScan.setText("CANCEL");
         } else {
             btnScan.setText("Scan and Connect");
@@ -3667,6 +3692,25 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     @Override
     public void onBootAutoConnectWindowEnded(boolean connected) {
+        getMapView().post(() -> {
+            if (connected) {
+                stopScanConnectButtonPulse(true);
+                updateScanButtonText();
+                return;
+            }
+            if (btManager.isBootAutoConnectResolving()) {
+                updateScanButtonText();
+                requestScanConnectButtonPulse();
+                return;
+            }
+            stopScanConnectButtonPulse(true);
+            updateScanButtonText();
+            appendLog("Last radio not found — tap Scan and Connect.");
+        });
+    }
+
+    @Override
+    public void onBootAutoConnectAttemptFinished(boolean connected) {
         getMapView().post(() -> {
             stopScanConnectButtonPulse(true);
             updateScanButtonText();
@@ -7238,7 +7282,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void startMeshConnectButtonPulse() {
-        stopMeshConnectButtonPulse(true);
+        requestMeshScanButtonPulse();
     }
 
     private void requestMeshScanButtonPulse() {

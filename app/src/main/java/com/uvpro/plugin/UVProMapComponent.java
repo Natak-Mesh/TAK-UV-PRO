@@ -2921,31 +2921,25 @@ try {
 
     private BtConnectionManager resolveBeaconTransportManager() {
         boolean preferMesh = false;
+        boolean preferUvpro = false;
         try {
             Context ctx = getBeaconPrefsContext();
             if (ctx != null) {
                 SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
                 preferMesh = prefs.getBoolean(PREF_ATAK_MESHCORE_TRANSMIT, false);
+                preferUvpro = prefs.getBoolean(
+                        com.uvpro.plugin.ui.SettingsFragment.PREF_ATAK_UVPRO_TRANSMIT, false);
             }
         } catch (Exception ignored) {
             preferMesh = false;
+            preferUvpro = false;
         }
-        if (preferMesh) {
-            if (meshBtConnectionManager != null && meshBtConnectionManager.isConnected()) {
-                return meshBtConnectionManager;
-            }
-            if (btConnectionManager != null && btConnectionManager.isConnected()) {
-                return btConnectionManager;
-            }
-            return meshBtConnectionManager != null ? meshBtConnectionManager : btConnectionManager;
-        }
-        if (btConnectionManager != null && btConnectionManager.isConnected()) {
-            return btConnectionManager;
-        }
-        if (meshBtConnectionManager != null && meshBtConnectionManager.isConnected()) {
-            return meshBtConnectionManager;
-        }
-        return null;
+        BtConnectionManager active = com.uvpro.plugin.bluetooth.TransmitTransportResolver.resolve(
+                preferMesh,
+                preferUvpro,
+                meshBtConnectionManager,
+                btConnectionManager);
+        return active != null && active.isConnected() ? active : null;
     }
 
     private boolean hasValidSelfPosition() {

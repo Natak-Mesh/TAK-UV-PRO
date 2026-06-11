@@ -64,6 +64,7 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String PREF_PING_REPLY_ENABLED = "uvpro_ping_reply_enabled";
     public static final String PREF_PING_REPLY_SAME_TRANSPORT = "uvpro_ping_reply_same_transport";
     public static final String PREF_ATAK_MESHCORE_TRANSMIT = "uvpro_atak_meshcore_transmit";
+    public static final String PREF_ATAK_UVPRO_TRANSMIT = "uvpro_atak_uvpro_transmit";
   /** National-only mesh periodic beacons — hidden until administrative unlock. */
     public static final String PREF_MESH_BEACON_ENABLED = "uvpro_mesh_beacon_enabled";
 
@@ -582,6 +583,11 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static boolean isMeshTransmitEnabled(Context context) {
         return getPrefs(context)
                 .getBoolean(PREF_ATAK_MESHCORE_TRANSMIT, false);
+    }
+
+    public static boolean isUvproTransmitEnabled(Context context) {
+        return getPrefs(context)
+                .getBoolean(PREF_ATAK_UVPRO_TRANSMIT, false);
     }
 
     public static boolean isMeshBeaconEnabled(Context context) {

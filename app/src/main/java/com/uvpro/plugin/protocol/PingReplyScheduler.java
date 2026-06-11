@@ -8,6 +8,7 @@ import android.util.Log;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.android.maps.PointMapItem;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
+import com.uvpro.plugin.bluetooth.TransmitTransportResolver;
 import com.uvpro.plugin.cot.CotBridge;
 import com.uvpro.plugin.ui.SettingsFragment;
 
@@ -154,23 +155,34 @@ public final class PingReplyScheduler {
                     ? meshTransport
                     : uvproTransport;
             if (preferred == meshTransport && !SettingsFragment.isMeshTransmitEnabled(context)) {
-                preferred = uvproTransport;
+                preferred = SettingsFragment.isUvproTransmitEnabled(context)
+                        ? uvproTransport
+                        : null;
+            } else if (preferred == uvproTransport
+                    && !SettingsFragment.isUvproTransmitEnabled(context)) {
+                preferred = SettingsFragment.isMeshTransmitEnabled(context)
+                        ? meshTransport
+                        : null;
             }
             if (preferred != null && preferred.isConnected()) {
                 return preferred;
             }
-            Log.w(TAG, "Ping reply skipped: inbound " + pendingInboundTransport
-                    + " not connected (same-transport mode, no fallback)");
-            return null;
+            return resolveTransmitWithToggleFallback(context);
         }
         BtConnectionManager active = cotBridge.getActiveBtManager();
-        if (isMeshTransport(active) && !SettingsFragment.isMeshTransmitEnabled(context)) {
-            if (uvproTransport != null && uvproTransport.isConnected()) {
-                return uvproTransport;
-            }
-            return null;
+        if (active != null && active.isConnected()) {
+            return active;
         }
-        return active;
+        return resolveTransmitWithToggleFallback(context);
+    }
+
+    private BtConnectionManager resolveTransmitWithToggleFallback(Context context) {
+        BtConnectionManager active = TransmitTransportResolver.resolve(
+                SettingsFragment.isMeshTransmitEnabled(context),
+                SettingsFragment.isUvproTransmitEnabled(context),
+                meshTransport,
+                uvproTransport);
+        return active != null && active.isConnected() ? active : null;
     }
 
     private boolean isMeshTransport(BtConnectionManager tx) {

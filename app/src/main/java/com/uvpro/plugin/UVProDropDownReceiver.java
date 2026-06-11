@@ -1386,7 +1386,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private void onScanOrConnectClicked() {
         if (btManager.isConnected()) {
-            btManager.disconnect();
             return;
         }
         if (btManager.isConnecting()) {
@@ -1460,11 +1459,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private void updateScanButtonText() {
         if (btnScan == null) return;
         if (btManager.isConnected()) {
-            btnScan.setText("DISCONNECT");
+            btnScan.setText("Connected");
         } else if (btManager.isConnecting()) {
             btnScan.setText("CANCEL");
         } else {
-            btnScan.setText("SCAN & CONNECT");
+            btnScan.setText("Scan and Connect");
         }
     }
 

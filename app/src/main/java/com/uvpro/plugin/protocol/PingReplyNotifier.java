@@ -38,8 +38,6 @@ public final class PingReplyNotifier {
         toastedReplyKeys.clear();
         Log.d(TAG, "Ping sent — awaiting replies for up to "
                 + formatWaitSeconds(context) + "s");
-        showToast(context, "Ping sent — waiting for replies (~"
-                + formatWaitSeconds(context) + "s max)");
     }
 
     /** Call after a directed position-request ping is transmitted. */

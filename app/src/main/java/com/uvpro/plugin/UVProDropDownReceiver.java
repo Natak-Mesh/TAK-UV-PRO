@@ -146,6 +146,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private static final int COLOR_REPEATER_LOAD_FILL = COLOR_PILL_BUTTON_PRIMARY;
     private static final int COLOR_REPEATER_LOAD_ARMED_STROKE = 0xFFFFEB3B;
     private static final int COLOR_CHANNEL_SECTION_STROKE = 0xFF4CAF50;
+    private static final int COLOR_BEACON_SECTION_STROKE = 0xFF00BCD4;
+    private static final int COLOR_APRS_SECTION_STROKE = 0xFFFF9800;
     private static final int CHANNEL_SECTION_STROKE_DP = 2;
     private static final String LABEL_LOAD_REPEATER = "Load Selected Repeater";
     private static final String LABEL_SELECT_CHANNEL = "Select Channel";
@@ -257,6 +259,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private TextView textAprsStatusIcon;
     private TextView textAprsStatusMessage;
     private Switch switchAprsDisableAtak;
+    private Button btnSendBeacon;
+    private Button btnSendPing;
     private Button btnSendAprsBeacon;
     private Button btnClearAprsContacts;
     private Button btnEditAprsSettings;
@@ -328,6 +332,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private final Runnable deferredMeshScanPulseStart = this::startMeshScanButtonPulse;
     private ValueAnimator meshConnectPulseAnimator;
     private GradientDrawable meshConnectPulseDrawable;
+    private ValueAnimator sendButtonPulseAnimator;
+    private GradientDrawable sendButtonPulseDrawable;
+    private Button sendButtonPulseTarget;
+    private int sendButtonPulseRestoreStroke = COLOR_BEACON_SECTION_STROKE;
     private AlertDialog radioPickerDialog;
 
     private final LinkedList<String> logLines = new LinkedList<>();
@@ -938,6 +946,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
         textAprsStatusIcon = rootView.findViewById(getId("text_aprs_status_icon"));
         textAprsStatusMessage = rootView.findViewById(getId("text_aprs_status_message"));
         switchAprsDisableAtak = rootView.findViewById(getId("switch_aprs_disable_atak"));
+        btnSendBeacon = rootView.findViewById(getId("btn_send_beacon"));
+        btnSendPing = rootView.findViewById(getId("btn_send_ping"));
         btnSendAprsBeacon = rootView.findViewById(getId("btn_send_aprs_beacon"));
         btnClearAprsContacts = rootView.findViewById(getId("btn_clear_aprs_contacts"));
         btnEditAprsSettings = rootView.findViewById(getId("btn_edit_aprs_settings"));
@@ -1283,14 +1293,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
 
         // Quick action buttons
-        View btnBeacon = rootView.findViewById(getId("btn_send_beacon"));
-        if (btnBeacon != null) {
-            btnBeacon.setOnClickListener(v -> sendManualBeacon());
+        if (btnSendBeacon != null) {
+            btnSendBeacon.setOnClickListener(v -> sendManualBeacon());
         }
-
-        View btnPing = rootView.findViewById(getId("btn_send_ping"));
-        if (btnPing != null) {
-            btnPing.setOnClickListener(v -> sendPing());
+        if (btnSendPing != null) {
+            btnSendPing.setOnClickListener(v -> sendPing());
         }
 
         View btnSettings = rootView.findViewById(getId("btn_settings"));
@@ -5374,6 +5381,77 @@ public class UVProDropDownReceiver extends DropDownReceiver
         return v;
     }
 
+    private void pulseSendButtonFeedback(Button targetButton, int idleStrokeColor) {
+        if (targetButton == null) {
+            return;
+        }
+        try {
+            targetButton.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+        } catch (Exception ignored) {
+        }
+        stopSendButtonPulse(false);
+        sendButtonPulseTarget = targetButton;
+        sendButtonPulseRestoreStroke = idleStrokeColor;
+        targetButton.setBackgroundTintList(null);
+        sendButtonPulseDrawable = buildVfoButtonBackground(
+                COLOR_PILL_BUTTON_PRIMARY, 0x00FFEB3B, EDIT_SELECTION_STROKE_DP);
+        targetButton.setBackground(sendButtonPulseDrawable);
+        sendButtonPulseAnimator = ValueAnimator.ofObject(
+                new ArgbEvaluator(),
+                0x11FFEB3B,
+                0xFFFFEB3B);
+        sendButtonPulseAnimator.setDuration(220L);
+        sendButtonPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        sendButtonPulseAnimator.setRepeatCount(4);
+        sendButtonPulseAnimator.addUpdateListener(animation -> {
+            if (sendButtonPulseDrawable == null || sendButtonPulseTarget == null) {
+                return;
+            }
+            int color = (Integer) animation.getAnimatedValue();
+            sendButtonPulseDrawable.setStroke(
+                    dip(getMapView().getContext(), EDIT_SELECTION_STROKE_DP), color);
+            sendButtonPulseTarget.invalidate();
+        });
+        sendButtonPulseAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                stopSendButtonPulse(true);
+            }
+
+            @Override
+            public void onAnimationCancel(android.animation.Animator animation) {
+                stopSendButtonPulse(true);
+            }
+        });
+        sendButtonPulseAnimator.start();
+    }
+
+    private void stopSendButtonPulse(boolean restoreBackground) {
+        ValueAnimator animator = sendButtonPulseAnimator;
+        sendButtonPulseAnimator = null;
+        if (animator != null) {
+            animator.cancel();
+        }
+        sendButtonPulseDrawable = null;
+        Button target = sendButtonPulseTarget;
+        sendButtonPulseTarget = null;
+        if (restoreBackground && target != null) {
+            target.setBackgroundTintList(null);
+            target.setBackground(buildVfoButtonBackground(
+                    COLOR_PILL_BUTTON_PRIMARY,
+                    sendButtonPulseRestoreStroke,
+                    2));
+        }
+    }
+
+    private void showActionToast(String message) {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null || message == null || message.isEmpty()) {
+            return;
+        }
+        Toast.makeText(ctx, message, Toast.LENGTH_SHORT).show();
+    }
+
     private void pulseUpdateGpsButtonFeedback(Button targetButton) {
         if (targetButton == null) {
             return;
@@ -7590,6 +7668,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void sendManualBeacon() {
+        pulseSendButtonFeedback(btnSendBeacon, COLOR_BEACON_SECTION_STROKE);
         BtConnectionManager activeTx = resolveManualBeaconTransport();
         appendLog("Beacon TX route: mode=" + resolveTransmitModeLogLabel()
                 + " meshConnected=" + (meshBtManager != null && meshBtManager.isConnected())
@@ -7613,6 +7692,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                         gp.getLatitude(), gp.getLongitude(),
                         gp.getAltitude(), 0, 0, -1);
                 appendLog("Beacon sent over " + (activeTx == meshBtManager ? "MeshCore" : "UV-PRO"));
+                showActionToast("Beacon Sent");
             } else {
                 appendLog("No self-location available");
             }
@@ -7895,6 +7975,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (ctx == null) {
             return;
         }
+        pulseSendButtonFeedback(btnSendAprsBeacon, COLOR_APRS_SECTION_STROKE);
         if (!SettingsFragment.isValidAprsCallsign(SettingsFragment.getAprsCallsign(ctx))) {
             Toast.makeText(ctx,
                     "Set a valid APRS callsign in Edit APRS Settings first.",
@@ -7909,12 +7990,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (com.uvpro.plugin.aprs.AprsOutboundTransmitter
                 .sendPositionBeacon(ctx, btManager, false)) {
             appendLog("APRS beacon sent");
+            showActionToast("APRS Beacon Sent");
         } else {
             appendLog("APRS beacon failed (OPENRL active / callsign / icon / location / silence)");
         }
     }
 
     private void sendPing() {
+        pulseSendButtonFeedback(btnSendPing, COLOR_BEACON_SECTION_STROKE);
         BtConnectionManager activeTx = resolveActiveTransmitManager();
         appendLog("Ping TX route: mode=" + resolveTransmitModeLogLabel()
                 + " wifiEnabled=" + wifiTransmitEnabled
@@ -7940,6 +8023,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 activeTx.sendKissFrame(ax25);
                 PingReplyNotifier.notePingSent(getMapView().getContext());
                 appendLog("Ping sent over " + (activeTx == meshBtManager ? "MeshCore" : "UV-PRO"));
+                showActionToast("Ping Sent");
             } catch (Exception e) {
                 appendLog("Ping failed: " + e.getMessage());
             }
@@ -7960,6 +8044,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
         stopInitialGroupSetupPulse(true);
+        stopSendButtonPulse(true);
         if (repeaterLoadFocusAnimator != null) {
             repeaterLoadFocusAnimator.cancel();
             repeaterLoadFocusAnimator = null;
@@ -8029,6 +8114,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         stopActiveVfoPulse();
         stopUpdateGpsButtonPulse(true);
         stopInitialGroupSetupPulse(true);
+        stopSendButtonPulse(true);
         if (repeaterLoadFocusAnimator != null) {
             repeaterLoadFocusAnimator.cancel();
             repeaterLoadFocusAnimator = null;

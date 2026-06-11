@@ -2,6 +2,7 @@ package com.uvpro.plugin.terminal;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.method.ScrollingMovementMethod;
@@ -18,18 +19,17 @@ import com.atakmap.android.dropdown.DropDownReceiver;
 import com.atakmap.android.maps.MapView;
 import com.uvpro.plugin.ax25.Ax25Frame;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
+import com.uvpro.plugin.kiss.KissRadioFrequencyControl;
 import com.uvpro.plugin.protocol.PacketRouter;
 import com.uvpro.plugin.ui.SettingsFragment;
 import com.uvpro.plugin.util.CallsignUtil;
 
-import java.util.ArrayDeque;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 /**
- * Basic packet terminal for BBS/Winlink-style exchanges using AX.25 connected mode.
+ * AX.25 terminal for node + bulletin-board sessions (EAGLE/KL7AA Site Summit).
+ * Node menus use UI frames; the BBS leg typically uses connected-mode I-frames.
  */
 public class PacketTerminalDropDownReceiver extends DropDownReceiver
         implements DropDown.OnStateListener, PacketRouter.Ax25FrameListener {
@@ -37,12 +37,33 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
     public static final String SHOW_PACKET_TERMINAL =
             "com.uvpro.plugin.SHOW_PACKET_TERMINAL";
 
+    private static final String PREFS_NAME = "uvpro_packet_terminal";
+    private static final String PREF_LAST_REMOTE_CALL = "last_remote_call";
+    private static final String PREF_LAST_REMOTE_SSID = "last_remote_ssid";
+
     private static final int MAX_TRANSCRIPT_CHARS = 24_000;
     private static final int MAX_PAYLOAD_BYTES = 180;
-    private static final int TERMINAL_LOCAL_SSID = 0;
-    private static final int TX_WINDOW_SIZE = 3;
-    private static final int TX_RETRY_LIMIT = 5;
+    /** Digipeater / other station — never show or route in this terminal. */
+    private static final String IGNORE_CALLSIGN = "KW4MP";
+    /** EAGLE node alias on Site Summit (KL7AA-7 node, KL7AA-5 BBS). */
+    private static final String EAGLE_NODE_CALL = "EAGLE";
+    private static final String EAGLE_SITE_CALL = "KL7AA";
+    private static final int KL7AA_BBS_SSID = 5;
     private static final long TX_ACK_TIMEOUT_MS = 3_500L;
+    private static final int TX_RETRY_LIMIT = 5;
+    private static final long KEEPALIVE_MS = 28_000L;
+    private static final long SABM_RETRY_MS = 4_000L;
+    private static final int SABM_RETRY_LIMIT = 10;
+    /** Reconnect if BBS stops answering (no DISC frame). */
+    private static final long BBS_STALL_MS = 60_000L;
+    /** Spacing between hangup KISS frames so the UV-PRO TNC keys RF for each one. */
+    private static final long HANGUP_STEP_MS = 850L;
+
+    private enum BbsLinkState {
+        IDLE,
+        CONNECTING,
+        CONNECTED
+    }
 
     private final Context pluginContext;
     private final BtConnectionManager btManager;
@@ -61,22 +82,34 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
 
     private enum SessionState {
         IDLE,
-        CONNECTING,
-        CONNECTED
+        ACTIVE
     }
 
     private volatile SessionState sessionState = SessionState.IDLE;
-    private String remoteCall = "";
-    private int remoteSsid = 0;
-    private int txSeq = 0;
-    private int rxSeq = 0;
+    /** User-configured node (e.g. EAGLE-0). */
+    private String nodeCall = "";
+    private int nodeSsid = 0;
+    /** Learned BBS peer after C &lt;call&gt; (e.g. KL7AA-5). */
+    private String bbsPeerCall = "";
+    private int bbsPeerSsid = 0;
     private String localCall = "";
-    private int localSsid = TERMINAL_LOCAL_SSID;
-    private final StringBuilder transcript = new StringBuilder();
-    private final ArrayDeque<byte[]> outboundQueue = new ArrayDeque<>();
-    private final LinkedHashMap<Integer, PendingIFrame> pendingTx = new LinkedHashMap<>();
+    private int localSsid = 0;
+    private int bbsRxSeq = 0;
+    private int bbsTxSeq = 0;
+    private BbsLinkState bbsLinkState = BbsLinkState.IDLE;
+    private PendingIFrame pendingBbsTx = null;
+    private int sabmAttempts = 0;
+    private long lastBbsRxMs = 0L;
+    private volatile boolean hangupInProgress = false;
+    private int hangupStep = 0;
+    private boolean hangupEndSession = false;
+    private boolean hangupHadConnectedLink = false;
     private final Handler sessionHandler = new Handler(Looper.getMainLooper());
     private final Runnable retransmitTick = this::onRetransmitTick;
+    private final Runnable keepaliveTick = this::onKeepaliveTick;
+    private final Runnable sabmRetryTick = this::onSabmRetryTick;
+    private final Runnable hangupStepTick = this::onHangupStepTick;
+    private final StringBuilder transcript = new StringBuilder();
 
     private static final class PendingIFrame {
         final int seq;
@@ -124,269 +157,331 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
     }
 
     @Override
-    public void onAx25Frame(Ax25Frame frame) {
-        if (frame == null) {
-            return;
+    public boolean onAx25Frame(Ax25Frame frame) {
+        if (frame == null || sessionState != SessionState.ACTIVE) {
+            return false;
         }
         final String src = frame.getSrcCallsign();
+        final String dest = frame.getDestCallsign();
         final int srcSsid = frame.getSrcSsid();
         final int control = frame.getControlField() & 0xFF;
+        final byte[] info = frame.getInfoField();
 
-        // Accept first inbound SABM while idle even if remote fields are not pre-populated.
-        if (!isFromRemote(src, srcSsid)) {
-            if (sessionState == SessionState.IDLE
-                    && control == (Ax25Frame.CONTROL_SABM & 0xFF)) {
-                remoteCall = normalizeCallsign(src);
-                remoteSsid = srcSsid;
-                if (localCall.isEmpty()) {
-                    localCall = resolveLocalCallsign();
-                }
-                localSsid = resolveLocalSsid();
-                appendTranscript(String.format(Locale.US,
-                        "* Incoming link request from %s-%d (SABM)\n",
-                        remoteCall, remoteSsid));
-            } else {
-                Log.d("UVPro.Terminal", String.format(Locale.US,
-                        "drop frame src=%s-%d expected=%s-%d ctrl=0x%02X state=%s",
-                        normalizeCallsign(src), srcSsid, remoteCall, remoteSsid, control, sessionState));
-                return;
-            }
+        if (shouldIgnoreCallsign(src) || shouldIgnoreCallsign(dest)) {
+            return false;
+        }
+        String srcNorm = normalizeCallsign(src);
+        if (isBbsLinkSource(srcNorm, srcSsid)
+                && handleBbsLinkControl(srcNorm, srcSsid, control)) {
+            return true;
+        }
+        if (!isTerminalControl(control)) {
+            return false;
+        }
+        if (!acceptRemoteEndpoint(src, srcSsid, info, control)) {
+            Log.d("UVPro.Terminal", String.format(Locale.US,
+                    "drop frame src=%s-%d node=%s-%d bbs=%s-%d ctrl=0x%02X",
+                    normalizeCallsign(src), srcSsid, nodeCall, nodeSsid,
+                    bbsPeerCall, bbsPeerSsid, control));
+            return false;
         }
         MapView mv = getMapView();
         if (mv != null) {
             mv.post(() -> handleInboundFrame(frame, control));
+        } else {
+            handleInboundFrame(frame, control);
         }
+        return true;
     }
 
     private void handleInboundFrame(Ax25Frame frame, int control) {
         String frameDest = normalizeCallsign(frame.getDestCallsign());
-        if (!localCall.isEmpty() && !frameDest.equalsIgnoreCase(localCall)) {
+        if (!acceptsLocalDest(frameDest)) {
+            Log.d("UVPro.Terminal", String.format(Locale.US,
+                    "drop dest=%s local=%s", frameDest, localCall));
             return;
         }
-        if (control == (Ax25Frame.CONTROL_UA & 0xFF)) {
-            if (sessionState == SessionState.CONNECTING || sessionState == SessionState.CONNECTED) {
-                sessionState = SessionState.CONNECTED;
-                appendTranscript("* Link established (UA)\n");
-                Log.d("UVPro.Terminal", "link established via UA");
-                refreshStatus();
-            }
-            return;
-        }
-        if (control == (Ax25Frame.CONTROL_DISC & 0xFF)) {
-            appendTranscript("* Remote requested disconnect\n");
-            sendControlFrame(Ax25Frame.CONTROL_UA);
-            setSessionIdle();
-            refreshStatus();
-            return;
-        }
-        if (control == (Ax25Frame.CONTROL_SABM & 0xFF)) {
-            appendTranscript("* Remote requested link (SABM)\n");
-            sendControlFrame(Ax25Frame.CONTROL_UA);
-            // Treat inbound SABM as an active link request even if we already pressed Connect.
-            // This avoids a deadlock when both sides initiate simultaneously.
-            if (sessionState != SessionState.CONNECTED) {
-                sessionState = SessionState.CONNECTED;
-                Log.d("UVPro.Terminal", "link established via SABM");
-                refreshStatus();
-            }
-            return;
-        }
-        if (isRrFrame(control)) {
+        if (isIFrame(control)) {
+            markBbsActivity();
+            promoteBbsLinkConnected("data");
+            int ns = (control >> 1) & 0x07;
             int nr = (control >> 5) & 0x07;
-            acknowledgeUpTo(nr);
-            pumpOutboundQueue();
+            acknowledgeBbsUpTo(nr);
+            bbsRxSeq = (ns + 1) & 0x07;
+            final String text = sanitizeIncomingText(frame.getInfoField());
+            if (!text.isEmpty()) {
+                appendTranscript("< " + text + "\n");
+            }
+            sendBbsRrAck();
             refreshStatus();
             return;
         }
-        if (!isIFrame(control)) {
-            return;
-        }
-
-        int ns = (control >> 1) & 0x07;
-        int nr = (control >> 5) & 0x07;
-        acknowledgeUpTo(nr);
-        if (ns != rxSeq) {
-            appendTranscript(String.format(Locale.US,
-                    "* Out-of-order frame ns=%d expected=%d (re-ACK)\n", ns, rxSeq));
-            sendRrAck();
-            pumpOutboundQueue();
+        if (control == (Ax25Frame.CONTROL_UI & 0xFF)) {
+            markBbsActivity();
+            final String text = sanitizeIncomingText(frame.getInfoField());
+            if (!text.isEmpty()) {
+                appendTranscript("< " + text + "\n");
+            }
             refreshStatus();
-            return;
         }
-        rxSeq = (ns + 1) & 0x07;
-        txSeq = nr & 0x07;
+    }
 
-        final String text = sanitizeIncomingText(frame.getInfoField());
-        if (!text.isEmpty()) {
-            appendTranscript("< " + text + "\n");
-        }
-        sendRrAck();
-        pumpOutboundQueue();
-        refreshStatus();
+    private void markBbsActivity() {
+        lastBbsRxMs = System.currentTimeMillis();
+    }
+
+    private static boolean isTerminalControl(int control) {
+        return control == (Ax25Frame.CONTROL_UI & 0xFF) || isIFrame(control);
     }
 
     private static boolean isIFrame(int control) {
         return (control & 0x01) == 0;
     }
 
-    private static boolean isRrFrame(int control) {
-        return (control & 0x0F) == Ax25Frame.CONTROL_RR_BASE;
-    }
-
-    private void sendRrAck() {
-        if (sessionState == SessionState.IDLE) {
-            return;
-        }
-        String localCall = resolveLocalCallsign();
-        int localSsid = resolveLocalSsid();
-        Ax25Frame rr = Ax25Frame.createRrFrame(
-                localCall, localSsid, remoteCall, remoteSsid, rxSeq);
-        btManager.sendKissFrame(rr.encode());
-    }
-
-    private void queueTextForTransmit(String text) {
-        if (text == null || text.isEmpty()) {
-            return;
-        }
-        byte[] all = text.getBytes(StandardCharsets.UTF_8);
-        int pos = 0;
-        while (pos < all.length) {
-            int n = Math.min(MAX_PAYLOAD_BYTES, all.length - pos);
-            byte[] chunk = new byte[n];
-            System.arraycopy(all, pos, chunk, 0, n);
-            outboundQueue.addLast(chunk);
-            pos += n;
-        }
-    }
-
-    private void pumpOutboundQueue() {
-        if (sessionState != SessionState.CONNECTED) {
-            return;
-        }
-        while (!outboundQueue.isEmpty() && pendingTx.size() < TX_WINDOW_SIZE) {
-            byte[] payload = outboundQueue.pollFirst();
-            if (payload == null) {
-                continue;
-            }
-            int seq = txSeq & 0x07;
-            if (sendIFrame(seq, payload)) {
-                long now = System.currentTimeMillis();
-                pendingTx.put(seq, new PendingIFrame(seq, payload, now, 0));
-                txSeq = (txSeq + 1) & 0x07;
-                scheduleRetransmitTick();
-            } else {
-                // Put it back and abort send burst on TX failure.
-                outboundQueue.addFirst(payload);
-                appendTranscript("! TX failed\n");
-                break;
-            }
-        }
-        refreshStatus();
-    }
-
-    private boolean sendIFrame(int seq, byte[] payload) {
-        Ax25Frame frame = Ax25Frame.createIFrame(
-                localCall, localSsid, remoteCall, remoteSsid, seq, rxSeq, payload);
-        return btManager != null && btManager.sendKissFrame(frame.encode());
-    }
-
-    private void acknowledgeUpTo(int nr) {
-        if (pendingTx.isEmpty()) {
-            return;
-        }
-        boolean removedAny = false;
-        Iterator<Integer> it = pendingTx.keySet().iterator();
-        while (it.hasNext()) {
-            int seq = it.next();
-            if (seq == nr) {
-                break;
-            }
-            it.remove();
-            removedAny = true;
-        }
-        if (removedAny) {
-            appendTranscript(String.format(Locale.US, "* ACK up to Nr=%d\n", nr));
-        }
-        if (pendingTx.isEmpty()) {
-            cancelRetransmitTick();
-        } else {
-            scheduleRetransmitTick();
-        }
-    }
-
-    private void onRetransmitTick() {
-        if (sessionState != SessionState.CONNECTED || pendingTx.isEmpty()) {
-            cancelRetransmitTick();
-            return;
-        }
-        long now = System.currentTimeMillis();
-        for (PendingIFrame pending : pendingTx.values()) {
-            if ((now - pending.sentAtMs) < TX_ACK_TIMEOUT_MS) {
-                continue;
-            }
-            if (pending.retryCount >= TX_RETRY_LIMIT) {
-                appendTranscript(String.format(Locale.US,
-                        "! Link timeout waiting ACK for seq=%d\n", pending.seq));
-                setSessionIdle();
-                refreshStatus();
-                return;
-            }
-            if (sendIFrame(pending.seq, pending.payload)) {
-                pending.retryCount++;
-                pending.sentAtMs = now;
-                appendTranscript(String.format(Locale.US,
-                        "* Retransmit seq=%d retry=%d\n", pending.seq, pending.retryCount));
-            } else {
-                appendTranscript("! Retransmit failed\n");
-                break;
-            }
-        }
-        scheduleRetransmitTick();
-    }
-
-    private void scheduleRetransmitTick() {
-        sessionHandler.removeCallbacks(retransmitTick);
-        sessionHandler.postDelayed(retransmitTick, 500L);
-    }
-
-    private void cancelRetransmitTick() {
-        sessionHandler.removeCallbacks(retransmitTick);
-    }
-
-    private void setSessionIdle() {
-        sessionState = SessionState.IDLE;
-        outboundQueue.clear();
-        pendingTx.clear();
-        cancelRetransmitTick();
-    }
-
-    private void sendControlFrame(byte controlField) {
-        if (btManager == null || !btManager.isConnected()) {
-            return;
-        }
-        if (localCall.isEmpty()) {
-            localCall = resolveLocalCallsign();
-        }
-        if (localCall.isEmpty() || remoteCall.isEmpty()) {
-            return;
-        }
-        Ax25Frame frame = Ax25Frame.createControlFrame(
-                localCall, localSsid, remoteCall, remoteSsid, controlField);
-        btManager.sendKissFrame(frame.encode());
-    }
-
-    private boolean isFromRemote(String srcCallsign, int srcSsid) {
-        if (srcCallsign == null || srcCallsign.trim().isEmpty()) {
+    private boolean acceptRemoteEndpoint(String srcCallsign, int srcSsid,
+                                         byte[] info, int control) {
+        if (srcCallsign == null || srcCallsign.trim().isEmpty() || nodeCall.isEmpty()) {
             return false;
         }
         String src = normalizeCallsign(srcCallsign);
         if (src.isEmpty()) {
             return false;
         }
-        if (!src.equalsIgnoreCase(remoteCall)) {
+        if (shouldIgnoreCallsign(src)) {
             return false;
         }
-        return srcSsid == remoteSsid;
+        if (src.equalsIgnoreCase(nodeCall)) {
+            if (srcSsid != nodeSsid) {
+                nodeSsid = srcSsid;
+            }
+            return true;
+        }
+        if (isEagleSiteCall(src)) {
+            return trackEagleSiteEndpoint(src, srcSsid, info, control);
+        }
+        if (!bbsPeerCall.isEmpty() && src.equalsIgnoreCase(bbsPeerCall)) {
+            if (srcSsid != bbsPeerSsid) {
+                bbsPeerSsid = srcSsid;
+            }
+            return true;
+        }
+        if (maybeLearnBbsPeer(src, srcSsid, info, control)) {
+            return true;
+        }
+        return false;
+    }
+
+    /** EAGLE and KL7AA are the same Site Summit node/BBS system. */
+    private boolean isEagleSiteSession() {
+        return EAGLE_NODE_CALL.equalsIgnoreCase(nodeCall)
+                || EAGLE_SITE_CALL.equalsIgnoreCase(nodeCall);
+    }
+
+    private boolean isEagleSiteCall(String call) {
+        if (!isEagleSiteSession()) {
+            return false;
+        }
+        String c = normalizeCallsign(call);
+        return EAGLE_NODE_CALL.equalsIgnoreCase(c) || EAGLE_SITE_CALL.equalsIgnoreCase(c);
+    }
+
+    private boolean isBbsPeer(String srcNorm, int srcSsid) {
+        if (bbsPeerCall.isEmpty() || srcNorm.isEmpty()) {
+            return false;
+        }
+        return srcNorm.equalsIgnoreCase(bbsPeerCall);
+    }
+
+    private boolean isBbsLinkSource(String srcNorm, int srcSsid) {
+        if (isBbsPeer(srcNorm, srcSsid)) {
+            return true;
+        }
+        return isEagleSiteBbsSource(srcNorm);
+    }
+
+    private boolean isEagleSiteBbsSource(String srcNorm) {
+        return isEagleSiteSession()
+                && EAGLE_SITE_CALL.equalsIgnoreCase(srcNorm);
+    }
+
+    private void ensureBbsPeerFromSource(String srcNorm, int srcSsid) {
+        if (bbsPeerCall.isEmpty() && !srcNorm.isEmpty()) {
+            bbsPeerCall = srcNorm;
+            bbsPeerSsid = srcSsid;
+        } else if (srcNorm.equalsIgnoreCase(bbsPeerCall) && srcSsid != bbsPeerSsid) {
+            bbsPeerSsid = srcSsid;
+        }
+    }
+
+    private boolean handleBbsLinkControl(String srcNorm, int srcSsid, int control) {
+        if (!isBbsLinkSource(srcNorm, srcSsid)) {
+            return false;
+        }
+        ensureBbsPeerFromSource(srcNorm, srcSsid);
+        markBbsActivity();
+        if (control == (Ax25Frame.CONTROL_UA & 0xFF)) {
+            if (hangupInProgress || bbsLinkState == BbsLinkState.IDLE) {
+                Log.d("UVPro.Terminal", String.format(Locale.US,
+                        "ua during hangup from %s-%d", srcNorm, srcSsid));
+                return true;
+            }
+            promoteBbsLinkConnected("UA");
+            return true;
+        }
+        if (control == (Ax25Frame.CONTROL_SABM & 0xFF)) {
+            if (hangupInProgress) {
+                sendControlToBbs(Ax25Frame.CONTROL_UA);
+                return true;
+            }
+            sendControlToBbs(Ax25Frame.CONTROL_UA);
+            promoteBbsLinkConnected("SABM");
+            return true;
+        }
+        if (isDiscControl(control)) {
+            Log.i("UVPro.Terminal", String.format(Locale.US,
+                    "bbs DISC from %s-%d ctrl=0x%02X", srcNorm, srcSsid, control));
+            sendControlToBbs(Ax25Frame.CONTROL_UA);
+            if (!hangupInProgress) {
+                beginBbsReconnect("BBS disconnected");
+            }
+            return true;
+        }
+        if (isRrFrame(control)) {
+            int nr = (control >> 5) & 0x07;
+            acknowledgeBbsUpTo(nr);
+            return true;
+        }
+        return false;
+    }
+
+    private void beginBbsReconnect(String reason) {
+        if (sessionState != SessionState.ACTIVE || hangupInProgress) {
+            return;
+        }
+        Log.i("UVPro.Terminal", "bbs reconnect: " + reason);
+        appendTranscript(String.format(Locale.US, "* %s — reconnecting\n", reason));
+        pendingBbsTx = null;
+        bbsRxSeq = 0;
+        bbsTxSeq = 0;
+        lastBbsRxMs = 0L;
+        bbsLinkState = BbsLinkState.CONNECTING;
+        sabmAttempts = 0;
+        cancelKeepalive();
+        cancelRetransmitTick();
+        if (bbsPeerCall.isEmpty() && isEagleSiteSession()) {
+            if (EAGLE_NODE_CALL.equalsIgnoreCase(nodeCall)) {
+                bbsPeerCall = EAGLE_SITE_CALL;
+                bbsPeerSsid = resolveKl7aaBbsSsid(nodeSsid);
+            } else {
+                bbsPeerCall = nodeCall;
+                bbsPeerSsid = resolveKl7aaBbsSsid(nodeSsid);
+            }
+        }
+        sendSabm();
+        scheduleSabmRetry();
+        refreshStatus();
+    }
+
+    private void acknowledgeBbsUpTo(int nr) {
+        if (pendingBbsTx == null) {
+            bbsTxSeq = nr & 0x07;
+            cancelRetransmitTick();
+            return;
+        }
+        int ackSeq = (pendingBbsTx.seq + 1) & 0x07;
+        if (nr != ackSeq) {
+            return;
+        }
+        bbsTxSeq = ackSeq;
+        pendingBbsTx = null;
+        cancelRetransmitTick();
+    }
+
+    private static boolean isRrFrame(int control) {
+        return (control & 0x0F) == Ax25Frame.CONTROL_RR_BASE;
+    }
+
+    private void promoteBbsLinkConnected(String reason) {
+        if (bbsLinkState == BbsLinkState.CONNECTED) {
+            return;
+        }
+        bbsLinkState = BbsLinkState.CONNECTED;
+        sabmAttempts = 0;
+        markBbsActivity();
+        cancelSabmRetry();
+        scheduleKeepalive();
+        appendTranscript(String.format(Locale.US, "* BBS link active (%s)\n", reason));
+        Log.d("UVPro.Terminal", "bbs link active via " + reason);
+        refreshStatus();
+    }
+
+    private boolean trackEagleSiteEndpoint(String src, int srcSsid, byte[] info, int control) {
+        String call = normalizeCallsign(src);
+        if (EAGLE_NODE_CALL.equalsIgnoreCase(call)) {
+            if (srcSsid != nodeSsid) {
+                nodeSsid = srcSsid;
+            }
+            return true;
+        }
+        if (EAGLE_SITE_CALL.equalsIgnoreCase(call)) {
+            if (isIFrame(control) && info != null && info.length > 0) {
+                adoptBbsPeer(call, srcSsid, "EAGLE BBS");
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private boolean maybeLearnBbsPeer(String src, int srcSsid, byte[] info, int control) {
+        if (src.equalsIgnoreCase(nodeCall) || shouldIgnoreCallsign(src)) {
+            return false;
+        }
+        if (info == null || info.length == 0) {
+            return false;
+        }
+        if (!isIFrame(control) && control != (Ax25Frame.CONTROL_UI & 0xFF)) {
+            return false;
+        }
+        String text = sanitizeIncomingText(info);
+        if (text.isEmpty()) {
+            return false;
+        }
+        adoptBbsPeer(src, srcSsid, "BBS");
+        return true;
+    }
+
+    private void adoptBbsPeer(String call, int ssid, String label) {
+        bbsPeerCall = normalizeCallsign(call);
+        bbsPeerSsid = ssid;
+        bbsRxSeq = 0;
+        bbsTxSeq = 0;
+        appendTranscript(String.format(Locale.US,
+                "* %s on %s-%d\n", label, bbsPeerCall, bbsPeerSsid));
+        Log.d("UVPro.Terminal", String.format(Locale.US,
+                "%s on %s-%d", label, bbsPeerCall, bbsPeerSsid));
+        refreshStatus();
+    }
+
+    private static boolean shouldIgnoreCallsign(String call) {
+        return IGNORE_CALLSIGN.equalsIgnoreCase(normalizeCallsign(call));
+    }
+
+    private boolean acceptsLocalDest(String frameDest) {
+        if (frameDest.isEmpty()) {
+            return true;
+        }
+        if (shouldIgnoreCallsign(frameDest)) {
+            return false;
+        }
+        if ("APRS".equalsIgnoreCase(frameDest) || "OPENRL".equalsIgnoreCase(frameDest)) {
+            return false;
+        }
+        if (!localCall.isEmpty() && frameDest.equalsIgnoreCase(localCall)) {
+            return true;
+        }
+        Context ctx = getMapView() != null ? getMapView().getContext() : pluginContext;
+        String aprs = normalizeCallsign(SettingsFragment.getAprsCallsign(ctx));
+        return !aprs.isEmpty() && frameDest.equalsIgnoreCase(aprs);
     }
 
     private void ensurePanel() {
@@ -438,9 +533,20 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
                 }
             });
         }
+        restoreLastRemoteStation();
     }
 
     private void startSession() {
+        if (hangupInProgress) {
+            cancelHangupTimers();
+            hangupInProgress = false;
+            hangupStep = 0;
+            hangupHadConnectedLink = false;
+        }
+        if (btManager == null || !btManager.isConnected()) {
+            toast("Radio not connected.");
+            return;
+        }
         String remoteRaw = remoteCallInput != null
                 ? remoteCallInput.getText().toString()
                 : "";
@@ -453,6 +559,7 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
             return;
         }
         int ssid = parseSsid(remoteEndpoint[1]);
+        saveLastRemoteStation(remoteRaw.trim(), uiSsid);
         String computedLocal = resolveLocalCallsign();
         if (computedLocal.isEmpty()) {
             toast("Could not resolve local callsign.");
@@ -460,38 +567,60 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
         }
         localCall = computedLocal;
         localSsid = resolveLocalSsid();
-        remoteCall = call;
-        remoteSsid = ssid;
-        txSeq = 0;
-        rxSeq = 0;
-        outboundQueue.clear();
-        pendingTx.clear();
-        sessionState = SessionState.CONNECTING;
-        sendControlFrame(Ax25Frame.CONTROL_SABM);
+        nodeCall = call;
+        nodeSsid = ssid;
+        bbsPeerCall = "";
+        bbsPeerSsid = 0;
+        bbsRxSeq = 0;
+        bbsTxSeq = 0;
+        bbsLinkState = BbsLinkState.IDLE;
+        sessionState = SessionState.ACTIVE;
         appendTranscript(String.format(Locale.US,
-                "* Local %s-%d -> Remote %s-%d (SABM)\n",
-                localCall, localSsid, remoteCall, remoteSsid));
+                "* Session %s-%d remote %s-%d\n",
+                localCall, localSsid, nodeCall, nodeSsid));
         Log.d("UVPro.Terminal", String.format(Locale.US,
-                "connect local=%s-%d remote=%s-%d",
-                localCall, localSsid, remoteCall, remoteSsid));
+                "session local=%s-%d remote=%s-%d",
+                localCall, localSsid, nodeCall, nodeSsid));
+        warnIfKissNotLocked();
+        if (isEagleSiteSession()) {
+            openDirectBbsLink();
+        }
         refreshStatus();
+    }
+
+    private void openDirectBbsLink() {
+        if (EAGLE_NODE_CALL.equalsIgnoreCase(nodeCall)) {
+            bbsPeerCall = EAGLE_SITE_CALL;
+            bbsPeerSsid = resolveKl7aaBbsSsid(nodeSsid);
+        } else {
+            bbsPeerCall = nodeCall;
+            bbsPeerSsid = resolveKl7aaBbsSsid(nodeSsid);
+        }
+        bbsRxSeq = 0;
+        bbsTxSeq = 0;
+        bbsLinkState = BbsLinkState.CONNECTING;
+        sabmAttempts = 0;
+        pendingBbsTx = null;
+        appendTranscript(String.format(Locale.US,
+                "* Connecting to BBS %s-%d (SABM)\n", bbsPeerCall, bbsPeerSsid));
+        sendSabm();
+        scheduleSabmRetry();
+    }
+
+    private static int resolveKl7aaBbsSsid(int enteredSsid) {
+        return enteredSsid == 0 ? KL7AA_BBS_SSID : enteredSsid;
     }
 
     private void stopSession() {
         if (sessionState == SessionState.IDLE) {
             return;
         }
-        if (sessionState == SessionState.CONNECTED || sessionState == SessionState.CONNECTING) {
-            sendControlFrame(Ax25Frame.CONTROL_DISC);
-        }
-        setSessionIdle();
-        appendTranscript("* Session stopped (DISC)\n");
-        refreshStatus();
+        initiateBbsHangup("Disconnect button", true);
     }
 
     private void sendLine() {
-        if (sessionState != SessionState.CONNECTED) {
-            toast("Terminal link is not connected yet.");
+        if (sessionState != SessionState.ACTIVE) {
+            toast("Press Connect to open session first.");
             return;
         }
         if (btManager == null || !btManager.isConnected()) {
@@ -508,16 +637,423 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
             toast("Set local callsign first.");
             return;
         }
+        warnIfKissNotLocked();
         String line = lineInput != null ? lineInput.getText().toString() : "";
         if (line == null || line.trim().isEmpty()) {
             return;
         }
-        queueTextForTransmit(line + "\r");
         appendTranscript("> " + line + "\n");
-        pumpOutboundQueue();
+        if (isBbsDisconnectCommand(line)) {
+            if (lineInput != null) {
+                lineInput.setText("");
+            }
+            initiateBbsHangup("BBS bye command", true);
+            return;
+        }
+        String payload = line + "\r";
+        if (!bbsPeerCall.isEmpty()) {
+            if (bbsLinkState == BbsLinkState.CONNECTING) {
+                toast("BBS link still opening — retrying SABM.");
+                sendSabm();
+            }
+            if (bbsLinkState != BbsLinkState.CONNECTED) {
+                toast("BBS link not up yet — wait for UA from KL7AA.");
+                return;
+            }
+            sendBbsText(payload);
+        } else {
+            sendUiText(nodeCall, nodeSsid, payload);
+        }
         if (lineInput != null) {
             lineInput.setText("");
         }
+    }
+
+    private void sendUiText(String destCall, int destSsid, String text) {
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        byte[] all = text.getBytes(StandardCharsets.UTF_8);
+        int pos = 0;
+        while (pos < all.length) {
+            int n = Math.min(MAX_PAYLOAD_BYTES, all.length - pos);
+            byte[] chunk = new byte[n];
+            System.arraycopy(all, pos, chunk, 0, n);
+            if (!sendUiPayload(destCall, destSsid, chunk)) {
+                appendTranscript("! TX failed\n");
+                break;
+            }
+            pos += n;
+        }
+        refreshStatus();
+    }
+
+    private static boolean isBbsDisconnectCommand(String line) {
+        if (line == null) {
+            return false;
+        }
+        String t = line.trim().toLowerCase(Locale.US);
+        return t.equals("b") || t.equals("bye") || t.equals("disconnect") || t.equals("quit");
+    }
+
+    private void initiateBbsHangup(String reason, boolean endSession) {
+        cancelHangupTimers();
+        hangupInProgress = true;
+        hangupStep = 0;
+        hangupEndSession = endSession;
+        hangupHadConnectedLink = false;
+        cancelAllLinkTimers();
+        pendingBbsTx = null;
+        warnIfKissNotLocked();
+
+        if (bbsPeerCall.isEmpty() && !nodeCall.isEmpty()) {
+            appendTranscript(String.format(Locale.US, "* Disconnecting node (%s)\n", reason));
+            prepareRadioForHangupTx();
+            boolean ok = sendUiPayload(nodeCall, nodeSsid,
+                    "B\r".getBytes(StandardCharsets.UTF_8));
+            appendTranscript(ok ? "* Sent B (node UI)\n" : "! B TX failed\n");
+            sessionHandler.postDelayed(() -> finishHangup(endSession), HANGUP_STEP_MS);
+            refreshStatus();
+            return;
+        }
+        if (bbsPeerCall.isEmpty()) {
+            appendTranscript("* Session stopped (no peer)\n");
+            finishHangup(endSession);
+            return;
+        }
+        if (btManager == null || !btManager.isConnected()) {
+            appendTranscript("! Hangup failed (radio not connected)\n");
+            finishHangup(endSession);
+            return;
+        }
+
+        appendTranscript(String.format(Locale.US, "* Disconnecting (%s)\n", reason));
+        hangupHadConnectedLink = bbsLinkState == BbsLinkState.CONNECTED;
+        bbsLinkState = BbsLinkState.IDLE;
+        prepareRadioForHangupTx();
+        onHangupStepTick();
+        refreshStatus();
+    }
+
+    private void prepareRadioForHangupTx() {
+        if (btManager == null || !btManager.isConnected()) {
+            return;
+        }
+        if (KissRadioFrequencyControl.reaffirmLock(btManager)) {
+            appendTranscript("* KISS frequency lock reaffirmed\n");
+        }
+        btManager.primeKissTxTiming();
+    }
+
+    private void transmitBbsByeImmediate() {
+        if (btManager == null || !btManager.isConnected() || bbsPeerCall.isEmpty()) {
+            return;
+        }
+        byte[] payload = "B\r".getBytes(StandardCharsets.UTF_8);
+        int seq = bbsTxSeq & 0x07;
+        Ax25Frame frame = Ax25Frame.createIFrame(
+                localCall, localSsid, bbsPeerCall, bbsPeerSsid,
+                seq, bbsRxSeq, payload);
+        byte[] ax25 = frame.encode();
+        boolean ok = btManager.sendKissFrame(ax25);
+        Log.d("UVPro.Terminal", String.format(Locale.US,
+                "tx bye %s-%d -> %s-%d seq=%d ax25=%d ok=%s",
+                localCall, localSsid, bbsPeerCall, bbsPeerSsid, seq, ax25.length, ok));
+        appendTranscript(ok ? "* Sent B (bye)\n" : "! B TX failed\n");
+        if (ok) {
+            bbsTxSeq = (seq + 1) & 0x07;
+        }
+    }
+
+    private void onHangupStepTick() {
+        if (!hangupInProgress) {
+            return;
+        }
+        if (btManager == null || !btManager.isConnected() || bbsPeerCall.isEmpty()) {
+            appendTranscript("! Hangup TX failed (radio not connected)\n");
+            finishHangup(hangupEndSession);
+            return;
+        }
+        switch (hangupStep) {
+            case 0:
+                if (hangupHadConnectedLink) {
+                    transmitBbsByeImmediate();
+                }
+                hangupStep = 1;
+                sessionHandler.postDelayed(hangupStepTick, HANGUP_STEP_MS);
+                break;
+            case 1:
+                boolean okPoll = sendControlToBbs(Ax25Frame.CONTROL_DISC);
+                Log.d("UVPro.Terminal", String.format(Locale.US,
+                        "tx disc poll %s-%d -> %s-%d ok=%s step=1",
+                        localCall, localSsid, bbsPeerCall, bbsPeerSsid, okPoll));
+                appendTranscript(okPoll ? "* Sent DISC\n" : "! DISC TX failed\n");
+                hangupStep = 2;
+                sessionHandler.postDelayed(hangupStepTick, HANGUP_STEP_MS);
+                break;
+            case 2:
+                boolean okNoPoll = sendControlToBbs(Ax25Frame.CONTROL_DISC_NOPOLL);
+                Log.d("UVPro.Terminal", String.format(Locale.US,
+                        "tx disc nopoll %s-%d -> %s-%d ok=%s step=2",
+                        localCall, localSsid, bbsPeerCall, bbsPeerSsid, okNoPoll));
+                hangupStep = 3;
+                sessionHandler.postDelayed(hangupStepTick, HANGUP_STEP_MS);
+                break;
+            case 3:
+                sendControlToBbs(Ax25Frame.CONTROL_DISC);
+                Log.d("UVPro.Terminal", String.format(Locale.US,
+                        "tx disc poll %s-%d -> %s-%d step=3 (final)",
+                        localCall, localSsid, bbsPeerCall, bbsPeerSsid));
+                finishHangup(hangupEndSession);
+                break;
+            default:
+                finishHangup(hangupEndSession);
+                break;
+        }
+    }
+
+    private void finishHangup(boolean endSession) {
+        hangupInProgress = false;
+        hangupStep = 0;
+        hangupHadConnectedLink = false;
+        cancelHangupTimers();
+        if (endSession) {
+            setSessionIdle();
+            appendTranscript("* Session stopped\n");
+            refreshStatus();
+        }
+    }
+
+    private void cancelHangupTimers() {
+        sessionHandler.removeCallbacks(hangupStepTick);
+    }
+
+    private static boolean isDiscControl(int control) {
+        return control == (Ax25Frame.CONTROL_DISC & 0xFF)
+                || control == (Ax25Frame.CONTROL_DISC_NOPOLL & 0xFF);
+    }
+
+    private void sendBbsText(String text) {
+        if (isBbsDisconnectCommand(text.replace("\r", ""))) {
+            pendingBbsTx = null;
+            cancelRetransmitTick();
+        } else if (pendingBbsTx != null) {
+            toast("Waiting for BBS ACK — try again in a moment.");
+            return;
+        }
+        byte[] all = text.getBytes(StandardCharsets.UTF_8);
+        int pos = 0;
+        while (pos < all.length) {
+            int n = Math.min(MAX_PAYLOAD_BYTES, all.length - pos);
+            byte[] chunk = new byte[n];
+            System.arraycopy(all, pos, chunk, 0, n);
+            if (!sendBbsIFrame(chunk)) {
+                appendTranscript("! BBS TX failed\n");
+                break;
+            }
+            pos += n;
+            if (pendingBbsTx != null) {
+                break;
+            }
+        }
+        refreshStatus();
+    }
+
+    private boolean sendUiPayload(String destCall, int destSsid, byte[] payload) {
+        if (btManager == null || !btManager.isConnected()) {
+            return false;
+        }
+        if (localCall.isEmpty() || destCall.isEmpty()) {
+            return false;
+        }
+        Ax25Frame frame = new Ax25Frame(
+                localCall, localSsid, destCall, destSsid, payload);
+        byte[] ax25 = frame.encode();
+        boolean ok = btManager.sendKissFrame(ax25);
+        Log.d("UVPro.Terminal", String.format(Locale.US,
+                "tx ui %s-%d -> %s-%d ax25=%d ok=%s payload=\"%s\"",
+                localCall, localSsid, destCall, destSsid, ax25.length, ok,
+                sanitizeIncomingText(payload).replace('\n', ' ')));
+        return ok;
+    }
+
+    private boolean sendBbsIFrame(byte[] payload) {
+        if (btManager == null || !btManager.isConnected() || bbsPeerCall.isEmpty()) {
+            return false;
+        }
+        int seq = bbsTxSeq & 0x07;
+        Ax25Frame frame = Ax25Frame.createIFrame(
+                localCall, localSsid, bbsPeerCall, bbsPeerSsid,
+                seq, bbsRxSeq, payload);
+        byte[] ax25 = frame.encode();
+        boolean ok = btManager.sendKissFrame(ax25);
+        if (ok) {
+            long now = System.currentTimeMillis();
+            pendingBbsTx = new PendingIFrame(seq, payload, now, 0);
+            scheduleRetransmitTick();
+        }
+        Log.d("UVPro.Terminal", String.format(Locale.US,
+                "tx if %s-%d -> %s-%d seq=%d ax25=%d ok=%s payload=\"%s\"",
+                localCall, localSsid, bbsPeerCall, bbsPeerSsid, seq, ax25.length, ok,
+                sanitizeIncomingText(payload).replace('\n', ' ')));
+        return ok;
+    }
+
+    private void onRetransmitTick() {
+        if (sessionState != SessionState.ACTIVE
+                || bbsLinkState != BbsLinkState.CONNECTED
+                || pendingBbsTx == null) {
+            cancelRetransmitTick();
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if ((now - pendingBbsTx.sentAtMs) < TX_ACK_TIMEOUT_MS) {
+            scheduleRetransmitTick();
+            return;
+        }
+        if (pendingBbsTx.retryCount >= TX_RETRY_LIMIT) {
+            int timedOutSeq = pendingBbsTx.seq;
+            pendingBbsTx = null;
+            beginBbsReconnect(String.format(Locale.US, "BBS ACK timeout seq=%d", timedOutSeq));
+            return;
+        }
+        if (retransmitBbsIFrame(pendingBbsTx)) {
+            pendingBbsTx.retryCount++;
+            pendingBbsTx.sentAtMs = now;
+            appendTranscript(String.format(Locale.US,
+                    "* Retransmit seq=%d retry=%d\n", pendingBbsTx.seq, pendingBbsTx.retryCount));
+        }
+        scheduleRetransmitTick();
+    }
+
+    private boolean retransmitBbsIFrame(PendingIFrame pending) {
+        Ax25Frame frame = Ax25Frame.createIFrame(
+                localCall, localSsid, bbsPeerCall, bbsPeerSsid,
+                pending.seq, bbsRxSeq, pending.payload);
+        return btManager != null && btManager.sendKissFrame(frame.encode());
+    }
+
+    private void onKeepaliveTick() {
+        if (sessionState != SessionState.ACTIVE) {
+            cancelKeepalive();
+            return;
+        }
+        if (btManager == null || !btManager.isConnected()) {
+            appendTranscript("* Radio Bluetooth disconnected\n");
+            bbsLinkState = BbsLinkState.IDLE;
+            cancelAllLinkTimers();
+            refreshStatus();
+            return;
+        }
+        if (bbsLinkState != BbsLinkState.CONNECTED) {
+            scheduleKeepalive();
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (lastBbsRxMs > 0L && (now - lastBbsRxMs) > BBS_STALL_MS) {
+            beginBbsReconnect("BBS link lost (no response)");
+            return;
+        }
+        if (pendingBbsTx == null) {
+            sendBbsRrAck();
+        }
+        scheduleKeepalive();
+    }
+
+    private void onSabmRetryTick() {
+        if (sessionState != SessionState.ACTIVE
+                || bbsLinkState != BbsLinkState.CONNECTING) {
+            cancelSabmRetry();
+            return;
+        }
+        if (sabmAttempts >= SABM_RETRY_LIMIT) {
+            appendTranscript("! BBS connect timeout\n");
+            cancelSabmRetry();
+            return;
+        }
+        sabmAttempts++;
+        sendSabm();
+        sessionHandler.postDelayed(sabmRetryTick, SABM_RETRY_MS);
+    }
+
+    private void scheduleRetransmitTick() {
+        sessionHandler.removeCallbacks(retransmitTick);
+        sessionHandler.postDelayed(retransmitTick, 500L);
+    }
+
+    private void cancelRetransmitTick() {
+        sessionHandler.removeCallbacks(retransmitTick);
+    }
+
+    private void scheduleKeepalive() {
+        sessionHandler.removeCallbacks(keepaliveTick);
+        sessionHandler.postDelayed(keepaliveTick, KEEPALIVE_MS);
+    }
+
+    private void cancelKeepalive() {
+        sessionHandler.removeCallbacks(keepaliveTick);
+    }
+
+    private void scheduleSabmRetry() {
+        sessionHandler.removeCallbacks(sabmRetryTick);
+        sessionHandler.postDelayed(sabmRetryTick, SABM_RETRY_MS);
+    }
+
+    private void cancelSabmRetry() {
+        sessionHandler.removeCallbacks(sabmRetryTick);
+    }
+
+    private void cancelAllLinkTimers() {
+        cancelRetransmitTick();
+        cancelKeepalive();
+        cancelSabmRetry();
+        cancelHangupTimers();
+    }
+
+    private void sendBbsRrAck() {
+        if (bbsPeerCall.isEmpty() || btManager == null || !btManager.isConnected()) {
+            return;
+        }
+        Ax25Frame rr = Ax25Frame.createRrFrame(
+                localCall, localSsid, bbsPeerCall, bbsPeerSsid, bbsRxSeq);
+        btManager.sendKissFrame(rr.encode());
+    }
+
+    private void sendSabm() {
+        if (bbsPeerCall.isEmpty()) {
+            return;
+        }
+        boolean ok = sendControlToBbs(Ax25Frame.CONTROL_SABM);
+        Log.d("UVPro.Terminal", String.format(Locale.US,
+                "tx sabm %s-%d -> %s-%d ok=%s",
+                localCall, localSsid, bbsPeerCall, bbsPeerSsid, ok));
+        if (!ok) {
+            appendTranscript("! SABM TX failed\n");
+        }
+    }
+
+    private boolean sendControlToBbs(byte controlField) {
+        if (btManager == null || !btManager.isConnected()
+                || localCall.isEmpty() || bbsPeerCall.isEmpty()) {
+            return false;
+        }
+        Ax25Frame frame = Ax25Frame.createControlFrame(
+                localCall, localSsid, bbsPeerCall, bbsPeerSsid, controlField);
+        byte[] ax25 = frame.encode();
+        boolean ok = btManager.sendKissFrame(ax25);
+        Log.d("UVPro.Terminal", String.format(Locale.US,
+                "tx ctrl 0x%02X %s-%d -> %s-%d ax25=%d ok=%s",
+                controlField & 0xFF, localCall, localSsid, bbsPeerCall, bbsPeerSsid,
+                ax25.length, ok));
+        return ok;
+    }
+
+    private void warnIfKissNotLocked() {
+        if (KissRadioFrequencyControl.isFrequencyLocked()) {
+            return;
+        }
+        toast("Packet channel not in Digital/KISS lock — set Digital Only on your packet CH first.");
+        appendTranscript("* Warning: KISS frequency not locked (use Digital Only on packet channel)\n");
     }
 
     private String resolveLocalCallsign() {
@@ -537,8 +1073,7 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
         if (!fromAtak.isEmpty() && !"UNKNOWN".equalsIgnoreCase(fromAtak)) {
             return fromAtak;
         }
-        String fallbackRadioStyle = normalizeCallsign(CallsignUtil.toRadioCallsign(mapCall));
-        return fallbackRadioStyle;
+        return normalizeCallsign(CallsignUtil.toRadioCallsign(mapCall));
     }
 
     private int resolveLocalSsid() {
@@ -552,23 +1087,16 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
             return;
         }
         boolean radioConnected = btManager != null && btManager.isConnected();
-        String remote = remoteCall.isEmpty() ? "N/A"
-                : String.format(Locale.US, "%s-%d", remoteCall, remoteSsid);
-        String mode;
-        if (sessionState == SessionState.CONNECTED) {
-            mode = "CONNECTED";
-        } else if (sessionState == SessionState.CONNECTING) {
-            mode = "CONNECTING";
-        } else {
-            mode = "IDLE";
-        }
+        String node = nodeCall.isEmpty() ? "N/A"
+                : String.format(Locale.US, "%s-%d", nodeCall, nodeSsid);
+        String bbs = bbsPeerCall.isEmpty() ? "none"
+                : String.format(Locale.US, "%s-%d %s",
+                bbsPeerCall, bbsPeerSsid, bbsLinkState.name());
+        String mode = sessionState == SessionState.ACTIVE ? "ACTIVE" : "IDLE";
         statusView.setText(String.format(Locale.US,
-                "Radio: %s   Session: %s   Remote: %s   TXq:%d   Unacked:%d",
+                "Radio: %s   Session: %s   Remote: %s   BBS: %s",
                 radioConnected ? "CONNECTED" : "DISCONNECTED",
-                mode,
-                remote,
-                outboundQueue.size(),
-                pendingTx.size()));
+                mode, node, bbs));
     }
 
     private void appendTranscript(String line) {
@@ -590,10 +1118,6 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
             return "";
         }
         String raw = new String(payload, StandardCharsets.UTF_8);
-        // Lightweight ANSI/VT100 cleanup for BBS prompts/menus:
-        // - drop ESC [ ... command sequences
-        // - apply backspace edits
-        // - normalize CR/LF for transcript display
         String noAnsi = raw.replaceAll("\u001B\\[[0-9;?]*[ -/]*[@-~]", "");
         StringBuilder out = new StringBuilder(noAnsi.length());
         for (int i = 0; i < noAnsi.length(); i++) {
@@ -645,6 +1169,53 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
         return new String[]{normalizeCallsign(raw), String.valueOf(defaultSsid)};
     }
 
+    private void setSessionIdle() {
+        cancelAllLinkTimers();
+        hangupInProgress = false;
+        hangupStep = 0;
+        hangupHadConnectedLink = false;
+        sessionState = SessionState.IDLE;
+        nodeCall = "";
+        nodeSsid = 0;
+        bbsPeerCall = "";
+        bbsPeerSsid = 0;
+        bbsRxSeq = 0;
+        bbsTxSeq = 0;
+        bbsLinkState = BbsLinkState.IDLE;
+        pendingBbsTx = null;
+        sabmAttempts = 0;
+        lastBbsRxMs = 0L;
+    }
+
+    private SharedPreferences terminalPrefs() {
+        Context ctx = getMapView() != null ? getMapView().getContext() : pluginContext;
+        return ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+    }
+
+    private void saveLastRemoteStation(String remoteCall, int remoteSsid) {
+        if (remoteCall == null || remoteCall.isEmpty()) {
+            return;
+        }
+        terminalPrefs().edit()
+                .putString(PREF_LAST_REMOTE_CALL, remoteCall)
+                .putInt(PREF_LAST_REMOTE_SSID, Math.max(0, Math.min(15, remoteSsid)))
+                .apply();
+    }
+
+    private void restoreLastRemoteStation() {
+        SharedPreferences prefs = terminalPrefs();
+        String call = prefs.getString(PREF_LAST_REMOTE_CALL, "");
+        if (call.isEmpty()) {
+            return;
+        }
+        if (remoteCallInput != null) {
+            remoteCallInput.setText(call);
+        }
+        if (remoteSsidInput != null && prefs.contains(PREF_LAST_REMOTE_SSID)) {
+            remoteSsidInput.setText(String.valueOf(prefs.getInt(PREF_LAST_REMOTE_SSID, 0)));
+        }
+    }
+
     private void toast(String msg) {
         Context ctx = getMapView() != null ? getMapView().getContext() : pluginContext;
         Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show();
@@ -653,6 +1224,10 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
     @Override
     public void onDropDownVisible(boolean visible) {
         if (visible) {
+            if (remoteCallInput != null
+                    && remoteCallInput.getText().toString().trim().isEmpty()) {
+                restoreLastRemoteStation();
+            }
             refreshStatus();
         }
     }
@@ -673,7 +1248,7 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
     public void disposeImpl() {
         setSessionIdle();
         localCall = "";
-        localSsid = TERMINAL_LOCAL_SSID;
+        localSsid = 0;
         if (packetRouter != null) {
             packetRouter.setAx25FrameListener(null);
         }

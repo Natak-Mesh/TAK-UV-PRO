@@ -91,7 +91,10 @@ public class PacketRouter {
     }
 
     public interface Ax25FrameListener {
-        void onAx25Frame(Ax25Frame frame);
+        /**
+         * @return true if APRS routing should be skipped for this frame
+         */
+        boolean onAx25Frame(Ax25Frame frame);
     }
 
     public PacketRouter(CotBridge cotBridge, ChatBridge chatBridge,
@@ -175,9 +178,10 @@ public class PacketRouter {
         if (packetCountListener != null) {
             packetCountListener.onPacketReceived();
         }
+        boolean skipAprsRouting = false;
         if (ax25FrameListener != null) {
             try {
-                ax25FrameListener.onAx25Frame(frame);
+                skipAprsRouting = ax25FrameListener.onAx25Frame(frame);
             } catch (Exception e) {
                 Log.w(TAG, "AX.25 terminal listener error: " + e.getMessage());
             }
@@ -199,6 +203,10 @@ public class PacketRouter {
             }
 
             routeUVProPacket(srcCall, srcSsid, infoField, pathLen, inboundTransport);
+            return;
+        }
+
+        if (skipAprsRouting) {
             return;
         }
 

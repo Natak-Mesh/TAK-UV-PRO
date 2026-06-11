@@ -25,6 +25,7 @@ public final class KissRadioFrequencyControl {
     private static final byte SUBCMD_RETURN = (byte) 0xEB;
 
     private static volatile boolean frequencyLocked;
+    private static volatile float lastLockedFreqMHz = 0f;
 
     private KissRadioFrequencyControl() {}
 
@@ -48,7 +49,27 @@ public final class KissRadioFrequencyControl {
         boolean ok = bt.sendRawBytes(frame);
         if (ok) {
             frequencyLocked = true;
+            lastLockedFreqMHz = freqMHz;
             Log.i(TAG, String.format(Locale.US, "KISS frequency lock sent: %.5f MHz", freqMHz));
+        }
+        return ok;
+    }
+
+    /**
+     * Re-send the last successful KISS frequency lock before a critical TX burst.
+     */
+    public static boolean reaffirmLock(BtConnectionManager bt) {
+        if (!frequencyLocked || lastLockedFreqMHz <= 0f) {
+            return false;
+        }
+        if (bt == null || !bt.isConnected()) {
+            return false;
+        }
+        byte[] frame = buildLockFrame(lastLockedFreqMHz);
+        boolean ok = bt.sendRawBytes(frame);
+        if (ok) {
+            Log.i(TAG, String.format(Locale.US,
+                    "KISS frequency lock reaffirmed: %.5f MHz", lastLockedFreqMHz));
         }
         return ok;
     }
@@ -67,6 +88,7 @@ public final class KissRadioFrequencyControl {
         byte[] frame = buildUnlockFrame();
         boolean ok = bt.sendRawBytes(frame);
         frequencyLocked = false;
+        lastLockedFreqMHz = 0f;
         if (ok) {
             Log.i(TAG, "KISS frequency unlock sent");
         } else {

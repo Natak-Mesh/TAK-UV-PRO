@@ -9,7 +9,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Packet Terminal"
+        android:text="AX.25 Terminal"
         android:textColor="#FFFFFF"
         android:textSize="20sp"
         android:textStyle="bold" />

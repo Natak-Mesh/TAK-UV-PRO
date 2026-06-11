@@ -28,7 +28,10 @@ public class Ax25Frame {
     /** AX.25 connected-mode controls used by terminal sessions. */
     public static final byte CONTROL_SABM = 0x3F;
     public static final byte CONTROL_UA = 0x73;
+    /** DISC with poll bit set (expects UA). */
     public static final byte CONTROL_DISC = 0x53;
+    /** DISC without poll bit — some TNCs/peers only accept this form. */
+    public static final byte CONTROL_DISC_NOPOLL = 0x43;
     public static final byte CONTROL_RR_BASE = 0x01;
 
     /** No Layer 3 protocol PID */

@@ -577,6 +577,28 @@ public class BtConnectionManager {
      * Send raw data through the KISS TNC to the radio.
      * The data should be an AX.25 frame (without KISS framing — we add that).
      */
+    /**
+     * Prime TNC TX timing so short control frames (DISC) get enough key-up time on RF.
+     */
+    public boolean primeKissTxTiming() {
+        if (!connected.get() || outputStream == null) {
+            return false;
+        }
+        try {
+            outputStream.write(kissEncoder.encodeCommand(
+                    com.uvpro.plugin.kiss.KissConstants.CMD_TXDELAY, (byte) 30));
+            outputStream.write(kissEncoder.encodeCommand(
+                    com.uvpro.plugin.kiss.KissConstants.CMD_TXTAIL, (byte) 50));
+            outputStream.flush();
+            markIoActivity();
+            Log.d(TAG, "KISS TX timing primed");
+            return true;
+        } catch (IOException e) {
+            Log.w(TAG, "KISS TX timing prime failed: " + e.getMessage());
+            return false;
+        }
+    }
+
     public boolean sendKissFrame(byte[] ax25Frame) {
         if (!connected.get() || outputStream == null) {
             Log.w(TAG, "Cannot send: not connected");

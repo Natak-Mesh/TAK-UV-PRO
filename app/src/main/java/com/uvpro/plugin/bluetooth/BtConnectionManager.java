@@ -498,9 +498,35 @@ public class BtConnectionManager {
         if (btAdapter == null) {
             return null;
         }
+        BluetoothDevice fromLastMac = loadRememberedRadioFromPref(PREF_LAST_RADIO_MAC);
+        if (fromLastMac != null && isUvProRadioTarget(fromLastMac)) {
+            return fromLastMac;
+        }
+        if (fromLastMac != null) {
+            Log.w(TAG, "Stale uvpro_last_radio_mac is not a UV-PRO radio ("
+                    + resolveName(fromLastMac) + ") — clearing");
+            clearRememberedRadioMacPref();
+        }
+        String registryMac = BluetoothDeviceRegistry.getConnectTargetAddress(context);
+        if (registryMac == null || registryMac.isEmpty()) {
+            return null;
+        }
+        try {
+            BluetoothDevice fromRegistry = btAdapter.getRemoteDevice(registryMac);
+            if (isUvProRadioTarget(fromRegistry)) {
+                return fromRegistry;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Invalid registry UV-PRO connect target " + registryMac, e);
+        }
+        return null;
+    }
+
+    @Nullable
+    private BluetoothDevice loadRememberedRadioFromPref(String prefKey) {
         try {
             SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
-            String mac = prefs.getString(PREF_LAST_RADIO_MAC, "").trim();
+            String mac = prefs.getString(prefKey, "").trim();
             if (mac.isEmpty()) {
                 return null;
             }
@@ -510,8 +536,33 @@ public class BtConnectionManager {
         }
     }
 
-    private void persistRememberedRadioMac(@Nullable BluetoothDevice device) {
+    private void clearRememberedRadioMacPref() {
+        try {
+            PreferenceManager.getDefaultSharedPreferences(context)
+                    .edit()
+                    .putString(PREF_LAST_RADIO_MAC, "")
+                    .apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private boolean isUvProRadioTarget(@Nullable BluetoothDevice device) {
         if (device == null) {
+            return false;
+        }
+        if (MeshBleDeviceMatcher.isMeshDevice(context, device)) {
+            return false;
+        }
+        return UvProBtDeviceMatcher.isLikelyUvProDevice(device);
+    }
+
+    /** MeshCore uses the same base class but must not overwrite UV-PRO remembered MACs. */
+    protected boolean shouldPersistUvProRadioOnConnect() {
+        return true;
+    }
+
+    private void persistRememberedRadioMac(@Nullable BluetoothDevice device) {
+        if (device == null || !isUvProRadioTarget(device)) {
             return;
         }
         try {
@@ -1681,7 +1732,9 @@ public class BtConnectionManager {
         if (bootAutoConnectActive.get()) {
             endBootAutoConnectWindow(true);
         }
-        persistRememberedRadioMac(device);
+        if (shouldPersistUvProRadioOnConnect()) {
+            persistRememberedRadioMac(device);
+        }
         for (ConnectionListener l : listeners) l.onConnected(device);
     }
 

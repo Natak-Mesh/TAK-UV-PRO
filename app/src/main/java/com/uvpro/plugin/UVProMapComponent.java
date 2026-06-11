@@ -156,6 +156,15 @@ public class UVProMapComponent extends DropDownMapComponent {
     private SharedPreferences.OnSharedPreferenceChangeListener meshMapPrefsListener;
     private final Set<String> meshRepeaterMapUids = new HashSet<>();
     private final Set<String> meshNodeMapUids = new HashSet<>();
+    /** Mesh boot auto-connect if UV-PRO never connects within this window. */
+    private static final long MESH_BOOT_FALLBACK_MS = 7000L;
+    /** Poll while UV-PRO boot/connect is still in progress past the 7s mark. */
+    private static final long MESH_BOOT_FALLBACK_POLL_MS = 500L;
+    /** Delay after UV-PRO connects before mesh auto-connect starts. */
+    private static final long MESH_BOOT_AFTER_RADIO_MS = 2000L;
+    private Runnable meshBootFallbackRunnable;
+    private Runnable meshBootAfterRadioRunnable;
+    private long meshBootScheduledAtMs;
     private MapEventDispatcher.MapEventDispatchListener mapItemClickListener;
     private Handler beaconHandler;
     private Runnable beaconRunnable;
@@ -297,9 +306,29 @@ try {
 
         // 5. BtConnectionManager (needs context + PacketRouter)
         btConnectionManager = new BtConnectionManager(context, packetRouter);
-        view.post(btConnectionManager::scheduleBootAutoConnect);
         meshBtConnectionManager = new MeshBtConnectionManager(context, packetRouter);
         packetRouter.setInboundTransports(btConnectionManager, meshBtConnectionManager);
+        meshBtConnectionManager.setBootScheduleListener(this::cancelMeshBootAutoConnectSchedules);
+        btConnectionManager.setMeshCoexistenceListener(new BtConnectionManager.MeshCoexistenceListener() {
+            @Override
+            public boolean isMeshConnecting() {
+                return meshBtConnectionManager != null
+                        && meshBtConnectionManager.isConnecting();
+            }
+
+            @Override
+            public boolean isMeshConnected() {
+                return meshBtConnectionManager != null
+                        && meshBtConnectionManager.isConnected();
+            }
+
+            @Override
+            public void onRadioConnectStartingWhileMeshUp() {
+                // Mesh manual disconnect blocks auto-reconnect; user must Scan and Connect again.
+            }
+        });
+        view.post(btConnectionManager::scheduleBootAutoConnect);
+        scheduleMeshBootAutoConnect(view);
         repeaterAdvertListener = advert -> {
             if (advert == null || !advert.hasValidPosition()) {
                 return;
@@ -363,6 +392,7 @@ try {
             public void onConnected(android.bluetooth.BluetoothDevice device) {
                 Log.d(TAG, "StatusOverlay: radio connected");
                 RadioStatusOverlay.setConnected(true);
+                scheduleMeshBootAfterRadioConnect(view);
                 // Anchor first periodic beacon to connection time.
                 startBeaconTimer();
                 applyActiveTransmitTransportFromPreference();
@@ -709,6 +739,7 @@ try {
         }
         UVProRadioServices.clear();
         com.uvpro.plugin.protocol.PositionRequester.clear();
+        cancelMeshBootAutoConnectSchedules();
         if (btConnectionManager != null) {
             btConnectionManager.shutdown();
             btConnectionManager.disconnect();
@@ -2668,6 +2699,99 @@ try {
             }
         };
         iconsetReminderHandler.post(iconsetReminderRunnable);
+    }
+
+    /**
+     * Mesh boot policy: try the last saved mesh target after 7s unless UV-PRO connects first
+     * (then wait 2s after radio connect). The 7s fallback waits out an in-flight UV-PRO connect.
+     */
+    private void scheduleMeshBootAutoConnect(MapView view) {
+        cancelMeshBootAutoConnectSchedules();
+        if (view == null || meshBtConnectionManager == null) {
+            return;
+        }
+        meshBootScheduledAtMs = System.currentTimeMillis();
+        meshBootFallbackRunnable = () -> tryMeshBootFallback(view);
+        view.postDelayed(meshBootFallbackRunnable, MESH_BOOT_FALLBACK_MS);
+    }
+
+    private void tryMeshBootFallback(MapView view) {
+        if (view == null || meshBtConnectionManager == null) {
+            meshBootFallbackRunnable = null;
+            return;
+        }
+        if (meshBtConnectionManager.isConnected()) {
+            meshBootFallbackRunnable = null;
+            return;
+        }
+        if (btConnectionManager != null && btConnectionManager.isConnected()) {
+            meshBootFallbackRunnable = null;
+            return;
+        }
+        if (isUvProBootStillResolving()) {
+            long elapsedMs = System.currentTimeMillis() - meshBootScheduledAtMs;
+            Log.d(TAG, "Mesh boot fallback deferred — UV-PRO still resolving ("
+                    + elapsedMs + "ms since startup)");
+            view.postDelayed(meshBootFallbackRunnable, MESH_BOOT_FALLBACK_POLL_MS);
+            return;
+        }
+        meshBootFallbackRunnable = null;
+        Log.i(TAG, "Mesh boot fallback (" + (MESH_BOOT_FALLBACK_MS / 1000)
+                + "s) — UV-PRO not connected, starting mesh auto-connect");
+        meshBtConnectionManager.tryAutoConnectToSavedTarget();
+    }
+
+    private boolean isUvProBootStillResolving() {
+        if (btConnectionManager == null) {
+            return false;
+        }
+        return btConnectionManager.isConnecting()
+                || btConnectionManager.isBootAutoConnectWindowActive();
+    }
+
+    private void scheduleMeshBootAfterRadioConnect(MapView view) {
+        if (view == null || meshBtConnectionManager == null) {
+            return;
+        }
+        if (meshBtConnectionManager.isConnected()) {
+            cancelMeshBootAutoConnectSchedules();
+            return;
+        }
+        cancelMeshBootFallbackSchedule();
+        cancelMeshBootAfterRadioSchedule();
+        meshBtConnectionManager.cancelBootAutoConnect();
+        meshBootAfterRadioRunnable = () -> {
+            meshBootAfterRadioRunnable = null;
+            if (meshBtConnectionManager == null || meshBtConnectionManager.isConnected()) {
+                return;
+            }
+            Log.i(TAG, "UV-PRO connected — starting mesh auto-connect after "
+                    + (MESH_BOOT_AFTER_RADIO_MS / 1000) + "s");
+            meshBtConnectionManager.tryAutoConnectAfterRadioConnect();
+        };
+        view.postDelayed(meshBootAfterRadioRunnable, MESH_BOOT_AFTER_RADIO_MS);
+    }
+
+    private void cancelMeshBootFallbackSchedule() {
+        if (mapView != null && meshBootFallbackRunnable != null) {
+            mapView.removeCallbacks(meshBootFallbackRunnable);
+            meshBootFallbackRunnable = null;
+        }
+    }
+
+    private void cancelMeshBootAfterRadioSchedule() {
+        if (mapView != null && meshBootAfterRadioRunnable != null) {
+            mapView.removeCallbacks(meshBootAfterRadioRunnable);
+            meshBootAfterRadioRunnable = null;
+        }
+    }
+
+    private void cancelMeshBootAutoConnectSchedules() {
+        cancelMeshBootFallbackSchedule();
+        cancelMeshBootAfterRadioSchedule();
+        if (meshBtConnectionManager != null) {
+            meshBtConnectionManager.cancelBootAutoConnect();
+        }
     }
 
     /**

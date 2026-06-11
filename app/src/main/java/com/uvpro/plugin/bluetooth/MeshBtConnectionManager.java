@@ -144,6 +144,11 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     private final AtomicBoolean userInitiatedConnect = new AtomicBoolean(false);
     /** Set when user taps Mesh Disconnect — blocks reconnect until Scan and Connect. */
     private final AtomicBoolean meshManualDisconnect = new AtomicBoolean(false);
+    /** Invalidates in-flight boot/background auto-connect probes. */
+    private final AtomicInteger autoConnectGeneration = new AtomicInteger(0);
+    /** One boot auto-connect attempt per process unless user opens Scan and Connect. */
+    private final AtomicBoolean savedTargetAutoConnectAttempted = new AtomicBoolean(false);
+    private Runnable autoConnectTimeoutRunnable = null;
     /** Addresses seen during the current live BLE scan (used for availability dot logic). */
     private final Set<String> liveScanAddresses = new HashSet<>();
 
@@ -155,6 +160,13 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     public interface AvailabilityCallback {
         void onResult(int availability);
     }
+
+    /** Optional hook so startup boot timers can be cancelled when Scan and Connect opens. */
+    public interface BootScheduleListener {
+        void onUserScanStarting();
+    }
+
+    private volatile BootScheduleListener bootScheduleListener;
 
     private final BleMeshAvailabilityProber availabilityProber = new BleMeshAvailabilityProber();
 
@@ -212,6 +224,10 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             ioHandler.postDelayed(this, 2500L);
         }
     };
+
+    public void setBootScheduleListener(BootScheduleListener listener) {
+        bootScheduleListener = listener;
+    }
 
     public MeshBtConnectionManager(Context context, PacketRouter packetRouter) {
         super(context, packetRouter);
@@ -774,8 +790,15 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     /** Called when the user taps Scan & Connect — exclusive picker session. */
     public void prepareForUserScan() {
         Log.i(TAG, "prepareForUserScan: Scan & Connect");
+        BootScheduleListener bootListener = bootScheduleListener;
+        if (bootListener != null) {
+            bootListener.onUserScanStarting();
+        }
         scanPickerSessionActive.set(true);
         scanSessionGeneration.incrementAndGet();
+        autoConnectGeneration.incrementAndGet();
+        cancelBootAutoConnect();
+        cancelAutoConnectTimeout();
         availabilityProber.cancelAll();
         pendingBondDevice = null;
         userInitiatedConnect.set(false);
@@ -797,9 +820,120 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         return scanPickerSessionActive.get();
     }
 
-    /** MeshCore has no startup auto-connect — user must tap Scan and Connect. */
-    @Override
-    public void scheduleBootAutoConnect() {
+    // -------------------------------------------------------------------------
+    // Boot auto-connect (last saved bonded mesh target)
+    // -------------------------------------------------------------------------
+
+    /** Probe the saved target and connect if available. */
+    public void tryAutoConnectToSavedTarget() {
+        autoConnectToSavedTargetInternal("Boot auto-connect", true);
+    }
+
+    /** After UV-PRO connects at boot — may run even if the 7s fallback already probed once. */
+    public void tryAutoConnectAfterRadioConnect() {
+        autoConnectToSavedTargetInternal("Post-radio auto-connect", false);
+    }
+
+    public void cancelBootAutoConnect() {
+        autoConnectGeneration.incrementAndGet();
+        cancelAutoConnectTimeout();
+    }
+
+    private void autoConnectToSavedTargetInternal(String reason, boolean markBootAttempted) {
+        if (scanPickerSessionActive.get()) {
+            Log.i(TAG, reason + ": scan/picker active — skipping");
+            return;
+        }
+        if (meshManualDisconnect.get()) {
+            Log.i(TAG, reason + ": Mesh Disconnect is active — skipping");
+            return;
+        }
+        if (connected.get() || connecting.get()) {
+            return;
+        }
+        if (markBootAttempted && !savedTargetAutoConnectAttempted.compareAndSet(false, true)) {
+            Log.d(TAG, reason + ": already attempted this session");
+            return;
+        }
+        if (!checkBtPermissions()) {
+            Log.i(TAG, reason + ": no BT permissions yet");
+            return;
+        }
+        String tgt = BluetoothDeviceRegistry.getMeshConnectTargetAddress(context);
+        if (tgt == null || tgt.isEmpty()) {
+            Log.d(TAG, reason + ": no saved mesh target");
+            return;
+        }
+        BluetoothDevice device;
+        try {
+            device = btAdapter != null ? btAdapter.getRemoteDevice(tgt) : null;
+        } catch (Exception e) {
+            Log.w(TAG, reason + ": bad address " + tgt, e);
+            return;
+        }
+        if (device == null) {
+            return;
+        }
+        int savedTargetBondState = BluetoothDevice.BOND_NONE;
+        try {
+            savedTargetBondState = device.getBondState();
+        } catch (Exception ignored) {
+        }
+        if (savedTargetBondState != BluetoothDevice.BOND_BONDED) {
+            Log.i(TAG, reason + ": saved target " + tgt
+                    + " is not bonded — skipping background auto-connect");
+            return;
+        }
+        final int probeGeneration = autoConnectGeneration.get();
+        Log.i(TAG, reason + ": probing " + tgt);
+        scheduleAutoConnectTimeout(30_000);
+        AvailabilityCallback onProbeResult = availability -> {
+            if (probeGeneration != autoConnectGeneration.get()) {
+                Log.i(TAG, reason + " probe result stale — cancelled, ignoring");
+                cancelAutoConnectTimeout();
+                return;
+            }
+            if (meshManualDisconnect.get() || scanPickerSessionActive.get()) {
+                cancelAutoConnectTimeout();
+                return;
+            }
+            if (availability == AVAIL_AVAILABLE) {
+                if (!connected.get() && !connecting.get()) {
+                    Log.i(TAG, reason + ": connecting to " + tgt);
+                    connectInternal(device);
+                }
+            } else {
+                cancelAutoConnectTimeout();
+                Log.i(TAG, reason + ": target not available");
+                if (markBootAttempted && !connected.get()) {
+                    notifyDisconnected("Boot auto-connect unavailable");
+                }
+            }
+        };
+        probeDeviceAvailability(device, onProbeResult);
+    }
+
+    /**
+     * Schedule a hard stop for background auto-connect after {@code timeoutMs} milliseconds.
+     */
+    public void scheduleAutoConnectTimeout(long timeoutMs) {
+        cancelAutoConnectTimeout();
+        autoConnectTimeoutRunnable = () -> {
+            autoConnectTimeoutRunnable = null;
+            if (!connected.get()) {
+                Log.i(TAG, "Auto-connect timeout reached — giving up");
+                connecting.set(false);
+                notifyDisconnected("Auto-connect timed out");
+            }
+        };
+        ioHandler.postDelayed(autoConnectTimeoutRunnable, timeoutMs);
+    }
+
+    public void cancelAutoConnectTimeout() {
+        if (autoConnectTimeoutRunnable != null) {
+            ioHandler.removeCallbacks(autoConnectTimeoutRunnable);
+            autoConnectTimeoutRunnable = null;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -856,6 +990,10 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         if (userRequested) {
             meshManualDisconnect.set(true);
             scanSessionGeneration.incrementAndGet();
+            autoConnectGeneration.incrementAndGet();
+            cancelBootAutoConnect();
+            cancelAutoConnectTimeout();
+            savedTargetAutoConnectAttempted.set(true);
             userInitiatedConnect.set(false);
             pendingBondDevice = null;
         }
@@ -881,6 +1019,9 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     @Override
     public void cancelConnectionAttempts() {
+        autoConnectGeneration.incrementAndGet();
+        cancelBootAutoConnect();
+        cancelAutoConnectTimeout();
         availabilityProber.cancelAll();
         userInitiatedConnect.set(false);
         connecting.set(false);
@@ -1377,8 +1518,14 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     }
 
     @Override
+    protected boolean shouldPersistUvProRadioOnConnect() {
+        return false;
+    }
+
+    @Override
     protected void notifyConnected(BluetoothDevice device) {
         userInitiatedConnect.set(false);
+        cancelAutoConnectTimeout();
         if (device != null && device.getAddress() != null) {
             try {
                 BluetoothDeviceRegistry.setMeshConnectTargetAddress(context, device.getAddress());

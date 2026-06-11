@@ -291,6 +291,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private Button btnRefreshChannels;
     private Button btnInitialChannelGroupSetup;
     private Button btnPacketTerminal;
+    private View packetTerminalSection;
+    private PacketTerminalDropDownReceiver packetTerminalReceiver;
     private Button btnChannelGroup;
     private Button btnImportChannels;
     private Button btnExportChannels;
@@ -737,6 +739,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
     }
 
+    public void setPacketTerminalReceiver(PacketTerminalDropDownReceiver packetTerminalReceiver) {
+        this.packetTerminalReceiver = packetTerminalReceiver;
+    }
+
     @Override
     public void onReceive(Context context, Intent intent) {
         final String action = intent.getAction();
@@ -968,6 +974,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         btnRefreshChannels = rootView.findViewById(getId("btn_refresh_channels"));
         btnInitialChannelGroupSetup = rootView.findViewById(getId("btn_initial_channel_group_setup"));
         btnPacketTerminal = rootView.findViewById(getId("btn_packet_terminal"));
+        packetTerminalSection = rootView.findViewById(getId("packet_terminal_section"));
         btnChannelGroup = rootView.findViewById(getId("btn_channel_group"));
         btnImportChannels = rootView.findViewById(getId("btn_import_channels"));
         btnExportChannels = rootView.findViewById(getId("btn_export_channels"));
@@ -1286,14 +1293,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             btnSettings.setOnClickListener(v -> showSettingsDialog());
         }
         if (btnPacketTerminal != null) {
-            btnPacketTerminal.setOnClickListener(v -> {
-                try {
-                    AtakBroadcast.getInstance().sendBroadcast(
-                            new Intent(PacketTerminalDropDownReceiver.SHOW_PACKET_TERMINAL));
-                } catch (Exception e) {
-                    appendLog("Packet terminal open failed: " + e.getMessage());
-                }
-            });
+            btnPacketTerminal.setOnClickListener(v -> togglePacketTerminalSection());
         }
         if (switchSmartBeacon != null) {
             switchSmartBeacon.setOnCheckedChangeListener(smartBeaconCheckedListener);
@@ -6892,6 +6892,48 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 }
             });
         }, "uvpro-load-repeater").start();
+    }
+
+    private void togglePacketTerminalSection() {
+        if (packetTerminalSection == null) {
+            return;
+        }
+        boolean show = packetTerminalSection.getVisibility() != View.VISIBLE;
+        packetTerminalSection.setVisibility(show ? View.VISIBLE : View.GONE);
+        if (show) {
+            if (packetTerminalReceiver != null) {
+                packetTerminalReceiver.attachInlinePanel(packetTerminalSection);
+            }
+            scheduleScrollToPacketTerminalSection();
+        }
+        if (btnPacketTerminal != null) {
+            btnPacketTerminal.setText(show ? "Hide AX.25 Terminal" : "AX.25 Terminal");
+        }
+    }
+
+    private void scheduleScrollToPacketTerminalSection() {
+        getMapView().postDelayed(this::scrollToPacketTerminalSection, 120L);
+        getMapView().postDelayed(this::scrollToPacketTerminalSection, 320L);
+    }
+
+    private void scrollToPacketTerminalSection() {
+        if (!(rootView instanceof ScrollView) || packetTerminalSection == null) {
+            return;
+        }
+        ScrollView scroll = (ScrollView) rootView;
+        scroll.post(() -> {
+            int y = 0;
+            View cursor = packetTerminalSection;
+            while (cursor != null && cursor != scroll) {
+                y += cursor.getTop();
+                android.view.ViewParent p = cursor.getParent();
+                cursor = (p instanceof View) ? (View) p : null;
+            }
+            y = Math.max(0, y - dip(getMapView().getContext(), 48));
+            final int scrollY = y;
+            scroll.scrollTo(0, scrollY);
+            scroll.post(() -> scroll.smoothScrollTo(0, scrollY));
+        });
     }
 
     private void scheduleScrollToRepeaterLoadSection() {

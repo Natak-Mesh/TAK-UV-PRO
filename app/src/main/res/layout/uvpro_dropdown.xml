@@ -1537,6 +1537,19 @@
                 android:text="AX.25 Terminal"
                 android:backgroundTint="#FF455A64" />
 
+            <LinearLayout
+                android:id="@+id/packet_terminal_section"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone"
+                android:layout_marginBottom="6dp"
+                android:background="#FF1B1B1B"
+                android:padding="8dp">
+
+                <include layout="@layout/packet_terminal_panel" />
+            </LinearLayout>
+
             <Button
                 android:id="@+id/btn_initial_channel_group_setup"
                 style="@style/UvproPillButton.Beacon"

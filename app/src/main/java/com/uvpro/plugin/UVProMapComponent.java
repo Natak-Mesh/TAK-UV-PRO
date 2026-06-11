@@ -527,7 +527,6 @@ try {
         dropDownReceiver.setEncryptionManager(encryptionManager);
         dropDownReceiver.setRadioControlManager(radioControlManager);
 
-
         // Wire PacketRouter RX count to dropdown UI
         packetRouter.setPacketCountListener(dropDownReceiver);
 
@@ -556,6 +555,7 @@ try {
         packetTerminalDropDownReceiver = new PacketTerminalDropDownReceiver(
                 view, context, btConnectionManager);
         packetTerminalDropDownReceiver.setPacketRouter(packetRouter);
+        dropDownReceiver.setPacketTerminalReceiver(packetTerminalDropDownReceiver);
         AtakBroadcast.DocumentedIntentFilter terminalFilter =
                 new AtakBroadcast.DocumentedIntentFilter();
         terminalFilter.addAction(PacketTerminalDropDownReceiver.SHOW_PACKET_TERMINAL);

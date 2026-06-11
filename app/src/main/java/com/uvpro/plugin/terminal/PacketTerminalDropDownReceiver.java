@@ -5,10 +5,12 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
-import android.text.method.ScrollingMovementMethod;
 import android.util.Log;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewParent;
+import android.widget.ScrollView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
@@ -70,8 +72,10 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
 
     private PacketRouter packetRouter;
     private View panelView;
+    private ScrollView transcriptScrollView;
     private TextView statusView;
     private TextView transcriptView;
+    private boolean panelListenersAttached = false;
     private EditText remoteCallInput;
     private EditText remoteSsidInput;
     private EditText lineInput;
@@ -148,12 +152,26 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
         if (intent == null || !SHOW_PACKET_TERMINAL.equals(intent.getAction())) {
             return;
         }
-        ensurePanel();
+        ensureStandalonePanel();
         refreshStatus();
         showDropDown(panelView,
-                HALF_WIDTH, FULL_HEIGHT,
+                HALF_WIDTH, HALF_HEIGHT,
                 FULL_WIDTH, HALF_HEIGHT,
                 false, this);
+    }
+
+    /** Binds the shared terminal panel embedded in the main plugin dropdown. */
+    public void attachInlinePanel(View sectionRoot) {
+        if (sectionRoot == null) {
+            return;
+        }
+        View panel = sectionRoot.findViewById(pluginContext.getResources()
+                .getIdentifier("packet_terminal_panel_root", "id", pluginContext.getPackageName()));
+        if (panel == null) {
+            panel = sectionRoot;
+        }
+        bindPanelViews(panel);
+        refreshStatus();
     }
 
     @Override
@@ -484,56 +502,118 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
         return !aprs.isEmpty() && frameDest.equalsIgnoreCase(aprs);
     }
 
-    private void ensurePanel() {
+    private void ensureStandalonePanel() {
         if (panelView != null) {
             return;
         }
         int layoutId = pluginContext.getResources().getIdentifier(
                 "packet_terminal_dropdown", "layout", pluginContext.getPackageName());
         panelView = LayoutInflater.from(pluginContext).inflate(layoutId, null);
+        View panel = panelView.findViewById(pluginContext.getResources()
+                .getIdentifier("packet_terminal_panel_root", "id", pluginContext.getPackageName()));
+        bindPanelViews(panel != null ? panel : panelView);
+    }
 
-        statusView = panelView.findViewById(pluginContext.getResources()
+    private void bindPanelViews(View panel) {
+        if (panel == null) {
+            return;
+        }
+        panelView = panel;
+        statusView = panel.findViewById(pluginContext.getResources()
                 .getIdentifier("terminal_status", "id", pluginContext.getPackageName()));
-        transcriptView = panelView.findViewById(pluginContext.getResources()
+        transcriptScrollView = panel.findViewById(pluginContext.getResources()
+                .getIdentifier("terminal_transcript_scroll", "id", pluginContext.getPackageName()));
+        transcriptView = panel.findViewById(pluginContext.getResources()
                 .getIdentifier("terminal_transcript", "id", pluginContext.getPackageName()));
-        remoteCallInput = panelView.findViewById(pluginContext.getResources()
+        remoteCallInput = panel.findViewById(pluginContext.getResources()
                 .getIdentifier("terminal_remote_call", "id", pluginContext.getPackageName()));
-        remoteSsidInput = panelView.findViewById(pluginContext.getResources()
+        remoteSsidInput = panel.findViewById(pluginContext.getResources()
                 .getIdentifier("terminal_remote_ssid", "id", pluginContext.getPackageName()));
-        lineInput = panelView.findViewById(pluginContext.getResources()
+        lineInput = panel.findViewById(pluginContext.getResources()
                 .getIdentifier("terminal_line_input", "id", pluginContext.getPackageName()));
-        connectButton = panelView.findViewById(pluginContext.getResources()
+        connectButton = panel.findViewById(pluginContext.getResources()
                 .getIdentifier("terminal_connect", "id", pluginContext.getPackageName()));
-        disconnectButton = panelView.findViewById(pluginContext.getResources()
+        disconnectButton = panel.findViewById(pluginContext.getResources()
                 .getIdentifier("terminal_disconnect", "id", pluginContext.getPackageName()));
-        sendButton = panelView.findViewById(pluginContext.getResources()
+        sendButton = panel.findViewById(pluginContext.getResources()
                 .getIdentifier("terminal_send", "id", pluginContext.getPackageName()));
-        clearButton = panelView.findViewById(pluginContext.getResources()
+        clearButton = panel.findViewById(pluginContext.getResources()
                 .getIdentifier("terminal_clear", "id", pluginContext.getPackageName()));
 
         if (transcriptView != null) {
-            transcriptView.setMovementMethod(new ScrollingMovementMethod());
             transcriptView.setText(transcript.toString());
         }
+        setupTranscriptScrollHandoff();
 
-        if (connectButton != null) {
-            connectButton.setOnClickListener(v -> startSession());
-        }
-        if (disconnectButton != null) {
-            disconnectButton.setOnClickListener(v -> stopSession());
-        }
-        if (sendButton != null) {
-            sendButton.setOnClickListener(v -> sendLine());
-        }
-        if (clearButton != null) {
-            clearButton.setOnClickListener(v -> {
-                transcript.setLength(0);
-                if (transcriptView != null) {
-                    transcriptView.setText("");
-                }
-            });
+        if (!panelListenersAttached) {
+            if (connectButton != null) {
+                connectButton.setOnClickListener(v -> startSession());
+            }
+            if (disconnectButton != null) {
+                disconnectButton.setOnClickListener(v -> stopSession());
+            }
+            if (sendButton != null) {
+                sendButton.setOnClickListener(v -> sendLine());
+            }
+            if (clearButton != null) {
+                clearButton.setOnClickListener(v -> {
+                    transcript.setLength(0);
+                    if (transcriptView != null) {
+                        transcriptView.setText("");
+                    }
+                });
+            }
+            panelListenersAttached = true;
         }
         restoreLastRemoteStation();
+    }
+
+    private void setupTranscriptScrollHandoff() {
+        if (transcriptScrollView == null) {
+            return;
+        }
+        final float[] lastTouchY = new float[1];
+        transcriptScrollView.setOnTouchListener((v, event) -> {
+            ScrollView outer = findAncestorScrollView(v.getParent());
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    lastTouchY[0] = event.getY();
+                    if (outer != null) {
+                        outer.requestDisallowInterceptTouchEvent(true);
+                    }
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    float dy = event.getY() - lastTouchY[0];
+                    lastTouchY[0] = event.getY();
+                    boolean atTop = !v.canScrollVertically(-1);
+                    boolean atBottom = !v.canScrollVertically(1);
+                    if (outer != null) {
+                        boolean handOffToOuter = (atTop && dy > 0f) || (atBottom && dy < 0f);
+                        outer.requestDisallowInterceptTouchEvent(!handOffToOuter);
+                    }
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (outer != null) {
+                        outer.requestDisallowInterceptTouchEvent(false);
+                    }
+                    break;
+                default:
+                    break;
+            }
+            return false;
+        });
+    }
+
+    private ScrollView findAncestorScrollView(ViewParent start) {
+        ViewParent cursor = start;
+        while (cursor != null) {
+            if (cursor instanceof ScrollView) {
+                return (ScrollView) cursor;
+            }
+            cursor = cursor.getParent();
+        }
+        return null;
     }
 
     private void startSession() {
@@ -1253,8 +1333,10 @@ public class PacketTerminalDropDownReceiver extends DropDownReceiver
             packetRouter.setAx25FrameListener(null);
         }
         panelView = null;
+        transcriptScrollView = null;
         statusView = null;
         transcriptView = null;
+        panelListenersAttached = false;
         remoteCallInput = null;
         remoteSsidInput = null;
         lineInput = null;

@@ -6838,7 +6838,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     .setOnCancelListener(d -> btManager.clearProbeSockets())
                     .create();
             radioPickerDialog.show();
-            appendLog("Select a radio (green = pair, red = in range, grey = off): "
+            appendLog("Select a radio (green = in range, grey = off, red = busy): "
                     + String.join(", ", names));
         } catch (Exception e) {
             Log.e(TAG, "Error showing device picker", e);

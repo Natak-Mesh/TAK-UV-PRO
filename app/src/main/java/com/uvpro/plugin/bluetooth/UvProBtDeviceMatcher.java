@@ -18,9 +18,11 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class UvProBtDeviceMatcher {
 
+    /** In range now and available to connect (bonded or not). */
     public static final int DOT_AVAILABLE = 0xFF00CC44;
-    public static final int DOT_PAIRED = 0xFFFF4444;
-    /** Bonded / remembered radio not seen advertising in the current scan. */
+    /** In range but busy — e.g. connected to another phone. */
+    public static final int DOT_BUSY = 0xFFFF4444;
+    /** Remembered/bonded radio not advertising in the current scan (off or out of range). */
     public static final int DOT_UNAVAILABLE = 0xFF888888;
     public static final int DOT_UNKNOWN = 0xFF888888;
 
@@ -187,16 +189,23 @@ public final class UvProBtDeviceMatcher {
     }
 
     public static int availabilityDotColor(int bondState, boolean seenInLiveDiscovery) {
+        return availabilityDotColor(bondState, seenInLiveDiscovery, false);
+    }
+
+    /**
+     * Picker dot: grey = not seen advertising this scan; green = in range; red = in range but busy.
+     * Bonded-to-this-phone does not imply busy — only an explicit busy signal turns the dot red.
+     */
+    public static int availabilityDotColor(int bondState,
+                                           boolean seenInLiveDiscovery,
+                                           boolean connectBusy) {
         if (!seenInLiveDiscovery) {
             return DOT_UNAVAILABLE;
         }
-        if (bondState == BluetoothDevice.BOND_BONDED) {
-            return DOT_PAIRED;
+        if (connectBusy) {
+            return DOT_BUSY;
         }
-        if (bondState == BluetoothDevice.BOND_NONE) {
-            return DOT_AVAILABLE;
-        }
-        return DOT_UNKNOWN;
+        return DOT_AVAILABLE;
     }
 
     @Nullable

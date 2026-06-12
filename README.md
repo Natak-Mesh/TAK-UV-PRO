@@ -39,6 +39,16 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Per-contact Ping (Connectors page)** | ✅ Working | Contact card page 3 adds **Ping** for mesh and established RF peers; sends a directed position request to that contact's callsign over the active transport. |
 | **Radial Ping (contact submenu)** | ✅ Working | Long-press a contact → radial **Contact** icon → **Ping** (blue radio icon). Same directed ping as Connectors; does not replace ATAK's stock friendly menu. |
 
+### 2026-06-11 Progress Update (Tool Preferences UI + restore buttons)
+
+- **Tool Preferences layout polish:** Yellow centered category headers; blue left-aligned sub-headers for **Smart Beacon Settings**, **SA Relay**, and **Reply slot times** (above Slot count in Administration); white 16sp titles with white description + green value summaries on list/edit fields; centered white **For Team Leadership ONLY** warning in Administration.
+- **Restore controls (exactly three):** **Restore All Defaults** pinned to the **top** of Tool Preferences; **Restore Defaults** under **Beacon Settings** (beacon + Smart Beacon only); **Restore Defaults** under **Administrative Settings** (admin section only). Stale duplicate restore rows from older ATAK preference caches are removed on open.
+- **Restore / Distribute pill buttons — click fix:** Pills are styled on the preference **title** row (not an embedded `Button`). ATAK’s preference `ListView` swallows nested button taps; clicks now route through `onPreferenceTreeClick()` and direct pill-action dispatch. Row-to-preference mapping uses **display order** (`Preference.getOrder()`) so labels and handlers stay aligned after scroll/recycle.
+- **Max Retries description:** *"Number of retransmit attempts before declaring delivery failure. Will re-attempt upon receipt of beacon"*.
+- **Smart Beacon Settings entry point:** Plugin panel **Smart Beacon Settings** now opens **Settings → Tool Preferences → UV-PRO** scrolled to Smart Beacon (replaces the legacy in-panel dialog).
+- **Admin footer order:** Slot fields → red distribute warning → **Distribute to net** pill (always last in Administration).
+- **Dev reload note:** After `adb install -r`, ATAK prompts to load the updated plugin — tap **OK**, then force-close/reopen ATAK when you are ready to test (do not rely on `adb shell am force-stop` during that prompt).
+
 ### 2026-06-10 Progress Update (v1.9.70)
 
 - **Directed contact ping:** 12-byte `TYPE_PING` (sender + target wire callsign). Non-target stations do not schedule a ping reply. Sender reply toasts are filtered to the ping target so routine beacons from other stations are not misreported.
@@ -355,6 +365,8 @@ app/build/outputs/apk/civ/debug/ATAK-Plugin-UVPro-*.apk
 adb install -r app/build/outputs/apk/civ/debug/ATAK-Plugin-UVPro-*.apk
 ```
 
+When ATAK is already running, accept the **load plugin** prompt after install, then restart ATAK when you want the new build active.
+
 Then open ATAK → Menu → Tools → **UV-PRO**.
 
 ### 5. Release (minified) build — `assembleCivRelease`
@@ -406,7 +418,7 @@ Use the **official ProGuard apply-mapping** from the ATAK/takrepo pipeline when 
 | **Import Channels** | Opens a chooser for CSV files in `/atak/tools/import`; after user confirmation, imports selected CSV into the active group using full-slot overwrite semantics (empty rows clear channels). |
 | **Export Channels** | Exports the active group to `/atak/tools/datapackage/transfer/groupx_export_DTG.csv`. |
 | **Initial Channel Setup (Long Press)** | Long-press only one-time group bootstrap from Actions panel: programs empty groups only with **CH30 APRS 144.390** and shows `Channel Group Setup Complete` on completion. |
-| **Plugin Settings** | APRS (FCC call, SSID, icon grid picker, message), Beacon, ping reply, SA Relay, encryption, retries, and **Administration** (slot count/time, distribute to net). Full list also under ATAK **Settings → Tool Preferences → UV-PRO Settings**. |
+| **Plugin Settings** | APRS (FCC call, SSID, icon grid picker, message), Beacon, ping reply, SA Relay, encryption, retries, restore defaults (global / per-section), and **Administration** (slot count/time, distribute to net). Full list under ATAK **Settings → Tool Preferences → UV-PRO Settings**. Panel **Smart Beacon Settings** jumps to the same Tool Preferences screen. |
 
 ### Repeater workflow (KML)
 

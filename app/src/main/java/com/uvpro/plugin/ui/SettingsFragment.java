@@ -296,6 +296,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         normalizeAprsSection();
         normalizeAdministrationSection();
         normalizeAllRestoreControls();
+        wireRestorePreferenceHandlers();
         Context ctx = getContext();
         if (ctx == null) {
             ctx = staticPluginContext;
@@ -304,7 +305,6 @@ public class SettingsFragment extends PluginPreferenceFragment
             NetSlotConfig.ensureDefaults(ctx);
         }
         ensureBluetoothDevicesPreference();
-        wireGlobalPreferences();
         wireBeaconPreferences();
         wireAprsPreferences();
         wireAdministrationPreferences();
@@ -485,48 +485,123 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (key == null) {
             return;
         }
+        firePreferenceClickByKey(key);
+    }
+
+    private void firePreferenceClickByKey(String key) {
+        if (key == null) {
+            return;
+        }
+        if (isPillActionPreferenceKey(key)) {
+            dispatchPillActionClick(key);
+            return;
+        }
+        Preference pref = findPreference(key);
+        if (pref != null && !pref.isEnabled()) {
+            return;
+        }
         Preference.OnPreferenceClickListener listener = preferenceClickHandlers.get(key);
         if (listener != null) {
             listener.onPreferenceClick(pref);
         }
     }
 
-    private void showRestoreConfirmDialog(String title, Runnable onConfirm) {
-        Context dialogCtx = getActivity() != null ? getActivity() : getContext();
-        if (dialogCtx == null || onConfirm == null) {
+    /** Pill buttons bypass the preference-click map — handlers can be lost after normalize/rebind. */
+    private void dispatchPillActionClick(String prefKey) {
+        if (prefKey == null) {
             return;
         }
-        new AlertDialog.Builder(dialogCtx)
-                .setTitle(title)
-                .setMessage("Are you sure?")
-                .setPositiveButton("Confirm", (dialog, which) -> onConfirm.run())
-                .setNegativeButton("Cancel", null)
-                .show();
+        Preference pref = findPreference(prefKey);
+        if (pref != null && !pref.isEnabled()) {
+            return;
+        }
+        switch (prefKey) {
+            case KEY_RESTORE_ALL_DEFAULTS:
+                showRestoreConfirmDialog("Restore All Defaults",
+                        () -> restoreAllDefaults(resolveSettingsContext()));
+                break;
+            case KEY_RESTORE_BEACON_DEFAULTS:
+                showRestoreConfirmDialog("Restore Defaults",
+                        () -> restoreBeaconDefaults(resolveSettingsContext()));
+                break;
+            case KEY_RESTORE_ADMIN_DEFAULTS:
+                showRestoreConfirmDialog("Restore Defaults",
+                        () -> restoreAdminDefaults(resolveSettingsContext()));
+                break;
+            case KEY_DISTRIBUTE_NET_SLOTS:
+                Context ctx = resolveSettingsContext();
+                if (ctx == null) {
+                    return;
+                }
+                boolean enabled = pref == null || pref.isEnabled();
+                pulseDistributeButtonFeedback(distributeNetButtonRowView, enabled);
+                String error = distributeNetSlotsOrError(ctx);
+                if (error == null) {
+                    int slots = NetSlotConfig.getSlotCount(ctx);
+                    float slotSec = NetSlotConfig.getSlotTimeSec(ctx);
+                    Toast.makeText(ctx,
+                            "Slot config sent (" + slots + " slots, " + slotSec + " s)",
+                            Toast.LENGTH_LONG).show();
+                    updateSummaries();
+                } else {
+                    Toast.makeText(ctx, error, Toast.LENGTH_LONG).show();
+                }
+                break;
+            default:
+                break;
+        }
     }
 
-    private void wireGlobalPreferences() {
-        registerPreferenceClickHandler(KEY_RESTORE_ALL_DEFAULTS, preference -> {
-            showRestoreConfirmDialog("Restore All Defaults",
-                    () -> restoreAllDefaults(resolveSettingsContext()));
-            return true;
-        });
+    private void wireRestorePreferenceHandlers() {
         Preference restoreAll = findPreference(KEY_RESTORE_ALL_DEFAULTS);
         if (restoreAll != null) {
             restoreAll.setSummary("");
+            attachPreferencePillClickHandler(restoreAll);
+        }
+        Preference restoreBeacon = findPreference(KEY_RESTORE_BEACON_DEFAULTS);
+        if (restoreBeacon != null) {
+            restoreBeacon.setSummary("");
+            attachPreferencePillClickHandler(restoreBeacon);
+        }
+        Preference restoreAdmin = findPreference(KEY_RESTORE_ADMIN_DEFAULTS);
+        if (restoreAdmin != null) {
+            restoreAdmin.setSummary("");
+            attachPreferencePillClickHandler(restoreAdmin);
+        }
+    }
+
+    private void showRestoreConfirmDialog(String title, Runnable onConfirm) {
+        Runnable show = () -> {
+            Context dialogCtx = getActivity();
+            if (dialogCtx == null && MapView.getMapView() != null) {
+                dialogCtx = MapView.getMapView().getContext();
+            }
+            if (dialogCtx == null) {
+                dialogCtx = resolveSettingsContext();
+            }
+            if (dialogCtx == null || onConfirm == null) {
+                return;
+            }
+            try {
+                new AlertDialog.Builder(dialogCtx)
+                        .setTitle(title)
+                        .setMessage("Are you sure?")
+                        .setPositiveButton("Confirm", (dialog, which) -> onConfirm.run())
+                        .setNegativeButton("Cancel", null)
+                        .show();
+            } catch (Exception e) {
+                android.util.Log.e("UVPro.Settings", "Restore confirm dialog failed", e);
+            }
+        };
+        if (getActivity() != null) {
+            getActivity().runOnUiThread(show);
+        } else {
+            show.run();
         }
     }
 
     private void wireBeaconPreferences() {
         syncSmartBeaconPreferenceValues();
-        registerPreferenceClickHandler(KEY_RESTORE_BEACON_DEFAULTS, preference -> {
-            showRestoreConfirmDialog("Restore Defaults",
-                    () -> restoreBeaconDefaults(resolveSettingsContext()));
-            return true;
-        });
-        Preference restoreDefaults = findPreference(KEY_RESTORE_BEACON_DEFAULTS);
-        if (restoreDefaults != null) {
-            restoreDefaults.setSummary("");
-        }
     }
 
     private void restoreBeaconDefaults(Context ctx) {
@@ -699,13 +774,17 @@ public class SettingsFragment extends PluginPreferenceFragment
         normalizeAprsSection();
         normalizeAdministrationSection();
         normalizeAllRestoreControls();
+        wireRestorePreferenceHandlers();
         ensureAdminCheckboxPreferences();
         wireCheckBoxPreference(PREF_SA_RELAY_ENABLED, false);
         wireCheckBoxPreference(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
         wireCheckBoxPreference(PREF_DISABLE_MESH_BEACON_LIMITING, false);
         updateAdminControlsEnabled();
+        refreshPreferenceList();
         ListView list = getPreferenceListView();
         if (list != null) {
+            list.setItemsCanFocus(true);
+            scheduleApplyRowStyles();
             list.setOnHierarchyChangeListener(new ViewGroup.OnHierarchyChangeListener() {
                 @Override
                 public void onChildViewAdded(View parent, View child) {
@@ -732,6 +811,20 @@ public class SettingsFragment extends PluginPreferenceFragment
             attachRowStylePreDrawListener(list);
             list.post(this::applyRowStyles);
         }
+    }
+
+    /**
+     * ATAK ListView rows swallow embedded {@link Button} taps — route pill prefs here instead.
+     */
+    @Override
+    public boolean onPreferenceTreeClick(android.preference.PreferenceScreen preferenceScreen,
+                                         Preference preference) {
+        if (preference != null && preference.getKey() != null
+                && isPillActionPreferenceKey(preference.getKey())) {
+            dispatchPillActionClick(preference.getKey());
+            return true;
+        }
+        return super.onPreferenceTreeClick(preferenceScreen, preference);
     }
 
     /** Pan onBindView runs during layout — re-apply after bind so icon gutters stay collapsed. */
@@ -787,18 +880,21 @@ public class SettingsFragment extends PluginPreferenceFragment
         for (int i = 0; i < list.getChildCount(); i++) {
             try {
                 View row = list.getChildAt(i);
-                Preference pref = resolvePreferenceForListRow(list, i);
-                if (pref == null) {
-                    pref = resolvePreferenceForRow(row);
-                }
-                if (hasVisibleEmbeddedPillButton(row)) {
-                    if (pref != null) {
-                        stylePillButtonRowForPreference(row, pref);
+                Preference pillPref = resolvePillActionPreferenceForRow(list, i, row);
+                if (pillPref != null) {
+                    String pillLabel = pillLabelForPreference(pillPref);
+                    if (!hasStablePillTitleRow(row, pillPref, pillLabel)) {
+                        stylePillButtonRowForPreference(row, pillPref);
                     } else {
-                        styleCenteredPillButtonRow(row);
+                        TextView pillTitle = row.findViewById(android.R.id.title);
+                        if (pillTitle != null) {
+                            applyPillTitleStyle(pillTitle, pillPref.isEnabled());
+                        }
+                        attachPreferencePillClickHandler(pillPref);
                     }
                     continue;
                 }
+                Preference pref = resolvePreferenceForVisibleRow(list, i, row);
                 if (pref != null) {
                     stylePreferenceRow(row, pref);
                 } else {
@@ -809,6 +905,102 @@ public class SettingsFragment extends PluginPreferenceFragment
             }
         }
         rebindAllVisibleValueSummaries();
+    }
+
+    /** List position first — must match on-screen display order (sorted by preference order). */
+    private Preference resolvePillActionPreferenceForRow(ListView list, int childIndex, View row) {
+        if (row == null) {
+            return null;
+        }
+        Preference byPosition = resolvePreferenceForListRow(list, childIndex);
+        if (byPosition != null && isPillActionPreferenceKey(byPosition.getKey())) {
+            return byPosition;
+        }
+        Object keyTag = row.getTag(ROW_PREF_KEY_TAG);
+        if (keyTag instanceof String && isPillActionPreferenceKey((String) keyTag)) {
+            Preference keyed = findPreference((String) keyTag);
+            if (keyed != null) {
+                return keyed;
+            }
+        }
+        TextView titleView = row.findViewById(android.R.id.title);
+        if (titleView != null && titleView.getText() != null) {
+            CharSequence rowTitle = titleView.getText();
+            if ("Restore All Defaults".contentEquals(rowTitle)) {
+                return findPreference(KEY_RESTORE_ALL_DEFAULTS);
+            }
+            if ("Restore Defaults".contentEquals(rowTitle)) {
+                return inferRestoreDefaultsPreference(list, childIndex);
+            }
+        }
+        return null;
+    }
+
+    private Preference inferRestoreDefaultsPreference(ListView list, int childIndex) {
+        Preference byPos = resolvePreferenceForListRow(list, childIndex);
+        if (byPos != null) {
+            String key = byPos.getKey();
+            if (KEY_RESTORE_BEACON_DEFAULTS.equals(key) || KEY_RESTORE_ADMIN_DEFAULTS.equals(key)) {
+                return byPos;
+            }
+        }
+        int position = list.getFirstVisiblePosition() + childIndex;
+        List<Preference> flat = buildFlatPreferenceList();
+        for (int i = Math.min(position, flat.size() - 1); i >= 0; i--) {
+            Preference pref = flat.get(i);
+            if (!(pref instanceof PreferenceCategory)) {
+                continue;
+            }
+            if (KEY_CAT_ADMINISTRATION.equals(pref.getKey())) {
+                return findPreference(KEY_RESTORE_ADMIN_DEFAULTS);
+            }
+            if (KEY_CAT_BEACON.equals(pref.getKey())) {
+                return findPreference(KEY_RESTORE_BEACON_DEFAULTS);
+            }
+        }
+        return null;
+    }
+
+    private void refreshPreferenceList() {
+        ListView list = getPreferenceListView();
+        if (list == null) {
+            return;
+        }
+        android.widget.ListAdapter adapter = list.getAdapter();
+        if (adapter instanceof android.widget.BaseAdapter) {
+            ((android.widget.BaseAdapter) adapter).notifyDataSetChanged();
+        }
+        list.requestLayout();
+    }
+
+    private Preference resolvePreferenceForVisibleRow(ListView list, int childIndex, View row) {
+        Preference byTitle = resolvePreferenceForRow(row);
+        if (byTitle != null && isPillActionPreferenceKey(byTitle.getKey())) {
+            return byTitle;
+        }
+        Preference byPosition = resolvePreferenceForListRow(list, childIndex);
+        if (byPosition != null) {
+            return byPosition;
+        }
+        return byTitle;
+    }
+
+    private static boolean isPillActionPreferenceKey(String key) {
+        return KEY_RESTORE_ALL_DEFAULTS.equals(key)
+                || KEY_RESTORE_BEACON_DEFAULTS.equals(key)
+                || KEY_RESTORE_ADMIN_DEFAULTS.equals(key)
+                || KEY_DISTRIBUTE_NET_SLOTS.equals(key);
+    }
+
+    private Context resolveContextForRow(View row) {
+        Context ctx = resolveSettingsContext();
+        if (ctx != null) {
+            return ctx;
+        }
+        if (row != null && row.getContext() != null) {
+            return row.getContext();
+        }
+        return staticPluginContext;
     }
 
     /** List/edit prefs and other rows with a green current-value line under the description. */
@@ -884,38 +1076,79 @@ public class SettingsFragment extends PluginPreferenceFragment
         List<Preference> flat = new ArrayList<>();
         android.preference.PreferenceScreen screen = getPreferenceScreen();
         if (screen != null) {
-            flattenPreferenceGroup(screen, flat);
+            flattenPreferenceGroupInDisplayOrder(screen, flat);
         }
         return flat;
     }
 
-    private static void flattenPreferenceGroup(PreferenceGroup group, List<Preference> out) {
+    /** Match ListView row indices — children are sorted by {@link Preference#getOrder()}. */
+    private static void flattenPreferenceGroupInDisplayOrder(PreferenceGroup group,
+                                                             List<Preference> out) {
+        List<Preference> children = new ArrayList<>();
         for (int i = 0; i < group.getPreferenceCount(); i++) {
             Preference pref = group.getPreference(i);
-            if (pref == null) {
-                continue;
+            if (pref != null) {
+                children.add(pref);
             }
+        }
+        java.util.Collections.sort(children, (left, right) -> {
+            int order = Integer.compare(left.getOrder(), right.getOrder());
+            if (order != 0) {
+                return order;
+            }
+            return left.getTitle() != null && right.getTitle() != null
+                    ? left.getTitle().toString().compareTo(right.getTitle().toString())
+                    : 0;
+        });
+        for (Preference pref : children) {
             out.add(pref);
             if (pref instanceof PreferenceGroup) {
-                flattenPreferenceGroup((PreferenceGroup) pref, out);
+                flattenPreferenceGroupInDisplayOrder((PreferenceGroup) pref, out);
             }
         }
     }
 
-    /** Match row to preference by visible title only — never list position or stale row tags. */
+    /** Match row to preference — pill rows hide title, so prefer row key tag then title. */
     private Preference resolvePreferenceForRow(View row) {
         if (row == null) {
             return null;
         }
+        Object keyTag = row.getTag(ROW_PREF_KEY_TAG);
+        if (keyTag instanceof String) {
+            Preference keyed = findPreference((String) keyTag);
+            if (keyed != null) {
+                return keyed;
+            }
+        }
         TextView titleView = row.findViewById(android.R.id.title);
-        if (titleView == null || titleView.getVisibility() != View.VISIBLE) {
-            return null;
+        if (titleView != null && titleView.getText() != null) {
+            CharSequence rowTitle = titleView.getText();
+            if ("Restore All Defaults".contentEquals(rowTitle)) {
+                return findPreference(KEY_RESTORE_ALL_DEFAULTS);
+            }
+            if ("Restore Defaults".contentEquals(rowTitle)) {
+                ListView list = getPreferenceListView();
+                if (list != null) {
+                    for (int i = 0; i < list.getChildCount(); i++) {
+                        if (list.getChildAt(i) == row) {
+                            Preference inferred = inferRestoreDefaultsPreference(list, i);
+                            if (inferred != null) {
+                                return inferred;
+                            }
+                            break;
+                        }
+                    }
+                }
+                return null;
+            }
+            if ("Distribute to net".contentEquals(rowTitle)) {
+                return findPreference(KEY_DISTRIBUTE_NET_SLOTS);
+            }
+            if (titleView.getVisibility() == View.VISIBLE) {
+                return findPreferenceByTitle(rowTitle.toString());
+            }
         }
-        CharSequence rowTitle = titleView.getText();
-        if (rowTitle == null || rowTitle.length() == 0) {
-            return null;
-        }
-        return findPreferenceByTitle(rowTitle.toString());
+        return null;
     }
 
     private static boolean titleMatchesPreference(View row, Preference pref) {
@@ -934,18 +1167,70 @@ public class SettingsFragment extends PluginPreferenceFragment
         return pill != null && pill.getVisibility() == View.VISIBLE;
     }
 
-    private static Button findEmbeddedPillButton(View row) {
-        if (!(row instanceof ViewGroup)) {
+    private static Button findEmbeddedPillButton(View root) {
+        if (!(root instanceof ViewGroup)) {
             return null;
         }
-        ViewGroup group = (ViewGroup) row;
+        ViewGroup group = (ViewGroup) root;
         for (int i = 0; i < group.getChildCount(); i++) {
             View child = group.getChildAt(i);
             if (child instanceof Button && EMBEDDED_PILL_BUTTON_TAG.equals(child.getTag())) {
                 return (Button) child;
             }
+            if (child instanceof ViewGroup) {
+                Button nested = findEmbeddedPillButton(child);
+                if (nested != null) {
+                    return nested;
+                }
+            }
         }
         return null;
+    }
+
+    private static String pillLabelForPreference(Preference pref) {
+        if (pref == null || pref.getKey() == null) {
+            return "";
+        }
+        switch (pref.getKey()) {
+            case KEY_RESTORE_ALL_DEFAULTS:
+                return "Restore All Defaults";
+            case KEY_RESTORE_BEACON_DEFAULTS:
+            case KEY_RESTORE_ADMIN_DEFAULTS:
+                return "Restore Defaults";
+            case KEY_DISTRIBUTE_NET_SLOTS:
+                return "Distribute to net";
+            default:
+                return pref.getTitle() != null ? pref.getTitle().toString() : "";
+        }
+    }
+
+    private static boolean hasStablePillTitleRow(View row, Preference pref, String label) {
+        if (row == null || pref == null || pref.getKey() == null || label == null) {
+            return false;
+        }
+        if (!pref.getKey().equals(row.getTag(ROW_PREF_KEY_TAG))) {
+            return false;
+        }
+        TextView title = row.findViewById(android.R.id.title);
+        return title != null
+                && title.getVisibility() == View.VISIBLE
+                && label.contentEquals(title.getText())
+                && title.getBackground() != null;
+    }
+
+    private void attachPreferencePillClickHandler(Preference pref) {
+        if (pref == null || pref.getKey() == null) {
+            return;
+        }
+        final String key = pref.getKey();
+        pref.setOnPreferenceClickListener(preference -> {
+            dispatchPillActionClick(key);
+            return true;
+        });
+        preferenceClickHandlers.put(key, preference -> {
+            dispatchPillActionClick(key);
+            return true;
+        });
     }
 
     private Preference findPreferenceByTitle(String title) {
@@ -998,24 +1283,6 @@ public class SettingsFragment extends PluginPreferenceFragment
             styleCategoryRow(row, title, summary);
             return;
         }
-        forceLeftAlignRow(row);
-        if (KEY_SMART_BEACON_SECTION_HEADER.equals(pref.getKey())
-                || KEY_SA_RELAY_SECTION_HEADER.equals(pref.getKey())
-                || KEY_REPLY_SLOT_TIMES_SECTION_HEADER.equals(pref.getKey())) {
-            styleBlueSectionHeaderRow(row, pref);
-            applyGatedRowVisualState(row, pref);
-            return;
-        }
-        if (KEY_DISTRIBUTE_NET_WARNING.equals(pref.getKey())) {
-            styleDistributeNetWarningRow(row, pref);
-            row.setAlpha(1f);
-            return;
-        }
-        if (KEY_DISTRIBUTE_NET_SLOTS.equals(pref.getKey())) {
-            styleDistributeNetButtonRow(row, pref);
-            row.setAlpha(1f);
-            return;
-        }
         if (KEY_RESTORE_BEACON_DEFAULTS.equals(pref.getKey())) {
             stylePillActionButtonRow(row, pref, "Restore Defaults");
             row.setAlpha(1f);
@@ -1028,6 +1295,24 @@ public class SettingsFragment extends PluginPreferenceFragment
         }
         if (KEY_RESTORE_ALL_DEFAULTS.equals(pref.getKey())) {
             stylePillActionButtonRow(row, pref, "Restore All Defaults");
+            row.setAlpha(1f);
+            return;
+        }
+        if (KEY_DISTRIBUTE_NET_SLOTS.equals(pref.getKey())) {
+            styleDistributeNetButtonRow(row, pref);
+            row.setAlpha(1f);
+            return;
+        }
+        forceLeftAlignRow(row);
+        if (KEY_SMART_BEACON_SECTION_HEADER.equals(pref.getKey())
+                || KEY_SA_RELAY_SECTION_HEADER.equals(pref.getKey())
+                || KEY_REPLY_SLOT_TIMES_SECTION_HEADER.equals(pref.getKey())) {
+            styleBlueSectionHeaderRow(row, pref);
+            applyGatedRowVisualState(row, pref);
+            return;
+        }
+        if (KEY_DISTRIBUTE_NET_WARNING.equals(pref.getKey())) {
+            styleDistributeNetWarningRow(row, pref);
             row.setAlpha(1f);
             return;
         }
@@ -1102,9 +1387,10 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (row instanceof LinearLayout) {
             ((LinearLayout) row).setGravity(Gravity.CENTER_VERTICAL | Gravity.CENTER_HORIZONTAL);
         }
-        Button pill = findEmbeddedPillButton(row);
-        if (pill != null) {
-            pill.setGravity(Gravity.CENTER);
+        TextView title = row.findViewById(android.R.id.title);
+        if (title != null) {
+            title.setGravity(Gravity.CENTER);
+            title.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
         }
     }
 
@@ -1453,9 +1739,9 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private void styleDistributeNetButtonRow(View row, Preference pref) {
-        removeEmbeddedPillButtons(row);
-        Button pillButton = ensureEmbeddedPillButton(row, pref, "Distribute to net");
-        distributeNetButtonRowView = pillButton != null ? pillButton : row;
+        stylePillActionButtonRow(row, pref, "Distribute to net");
+        TextView title = row.findViewById(android.R.id.title);
+        distributeNetButtonRowView = title != null ? title : row;
     }
 
     /** Recycled pill rows keep the prior button label unless rebound by preference key. */
@@ -1463,6 +1749,9 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (pref == null) {
             styleCenteredPillButtonRow(row);
             return;
+        }
+        if (pref.getKey() != null) {
+            row.setTag(ROW_PREF_KEY_TAG, pref.getKey());
         }
         String key = pref.getKey();
         if (KEY_DISTRIBUTE_NET_SLOTS.equals(key)) {
@@ -1482,9 +1771,76 @@ public class SettingsFragment extends PluginPreferenceFragment
         }
     }
 
+    /**
+     * Style the preference title as a pill — embedded {@link Button} widgets do not receive taps
+     * inside ATAK's preference {@link ListView}.
+     */
     private void stylePillActionButtonRow(View row, Preference pref, String label) {
+        Context ctx = resolveContextForRow(row);
+        if (ctx == null || row == null || pref == null || pref.getKey() == null) {
+            return;
+        }
         removeEmbeddedPillButtons(row);
-        ensureEmbeddedPillButton(row, pref, label);
+        row.setTag(ROW_PREF_KEY_TAG, pref.getKey());
+
+        int edgePad = dp(ctx, 16);
+        int vMargin = dp(ctx, PILL_BUTTON_ROW_MARGIN_VERTICAL_DP);
+        row.setPaddingRelative(edgePad, vMargin, edgePad, vMargin);
+        row.setBackgroundColor(0);
+
+        TextView title = row.findViewById(android.R.id.title);
+        TextView summary = row.findViewById(android.R.id.summary);
+        View contentColumn = findRowContentColumn(row, title);
+        collapseLeadingRowSlots(row, contentColumn);
+        collapseIconFrameById(row, ctx);
+        if (contentColumn instanceof LinearLayout) {
+            ((LinearLayout) contentColumn).setGravity(Gravity.CENTER_HORIZONTAL);
+        }
+        if (summary != null) {
+            summary.setVisibility(View.GONE);
+        }
+        View icon = row.findViewById(android.R.id.icon);
+        if (icon != null) {
+            icon.setVisibility(View.GONE);
+        }
+        View widgetFrame = row.findViewById(android.R.id.widget_frame);
+        if (widgetFrame != null) {
+            widgetFrame.setVisibility(View.GONE);
+        }
+        if (title != null) {
+            title.setVisibility(View.VISIBLE);
+            title.setText(label);
+            applyPillTitleStyle(title, pref.isEnabled());
+        }
+        styleCenteredPillButtonRow(row);
+        pref.setSelectable(true);
+        pref.setPersistent(false);
+        attachPreferencePillClickHandler(pref);
+    }
+
+    private static void applyPillTitleStyle(TextView title, boolean enabled) {
+        if (title == null) {
+            return;
+        }
+        Context ctx = title.getContext();
+        title.setTextColor(COLOR_WHITE);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, PILL_BUTTON_TEXT_SP);
+        title.setTypeface(Typeface.DEFAULT);
+        title.setMinHeight(dp(ctx, PILL_BUTTON_MIN_HEIGHT_DP));
+        int hPad = dp(ctx, PILL_BUTTON_PAD_HORIZONTAL_DP);
+        int vPad = dp(ctx, PILL_BUTTON_PAD_VERTICAL_DP);
+        title.setPadding(hPad, vPad, hPad, vPad);
+        title.setBackground(buildPillButtonBackground(ctx,
+                enabled ? COLOR_PILL_BUTTON_PRIMARY : COLOR_DISABLED_GREY,
+                enabled ? COLOR_PILL_BUTTON_STROKE : COLOR_DISABLED_GREY,
+                enabled ? 2 : 0));
+        title.setGravity(Gravity.CENTER);
+        title.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
+        ViewGroup.LayoutParams lp = title.getLayoutParams();
+        if (lp != null) {
+            lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+            title.setLayoutParams(lp);
+        }
     }
 
     private static void removeEmbeddedPillButtons(View root) {
@@ -1518,72 +1874,6 @@ public class SettingsFragment extends PluginPreferenceFragment
                 removeHiddenEmbeddedPillButtons(child);
             }
         }
-    }
-
-    /**
-     * Real {@link Button} matching plugin panel {@code UvproPillButton.Beacon} — preference rows
-     * are too tall when the list item background is styled as a pill.
-     */
-    private Button ensureEmbeddedPillButton(View row, Preference pref, String label) {
-        Context ctx = resolveSettingsContext();
-        if (ctx == null || row == null || pref == null) {
-            return null;
-        }
-        removeEmbeddedPillButtons(row);
-        int vMargin = dp(ctx, PILL_BUTTON_ROW_MARGIN_VERTICAL_DP);
-        row.setPaddingRelative(0, vMargin, 0, vMargin);
-        row.setBackgroundColor(0);
-        row.setMinimumHeight(0);
-
-        TextView title = row.findViewById(android.R.id.title);
-        TextView summary = row.findViewById(android.R.id.summary);
-        if (title != null) {
-            title.setVisibility(View.GONE);
-        }
-        if (summary != null) {
-            summary.setVisibility(View.GONE);
-        }
-        View icon = row.findViewById(android.R.id.icon);
-        if (icon != null) {
-            icon.setVisibility(View.GONE);
-        }
-        View widgetFrame = row.findViewById(android.R.id.widget_frame);
-        if (widgetFrame != null) {
-            widgetFrame.setVisibility(View.GONE);
-        }
-
-        Button pillButton = null;
-        if (row instanceof ViewGroup) {
-            ViewGroup rowGroup = (ViewGroup) row;
-            for (int i = 0; i < rowGroup.getChildCount(); i++) {
-                View child = rowGroup.getChildAt(i);
-                if (child instanceof Button
-                        && EMBEDDED_PILL_BUTTON_TAG.equals(child.getTag())) {
-                    pillButton = (Button) child;
-                    break;
-                }
-            }
-            if (pillButton == null) {
-                pillButton = new Button(ctx);
-                pillButton.setTag(EMBEDDED_PILL_BUTTON_TAG);
-                pillButton.setAllCaps(false);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT);
-                rowGroup.addView(pillButton, lp);
-            }
-            pillButton.setOnClickListener(v -> firePreferenceClick(pref));
-            for (int i = 0; i < rowGroup.getChildCount(); i++) {
-                View child = rowGroup.getChildAt(i);
-                child.setVisibility(child == pillButton ? View.VISIBLE : View.GONE);
-            }
-        }
-        if (pillButton != null) {
-            pillButton.setText(label);
-            applyPillButtonStyle(pillButton, pref.isEnabled());
-        }
-        styleCenteredPillButtonRow(row);
-        return pillButton;
     }
 
     private static GradientDrawable buildPillButtonBackground(Context ctx, int fillColor,
@@ -1935,6 +2225,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (admin != null) {
             ensureAdminRestoreDefaultsPreference(admin);
         }
+        wireRestorePreferenceHandlers();
     }
 
     private static boolean isRestoreControlPreference(Preference pref) {
@@ -1987,30 +2278,32 @@ public class SettingsFragment extends PluginPreferenceFragment
     /** Global restore belongs at the top of the screen, never inside a category. */
     private void ensureGlobalRestoreAllAtScreenRoot() {
         android.preference.PreferenceScreen screen = getPreferenceScreen();
-        Context ctx = getActivity() != null ? getActivity() : staticPluginContext;
+        Context ctx = resolveSettingsContext();
         if (screen == null || ctx == null) {
             return;
         }
-        Preference restoreAll = new Preference(ctx);
-        restoreAll.setKey(KEY_RESTORE_ALL_DEFAULTS);
-        restoreAll.setTitle("Restore All Defaults");
+        Preference restoreAll = findPreference(KEY_RESTORE_ALL_DEFAULTS);
+        if (restoreAll != null && restoreAll.getParent() != null) {
+            ((PreferenceGroup) restoreAll.getParent()).removePreference(restoreAll);
+        }
+        if (restoreAll == null) {
+            restoreAll = new Preference(ctx);
+            restoreAll.setKey(KEY_RESTORE_ALL_DEFAULTS);
+            restoreAll.setTitle("Restore All Defaults");
+        }
         restoreAll.setSummary("");
         restoreAll.setPersistent(false);
         restoreAll.setSelectable(true);
-        int minOrder = Preference.DEFAULT_ORDER;
+        restoreAll.setEnabled(true);
+        int topOrder = Preference.DEFAULT_ORDER;
         for (int i = 0; i < screen.getPreferenceCount(); i++) {
             Preference pref = screen.getPreference(i);
             if (pref != null) {
-                minOrder = Math.min(minOrder, pref.getOrder());
+                topOrder = Math.min(topOrder, pref.getOrder());
             }
         }
-        restoreAll.setOrder(minOrder - 1);
+        restoreAll.setOrder(topOrder - 10000);
         screen.addPreference(restoreAll);
-        registerPreferenceClickHandler(KEY_RESTORE_ALL_DEFAULTS, preference -> {
-            showRestoreConfirmDialog("Restore All Defaults",
-                    () -> restoreAllDefaults(resolveSettingsContext()));
-            return true;
-        });
     }
 
     private void dedupeAdminPreferencesByTitle(PreferenceCategory admin, String title,
@@ -2064,60 +2357,66 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (admin == null) {
             return;
         }
-        Context ctx = getActivity() != null ? getActivity() : staticPluginContext;
+        Context ctx = resolveSettingsContext();
         if (ctx == null) {
             return;
         }
-        Preference restore = new Preference(ctx);
-        restore.setKey(KEY_RESTORE_ADMIN_DEFAULTS);
-        restore.setTitle("Restore Defaults");
+        Preference restore = findPreference(KEY_RESTORE_ADMIN_DEFAULTS);
+        if (restore != null && restore.getParent() != null && restore.getParent() != admin) {
+            ((PreferenceGroup) restore.getParent()).removePreference(restore);
+        }
+        if (restore == null) {
+            restore = new Preference(ctx);
+            restore.setKey(KEY_RESTORE_ADMIN_DEFAULTS);
+            restore.setTitle("Restore Defaults");
+        }
         restore.setSummary("");
         restore.setPersistent(false);
         restore.setSelectable(true);
         int minOrder = Preference.DEFAULT_ORDER;
         for (int i = 0; i < admin.getPreferenceCount(); i++) {
             Preference pref = admin.getPreference(i);
-            if (pref != null) {
+            if (pref != null && pref != restore) {
                 minOrder = Math.min(minOrder, pref.getOrder());
             }
         }
         restore.setOrder(minOrder - 1);
-        admin.addPreference(restore);
-        registerPreferenceClickHandler(KEY_RESTORE_ADMIN_DEFAULTS, preference -> {
-            showRestoreConfirmDialog("Restore Defaults",
-                    () -> restoreAdminDefaults(resolveSettingsContext()));
-            return true;
-        });
+        if (restore.getParent() != admin) {
+            admin.addPreference(restore);
+        }
     }
 
     private void ensureBeaconRestoreDefaultsPreference(PreferenceCategory beacon) {
         if (beacon == null) {
             return;
         }
-        Context ctx = getActivity() != null ? getActivity() : staticPluginContext;
+        Context ctx = resolveSettingsContext();
         if (ctx == null) {
             return;
         }
-        Preference restore = new Preference(ctx);
-        restore.setKey(KEY_RESTORE_BEACON_DEFAULTS);
-        restore.setTitle("Restore Defaults");
+        Preference restore = findPreference(KEY_RESTORE_BEACON_DEFAULTS);
+        if (restore != null && restore.getParent() != null && restore.getParent() != beacon) {
+            ((PreferenceGroup) restore.getParent()).removePreference(restore);
+        }
+        if (restore == null) {
+            restore = new Preference(ctx);
+            restore.setKey(KEY_RESTORE_BEACON_DEFAULTS);
+            restore.setTitle("Restore Defaults");
+        }
         restore.setSummary("");
         restore.setPersistent(false);
         restore.setSelectable(true);
         int minOrder = Preference.DEFAULT_ORDER;
         for (int i = 0; i < beacon.getPreferenceCount(); i++) {
             Preference pref = beacon.getPreference(i);
-            if (pref != null) {
+            if (pref != null && pref != restore) {
                 minOrder = Math.min(minOrder, pref.getOrder());
             }
         }
         restore.setOrder(minOrder - 1);
-        beacon.addPreference(restore);
-        registerPreferenceClickHandler(KEY_RESTORE_BEACON_DEFAULTS, preference -> {
-            showRestoreConfirmDialog("Restore Defaults",
-                    () -> restoreBeaconDefaults(resolveSettingsContext()));
-            return true;
-        });
+        if (restore.getParent() != beacon) {
+            beacon.addPreference(restore);
+        }
     }
 
     private void ensureSmartBeaconSectionHeader(PreferenceCategory beacon) {
@@ -2361,6 +2660,7 @@ public class SettingsFragment extends PluginPreferenceFragment
     @Override
     public void onResume() {
         super.onResume();
+        wireRestorePreferenceHandlers();
         getPreferenceManager().getSharedPreferences()
                 .registerOnSharedPreferenceChangeListener(this);
         styleAdminLeadershipWarning();
@@ -2762,15 +3062,6 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private void wireAdministrationPreferences() {
-        registerPreferenceClickHandler(KEY_RESTORE_ADMIN_DEFAULTS, preference -> {
-            showRestoreConfirmDialog("Restore Defaults",
-                    () -> restoreAdminDefaults(resolveSettingsContext()));
-            return true;
-        });
-        Preference restoreAdmin = findPreference(KEY_RESTORE_ADMIN_DEFAULTS);
-        if (restoreAdmin != null) {
-            restoreAdmin.setSummary("");
-        }
         Preference distributeWarning = findPreference(KEY_DISTRIBUTE_NET_WARNING);
         if (distributeWarning != null) {
             distributeWarning.setTitle(DISTRIBUTE_NET_WARNING);
@@ -3801,6 +4092,13 @@ public class SettingsFragment extends PluginPreferenceFragment
      */
     public static void openRadioSettings(Context context) {
         launchPluginSettings(TOOL_SETTINGS_KEY, KEY_CAT_BEACON, context);
+    }
+
+    /**
+     * Opens plugin Tool Preferences scrolled to Smart Beacon Settings.
+     */
+    public static void openSmartBeaconSettings(Context context) {
+        launchPluginSettings(TOOL_SETTINGS_KEY, KEY_SMART_BEACON_SECTION_HEADER, context);
     }
 
     /**

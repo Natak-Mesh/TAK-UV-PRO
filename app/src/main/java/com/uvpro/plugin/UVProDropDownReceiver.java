@@ -1266,16 +1266,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             switchSmartBeacon.setOnCheckedChangeListener(smartBeaconCheckedListener);
         }
         if (btnManageSmartBeaconSettings != null) {
-            btnManageSmartBeaconSettings.setOnClickListener(v ->
-                    com.uvpro.plugin.beacon.SmartBeaconSettingsDialog.show(
-                            getMapView().getContext(), () -> {
-                                appendLog("Smart beacon settings updated.");
-                                try {
-                                    AtakBroadcast.getInstance().sendBroadcast(
-                                            new Intent(UVProMapComponent.ACTION_BEACON_INTERVAL_CHANGED));
-                                } catch (Exception ignored) {
-                                }
-                            }));
+            btnManageSmartBeaconSettings.setOnClickListener(v -> openPluginSmartBeaconSettings());
         }
         if (btnManagePluginBeaconSettings != null) {
             btnManagePluginBeaconSettings.setOnClickListener(v -> openPluginRadioSettings());
@@ -7518,6 +7509,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
             return;
         }
         SettingsFragment.openRadioSettings(ctx);
+    }
+
+    private void openPluginSmartBeaconSettings() {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SettingsFragment.openSmartBeaconSettings(ctx);
     }
 
     private void openPluginAprsSettings() {

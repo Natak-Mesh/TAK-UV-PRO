@@ -401,6 +401,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private boolean meshConnected = false;
     private boolean meshTransmitEnabled = false;
     private boolean uvproTransmitEnabled = false;
+    /** User transmit preference (MeshCore vs UV-PRO); survives auto-failover toggle swaps. */
+    private enum PreferredTransmitTransport {
+        NONE, MESH, UVPRO
+    }
+    private PreferredTransmitTransport preferredTransmitTransport = PreferredTransmitTransport.NONE;
+    private boolean transmitFailoverActive = false;
+    private static final long TRANSMIT_FAILOVER_DELAY_MS = 5 * 60 * 1000L;
+    private Runnable transmitFailoverRunnable = null;
     /** Boot-only window for connection-driven transmit defaults; closed after apply or timeout. */
     private boolean startupTransmitWindowOpen = true;
     private static final long STARTUP_TRANSMIT_WINDOW_MS = 35_000L + 2_500L + 30_000L;
@@ -587,6 +595,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                         updateMeshConnectionUI(true, name);
                         applyActiveTransmitTransport();
                         tryApplyStartupTransmitDefaults();
+                        handlePreferredTransmitTransportConnected();
                         ChatBridge.collapseAllCallsignAliasDuplicates();
                         appendLog("MeshCore connected to " + name);
                         updateMeshScanButtonText();
@@ -618,6 +627,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                         stopMeshConnectButtonPulse(true);
                         updateMeshConnectionUI(false, null);
                         applyActiveTransmitTransport();
+                        handlePreferredTransmitTransportDisconnected(PreferredTransmitTransport.MESH);
                         appendLog("MeshCore disconnected: " + reason);
                         updateMeshChannelButtonLabel();
                         updateMeshScanButtonText();
@@ -848,6 +858,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         restoreTransmitToggleStateFromPreferences(mapCtx);
         tryApplyStartupTransmitDefaults();
         syncTransmitSwitchesUi();
+        maybeScheduleTransmitFailoverAfterRestore();
 
         // Set callsign from ATAK self marker
         String callsign = MapView.getMapView().getSelfMarker().getMetaString("callsign","UNKNOWN");
@@ -1049,7 +1060,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 if (suppressTransportSwitchCallbacks || !buttonView.isPressed()) {
                     return;
                 }
-                setMeshTransmitEnabled(isChecked, true);
+                setMeshTransmitEnabled(isChecked, true, true);
             });
         }
         if (switchUvProTransmit != null) {
@@ -1057,7 +1068,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 if (suppressTransportSwitchCallbacks || !buttonView.isPressed()) {
                     return;
                 }
-                setUvproTransmitEnabled(isChecked, true);
+                setUvproTransmitEnabled(isChecked, true, true);
             });
         }
         if (switchWifiTransmit != null) {
@@ -3548,6 +3559,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             updateConnectionUI(true, finalDisplay);
             applyActiveTransmitTransport();
             tryApplyStartupTransmitDefaults();
+            handlePreferredTransmitTransportConnected();
             appendLog("Connected to " + finalDisplay);
             stopScanConnectButtonPulse(true);
             dismissRadioPickerDialog();
@@ -3594,6 +3606,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             clearDigitalOnlyStateUiOnly();
             updateConnectionUI(false, null);
             applyActiveTransmitTransport();
+            handlePreferredTransmitTransportDisconnected(PreferredTransmitTransport.UVPRO);
             appendLog("Disconnected: " + reason);
         });
     }
@@ -4054,10 +4067,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
         boolean meshConnectedNow = meshBtManager != null && meshBtManager.isConnected();
         if (uvConnected && !meshConnectedNow) {
             startupTransmitWindowOpen = false;
-            setUvproTransmitEnabled(true, true);
+            setUvproTransmitEnabled(true, true, true);
         } else if (meshConnectedNow && !uvConnected) {
             startupTransmitWindowOpen = false;
-            setMeshTransmitEnabled(true, true);
+            setMeshTransmitEnabled(true, true, true);
         }
     }
 
@@ -4081,6 +4094,123 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (meshTransmitEnabled && uvproTransmitEnabled) {
             uvproTransmitEnabled = false;
         }
+        syncPreferredTransmitTransportFromToggles();
+        transmitFailoverActive = false;
+    }
+
+    private void syncPreferredTransmitTransportFromToggles() {
+        if (meshTransmitEnabled) {
+            preferredTransmitTransport = PreferredTransmitTransport.MESH;
+        } else if (uvproTransmitEnabled) {
+            preferredTransmitTransport = PreferredTransmitTransport.UVPRO;
+        } else {
+            preferredTransmitTransport = PreferredTransmitTransport.NONE;
+        }
+    }
+
+    private boolean isUvproConnected() {
+        return btManager != null && btManager.isConnected();
+    }
+
+    private void cancelTransmitFailoverTimer() {
+        MapView mv = getMapView();
+        if (mv != null && transmitFailoverRunnable != null) {
+            mv.removeCallbacks(transmitFailoverRunnable);
+            transmitFailoverRunnable = null;
+        }
+    }
+
+    private void maybeScheduleTransmitFailoverAfterRestore() {
+        if (transmitFailoverActive) {
+            return;
+        }
+        if (preferredTransmitTransport == PreferredTransmitTransport.MESH
+                && !meshConnected && isUvproConnected()) {
+            scheduleTransmitFailoverIfNeeded();
+        } else if (preferredTransmitTransport == PreferredTransmitTransport.UVPRO
+                && !isUvproConnected() && meshConnected) {
+            scheduleTransmitFailoverIfNeeded();
+        }
+    }
+
+    private void handlePreferredTransmitTransportDisconnected(PreferredTransmitTransport transport) {
+        if (preferredTransmitTransport != transport || transmitFailoverActive) {
+            return;
+        }
+        scheduleTransmitFailoverIfNeeded();
+    }
+
+    private void handlePreferredTransmitTransportConnected() {
+        if (transmitFailoverActive) {
+            boolean preferredMesh = preferredTransmitTransport == PreferredTransmitTransport.MESH;
+            boolean preferredUvpro = preferredTransmitTransport == PreferredTransmitTransport.UVPRO;
+            if ((preferredMesh && meshConnected) || (preferredUvpro && isUvproConnected())) {
+                transmitFailoverActive = false;
+                cancelTransmitFailoverTimer();
+                if (preferredMesh) {
+                    setUvproTransmitEnabled(false, false, false);
+                    setMeshTransmitEnabled(true, false, false);
+                    appendPluginLog("Transmit failover: MeshCore reconnected — restored MeshCore transmit");
+                } else if (preferredUvpro) {
+                    setMeshTransmitEnabled(false, false, false);
+                    setUvproTransmitEnabled(true, false, false);
+                    appendPluginLog("Transmit failover: UV-PRO reconnected — restored UV-PRO transmit");
+                }
+            }
+            return;
+        }
+        if (preferredTransmitTransport == PreferredTransmitTransport.MESH && meshConnected) {
+            cancelTransmitFailoverTimer();
+        } else if (preferredTransmitTransport == PreferredTransmitTransport.UVPRO
+                && isUvproConnected()) {
+            cancelTransmitFailoverTimer();
+        }
+    }
+
+    private void scheduleTransmitFailoverIfNeeded() {
+        cancelTransmitFailoverTimer();
+        if (transmitFailoverActive || preferredTransmitTransport == PreferredTransmitTransport.NONE) {
+            return;
+        }
+        boolean alternateReady = false;
+        if (preferredTransmitTransport == PreferredTransmitTransport.MESH) {
+            alternateReady = !meshConnected && isUvproConnected();
+        } else if (preferredTransmitTransport == PreferredTransmitTransport.UVPRO) {
+            alternateReady = !isUvproConnected() && meshConnected;
+        }
+        if (!alternateReady) {
+            return;
+        }
+        MapView mv = getMapView();
+        if (mv == null) {
+            return;
+        }
+        transmitFailoverRunnable = () -> {
+            transmitFailoverRunnable = null;
+            evaluateAndApplyTransmitFailover();
+        };
+        mv.postDelayed(transmitFailoverRunnable, TRANSMIT_FAILOVER_DELAY_MS);
+    }
+
+    private void evaluateAndApplyTransmitFailover() {
+        if (transmitFailoverActive) {
+            return;
+        }
+        if (preferredTransmitTransport == PreferredTransmitTransport.MESH
+                && !meshConnected && isUvproConnected()) {
+            transmitFailoverActive = true;
+            setMeshTransmitEnabled(false, false, false);
+            setUvproTransmitEnabled(true, false, false);
+            appendPluginLog(
+                    "Transmit failover: MeshCore disconnected >5 min — switched to UV-PRO transmit");
+        } else if (preferredTransmitTransport == PreferredTransmitTransport.UVPRO
+                && !isUvproConnected() && meshConnected) {
+            transmitFailoverActive = true;
+            setUvproTransmitEnabled(false, false, false);
+            setMeshTransmitEnabled(true, false, false);
+            appendPluginLog(
+                    "Transmit failover: UV-PRO disconnected >5 min — switched to MeshCore transmit");
+        }
     }
 
     private void persistTransmitTogglePreferences() {
@@ -4095,7 +4225,16 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 .apply();
     }
 
-    private void setMeshTransmitEnabled(boolean enabled, boolean logChange) {
+    private void setMeshTransmitEnabled(boolean enabled, boolean logChange, boolean userPreferenceChange) {
+        if (userPreferenceChange) {
+            cancelTransmitFailoverTimer();
+            transmitFailoverActive = false;
+            if (enabled) {
+                preferredTransmitTransport = PreferredTransmitTransport.MESH;
+            } else if (preferredTransmitTransport == PreferredTransmitTransport.MESH) {
+                preferredTransmitTransport = PreferredTransmitTransport.NONE;
+            }
+        }
         meshTransmitEnabled = enabled;
         if (enabled) {
             uvproTransmitEnabled = false;
@@ -4110,7 +4249,16 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
     }
 
-    private void setUvproTransmitEnabled(boolean enabled, boolean logChange) {
+    private void setUvproTransmitEnabled(boolean enabled, boolean logChange, boolean userPreferenceChange) {
+        if (userPreferenceChange) {
+            cancelTransmitFailoverTimer();
+            transmitFailoverActive = false;
+            if (enabled) {
+                preferredTransmitTransport = PreferredTransmitTransport.UVPRO;
+            } else if (preferredTransmitTransport == PreferredTransmitTransport.UVPRO) {
+                preferredTransmitTransport = PreferredTransmitTransport.NONE;
+            }
+        }
         uvproTransmitEnabled = enabled;
         if (enabled) {
             meshTransmitEnabled = false;

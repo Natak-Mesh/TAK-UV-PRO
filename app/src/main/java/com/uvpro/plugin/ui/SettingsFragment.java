@@ -3319,17 +3319,14 @@ public class SettingsFragment extends PluginPreferenceFragment
 
         Preference beaconPref = findPreference(PREF_BEACON_INTERVAL);
         if (beaconPref != null) {
-            boolean smartBeaconOn = ctx != null && SmartBeacon.isEnabled(ctx);
-            beaconPref.setEnabled(!smartBeaconOn);
-            String beaconValue = smartBeaconOn
-                    ? "Smart Beacon active"
-                    : getListPreferenceValueLabel(PREF_BEACON_INTERVAL);
+            beaconPref.setEnabled(true);
+            String beaconValue = getListPreferenceValueLabel(PREF_BEACON_INTERVAL);
             if (beaconValue == null || beaconValue.isEmpty()) {
                 beaconValue = prefs.getString(PREF_BEACON_INTERVAL, DEFAULT_BEACON_INTERVAL)
                         + " seconds";
             }
             beaconPref.setSummary(formatSummaryWithValue(
-                    BEACON_INTERVAL_DESC, beaconValue, beaconPref.isEnabled()));
+                    BEACON_INTERVAL_DESC, beaconValue, true));
         }
 
         updateSmartBeaconFieldSummaries();
@@ -3599,9 +3596,6 @@ public class SettingsFragment extends PluginPreferenceFragment
             ctx = resolveSettingsContext();
         }
         if (PREF_BEACON_INTERVAL.equals(key)) {
-            if (ctx != null && SmartBeacon.isEnabled(ctx)) {
-                return "Smart Beacon active";
-            }
             String label = getListPreferenceValueLabel(key);
             if (label == null || label.isEmpty()) {
                 SharedPreferences prefs = getPreferenceManager().getSharedPreferences();
@@ -3893,6 +3887,20 @@ public class SettingsFragment extends PluginPreferenceFragment
             return Integer.parseInt(val);
         } catch (NumberFormatException e) {
             return 60;
+        }
+    }
+
+    public static void setBeaconIntervalSec(Context context, int seconds) {
+        if (context == null || seconds < 1) {
+            return;
+        }
+        getPrefs(context).edit()
+                .putString(PREF_BEACON_INTERVAL, String.valueOf(seconds))
+                .apply();
+        try {
+            AtakBroadcast.getInstance().sendBroadcast(
+                    new android.content.Intent(UVProMapComponent.ACTION_BEACON_INTERVAL_CHANGED));
+        } catch (Exception ignored) {
         }
     }
 

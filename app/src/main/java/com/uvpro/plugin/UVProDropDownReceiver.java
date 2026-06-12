@@ -340,7 +340,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 }
                 Context c = getMapView().getContext();
                 SmartBeacon.setEnabled(c, isChecked);
-                applySmartBeaconIntervalGreyState(isChecked);
+                applyBeaconIntervalRowState();
                 appendLog("Smart beacon " + (isChecked ? "on" : "off"));
                 try {
                     AtakBroadcast.getInstance().sendBroadcast(
@@ -942,6 +942,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
         beaconIntervalText = rootView.findViewById(getId("text_beacon_interval"));
         gpsBeaconIntervalLabel = rootView.findViewById(getId("text_gps_beacon_interval_label"));
         rowBeaconInterval = rootView.findViewById(getId("row_beacon_interval"));
+        if (rowBeaconInterval != null) {
+            rowBeaconInterval.setClickable(true);
+            rowBeaconInterval.setFocusable(true);
+            rowBeaconInterval.setOnClickListener(v -> showBeaconIntervalPicker());
+        }
         switchSmartBeacon = rootView.findViewById(getId("switch_smart_beacon"));
         btnManageSmartBeaconSettings = rootView.findViewById(getId("btn_manage_smart_beacon_settings"));
         btnManagePluginBeaconSettings = rootView.findViewById(getId("btn_manage_plugin_beacon_settings"));
@@ -4517,7 +4522,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (switchSmartBeacon != null) {
             switchSmartBeacon.setChecked(smartOn);
         }
-        applySmartBeaconIntervalGreyState(smartOn);
+        applyBeaconIntervalRowState();
         if (switchAugmentGpsFromRadio != null) {
             switchAugmentGpsFromRadio.setChecked(isAugmentGpsPreferenceEnabled(ctx));
         }
@@ -5639,20 +5644,77 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 : "Long Press for Radio Silence");
     }
 
-    /** Dims the fixed-interval row when Smart Beacon controls the rate. */
-    private void applySmartBeaconIntervalGreyState(boolean smartOn) {
-        float alpha = smartOn ? 0.38f : 1.0f;
+    /** GPS beacon interval row stays visible and editable regardless of Smart Beacon. */
+    private void applyBeaconIntervalRowState() {
         if (rowBeaconInterval != null) {
-            rowBeaconInterval.setAlpha(alpha);
+            rowBeaconInterval.setAlpha(1.0f);
+            rowBeaconInterval.setEnabled(true);
         }
-        int labelColor = smartOn ? 0xFF666666 : 0xFFFFFFFF;
-        int valueColor = smartOn ? 0xFF6A9EAC : 0xFF00BCD4;
         if (gpsBeaconIntervalLabel != null) {
-            gpsBeaconIntervalLabel.setTextColor(labelColor);
+            gpsBeaconIntervalLabel.setTextColor(0xFFFFFFFF);
         }
         if (beaconIntervalText != null) {
-            beaconIntervalText.setTextColor(valueColor);
+            beaconIntervalText.setTextColor(0xFF00BCD4);
         }
+    }
+
+    private void showBeaconIntervalPicker() {
+        MapView mv = getMapView();
+        if (mv == null) {
+            return;
+        }
+        Context ctx = mv.getContext();
+        int labelsId = pluginContext.getResources().getIdentifier(
+                "beacon_interval_labels", "array", pluginContext.getPackageName());
+        int valuesId = pluginContext.getResources().getIdentifier(
+                "beacon_interval_values", "array", pluginContext.getPackageName());
+        if (labelsId == 0 || valuesId == 0) {
+            return;
+        }
+        String[] labels = pluginContext.getResources().getStringArray(labelsId);
+        String[] values = pluginContext.getResources().getStringArray(valuesId);
+        if (labels.length == 0 || labels.length != values.length) {
+            return;
+        }
+        int currentSec = SettingsFragment.getBeaconIntervalSec(ctx);
+        int selected = 0;
+        for (int i = 0; i < values.length; i++) {
+            try {
+                if (Integer.parseInt(values[i]) == currentSec) {
+                    selected = i;
+                    break;
+                }
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        final int initialSelection = selected;
+        AlertDialog dialog = new AlertDialog.Builder(ctx)
+                .setTitle("GPS Beacon Interval")
+                .setSingleChoiceItems(labels, initialSelection, null)
+                .setPositiveButton("Set", null)
+                .setNegativeButton("Cancel", null)
+                .create();
+        dialog.setOnShowListener(d -> {
+            android.widget.Button setBtn = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (setBtn != null) {
+                setBtn.setOnClickListener(v -> {
+                    android.widget.ListView list = dialog.getListView();
+                    int which = list != null ? list.getCheckedItemPosition() : initialSelection;
+                    if (which < 0 || which >= values.length) {
+                        which = initialSelection;
+                    }
+                    try {
+                        int sec = Integer.parseInt(values[which]);
+                        SettingsFragment.setBeaconIntervalSec(ctx, sec);
+                        updateStatusFields();
+                        appendLog("Beacon interval set to " + sec + "s");
+                    } catch (NumberFormatException ignored) {
+                    }
+                    dialog.dismiss();
+                });
+            }
+        });
+        dialog.show();
     }
 
     private void syncEncryptionFromSettings() {

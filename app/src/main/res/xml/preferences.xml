@@ -98,7 +98,7 @@
 
             android:summary="Above this speed the fastest rate is used"
 
-            android:defaultValue="60"
+            android:defaultValue="25"
 
             android:dialogTitle="High Speed Threshold (mph)"
 
@@ -114,7 +114,7 @@
 
             android:summary="Max time between beacons when slow or stopped"
 
-            android:defaultValue="300"
+            android:defaultValue="1800"
 
             android:dialogTitle="Slow Rate (seconds)"
 
@@ -234,7 +234,7 @@
 
             android:title="Max Retries"
 
-            android:summary="Number of retransmit attempts before declaring delivery failure"
+            android:summary="Number of retransmit attempts before declaring delivery failure. Will re-attempt upon receipt of beacon"
 
             android:defaultValue="3"
 
@@ -364,6 +364,20 @@
 
         <Preference
 
+            android:key="uvpro_restore_admin_defaults"
+
+            android:title="Restore Defaults"
+
+            android:summary=""
+
+            android:persistent="false"
+
+            android:selectable="true" />
+
+
+
+        <Preference
+
             android:key="uvpro_admin_leadership_warning"
 
             android:title="For Team Leadership ONLY"
@@ -439,6 +453,22 @@
             android:summary="When SA Relay is enabled, forward inbound RF CoT to TAK network. Use with care to avoid unintended rebroadcast loops."
 
             android:defaultValue="false" />
+
+
+
+        <Preference
+
+            android:key="uvpro_reply_slot_times_section_header"
+
+            android:title="Reply slot times"
+
+            android:summary="This sets the random replies of acknowledgements to avoid data collisions. Slot count should be twice the number of operators using the net"
+
+            android:selectable="false"
+
+            android:persistent="false"
+
+            android:enabled="true" />
 
 
 

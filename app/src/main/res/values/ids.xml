@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="uvpro_row_pref_key" type="id" />
+    <item name="uvpro_summary_watcher" type="id" />
+    <item name="uvpro_summary_rebind" type="id" />
+</resources>

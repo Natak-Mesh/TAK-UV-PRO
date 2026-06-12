@@ -32,8 +32,8 @@ public class SmartBeacon {
     // Default OFF so fixed beacon interval remains authoritative unless explicitly enabled.
     public static final boolean DEFAULT_ENABLED        = false;
     public static final int     DEFAULT_LOW_SPEED      = 1;    // mph
-    public static final int     DEFAULT_HIGH_SPEED     = 60;   // mph
-    public static final int     DEFAULT_SLOW_RATE      = 300;  // seconds (5 min)
+    public static final int     DEFAULT_HIGH_SPEED     = 25;   // mph
+    public static final int     DEFAULT_SLOW_RATE      = 1800;  // seconds (30 min)
     public static final int     DEFAULT_FAST_RATE      = 60;   // seconds (1 min)
     public static final int     DEFAULT_MIN_TURN_TIME  = 15;   // seconds
     public static final int     DEFAULT_TURN_THRESHOLD = 30;   // degrees

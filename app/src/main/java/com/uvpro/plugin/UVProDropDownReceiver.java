@@ -5547,6 +5547,19 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
     }
 
+    /**
+     * Append a line to the plugin log window from non-UI callers (e.g. MapComponent).
+     */
+    public void appendPluginLog(String message) {
+        if (message == null || message.isEmpty()) {
+            return;
+        }
+        MapView mv = getMapView();
+        if (mv != null) {
+            mv.post(() -> appendLog(message));
+        }
+    }
+
     private void appendLog(String message) {
         SimpleDateFormat sdf = new SimpleDateFormat("HH:mm:ss",
                 Locale.US);

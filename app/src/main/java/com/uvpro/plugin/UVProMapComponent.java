@@ -12,6 +12,7 @@ import android.util.Log;
 
 import com.atakmap.android.dropdown.DropDownMapComponent;
 import com.atakmap.android.ipc.AtakBroadcast;
+import com.uvpro.plugin.beacon.MeshBeaconLimits;
 import com.uvpro.plugin.beacon.SmartBeacon;
 import com.atakmap.android.maps.MapItem;
 import com.atakmap.android.maps.MapView;
@@ -2442,13 +2443,18 @@ try {
     }
 
     private long getBeaconTimerDelayMs() {
-        if (SmartBeacon.isEnabled(getBeaconPrefsContext())) {
-            int checkSec = SmartBeacon.getRecommendedCheckIntervalSec(getBeaconPrefsContext());
+        Context beaconCtx = getBeaconPrefsContext();
+        boolean meshLimits = MeshBeaconLimits.isActive(beaconCtx);
+        if (SmartBeacon.isEnabled(beaconCtx)) {
+            int checkSec = SmartBeacon.getRecommendedCheckIntervalSec(beaconCtx, meshLimits);
             return Math.max(1, checkSec) * 1000L;
         }
         int intervalSec = SettingsFragment.getBeaconIntervalSec(pluginContext);
         if (intervalSec < 1) {
             intervalSec = 1;
+        }
+        if (meshLimits) {
+            intervalSec = MeshBeaconLimits.capIntervalSec(beaconCtx, intervalSec);
         }
         return intervalSec * 1000L;
     }
@@ -2477,15 +2483,14 @@ try {
     }
 
     private void sendBeaconIfConnected(boolean forceImmediate) {
-        // Startup (30s post-connect): UV-PRO or MeshCore per active transmit preference.
-        // Smart/periodic beacons: UV-PRO when connected.
+        // Startup (30s post-connect) and periodic beacons use active transmit preference.
         BtConnectionManager beaconTransport = forceImmediate
                 ? resolveStartupBeaconTransportManager()
                 : resolvePeriodicBeaconTransportManager();
         if (beaconTransport == null || !beaconTransport.isConnected()) {
             Log.d(TAG, forceImmediate
                     ? "Startup beacon skipped: no connected transmit transport"
-                    : "Periodic beacon skipped: UV-PRO not connected");
+                    : "Periodic beacon skipped: active transmit transport not connected");
             return;
         }
         if (cotBridge == null || mapView == null) return;
@@ -2539,18 +2544,27 @@ try {
             double speedMph = speedMs * 2.23694;
 
             Context beaconCtx = getBeaconPrefsContext();
+            final boolean meshLimitedBeacon = beaconTransport == meshBtConnectionManager
+                    && MeshBeaconLimits.isActive(beaconCtx);
             if (!forceImmediate && SmartBeacon.isEnabled(beaconCtx)) {
-                boolean smartFire = smartBeacon.shouldBeacon(beaconCtx, speedMph, course);
+                boolean smartFire = smartBeacon.shouldBeacon(
+                        beaconCtx, speedMph, course, meshLimitedBeacon);
                 // Safety floor: if the fixed beacon interval has elapsed, send regardless.
                 // This prevents Smart Beacon from silently blocking beacons when speed
                 // cannot be determined (GPS not reporting, speed=0 while moving).
                 int fixedIntervalSec = SettingsFragment.getBeaconIntervalSec(pluginContext);
                 if (fixedIntervalSec < 1) fixedIntervalSec = 60;
+                if (meshLimitedBeacon) {
+                    fixedIntervalSec = MeshBeaconLimits.capIntervalSec(
+                            beaconCtx, fixedIntervalSec);
+                }
                 boolean floorFire = smartBeacon.elapsedSinceLastBeaconSec() >= fixedIntervalSec;
                 Log.d(TAG, "Smart beacon check: speed=" + String.format("%.1f", speedMph)
                         + "mph (src=" + speedSrc + ")"
                         + " course=" + String.format("%.0f", course) + "°"
-                        + " smartFire=" + smartFire + " floorFire=" + floorFire);
+                        + " meshLimited=" + meshLimitedBeacon
+                        + " smartFire=" + smartFire + " floorFire=" + floorFire
+                        + " floorSec=" + fixedIntervalSec);
                 if (!smartFire && !floorFire) return;
                 smartBeacon.recordBeacon(course);
                 Log.d(TAG, "Smart beacon fired (smartFire=" + smartFire
@@ -2578,7 +2592,15 @@ try {
                         gp.getLatitude(), gp.getLongitude(),
                         gp.getAltitude(), (float) speedMs, (float) course, -1);
                 openRlSent = true;
-                Log.d(TAG, (forceImmediate ? "Startup" : "Periodic") + " OPENRL beacon sent");
+                String transportLabel = beaconTransport == meshBtConnectionManager
+                        ? "MeshCore" : "UV-PRO";
+                String beaconKind = forceImmediate ? "Startup" : "Periodic";
+                Log.d(TAG, beaconKind + " OPENRL beacon sent");
+                logBeaconSentToPluginUi(String.format(Locale.US,
+                        "%s beacon sent (%s OPENRL)%s",
+                        beaconKind,
+                        transportLabel,
+                        meshLimitedBeacon ? " [mesh limits]" : ""));
             }
 
             if (aprsEnabled && !openRlSent
@@ -2587,6 +2609,7 @@ try {
                         beaconCtx, btConnectionManager);
                 if (aprsOk) {
                     Log.d(TAG, "Periodic APRS beacon sent");
+                    logBeaconSentToPluginUi("Periodic beacon sent (UV-PRO APRS)");
                 }
             } else if (aprsEnabled && openRlSent) {
                 Log.d(TAG, "Periodic APRS beacon skipped (OPENRL sent this cycle)");
@@ -2603,6 +2626,12 @@ try {
                 || (meshBtConnectionManager != null && meshBtConnectionManager.isConnected());
     }
 
+    private void logBeaconSentToPluginUi(String message) {
+        if (dropDownReceiver != null) {
+            dropDownReceiver.appendPluginLog(message);
+        }
+    }
+
     private void applyActiveTransmitTransportFromPreference() {
         BtConnectionManager active = resolveBeaconTransportManager();
         if (cotBridge != null) {
@@ -2613,12 +2642,9 @@ try {
         }
     }
 
-    /** UV-PRO transport for periodic beacons when connected. */
+    /** Active transmit transport for periodic beacons (MeshCore or UV-PRO per preference). */
     private BtConnectionManager resolvePeriodicBeaconTransportManager() {
-        if (btConnectionManager != null && btConnectionManager.isConnected()) {
-            return btConnectionManager;
-        }
-        return null;
+        return resolveBeaconTransportManager();
     }
 
     /** Post-connect startup beacon on active transmit path. */

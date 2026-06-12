@@ -38,6 +38,20 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Connection battery indicators** | ✅ Working | Green percent badge beside each connected device name in the plugin panel — UV-PRO via GAIA `READ_STATUS`, MeshCore via battery/stats commands. |
 | **Per-contact Ping (Connectors page)** | ✅ Working | Contact card page 3 adds **Ping** for mesh and established RF peers; sends a directed position request to that contact's callsign over the active transport. |
 | **Radial Ping (contact submenu)** | ✅ Working | Long-press a contact → radial **Contact** icon → **Ping** (blue radio icon). Same directed ping as Connectors; does not replace ATAK's stock friendly menu. |
+| **Transmit auto-failover** | ✅ Working | Preferred MeshCore vs UV-PRO transmit is tracked separately from the active toggle. If the preferred radio disconnects for **5+ minutes** while the alternate is connected, the toggle switches automatically; it restores when the preferred device reconnects. Manual toggle changes update preference and cancel failover. Logged in the main plugin panel. |
+| **Mesh beacon rate limits** | ✅ Working | When **ATAK MeshCore Transmit** is on and **Disable Mesh Beacon Limiting** is unchecked, runtime floors cap mesh periodic/Smart Beacon rates (interval/slow ≥ 30 min, fast/min-turn ≥ 5 min) without changing stored prefs. UV-PRO-only beacons are unaffected; checking the disable box removes caps. |
+| **Mesh map Delete Contact** | ✅ Working | Long-press a MeshCore node marker → details panel → **Delete Contact** removes the map item and ATAK contact (same pattern as APRS delete). |
+
+### 2026-06-12 Progress Update (v1.9.70)
+
+- **Transmit auto-failover:** Tracks user **preferred** transmit transport (MeshCore vs UV-PRO) separately from the on-screen toggle. After the preferred device is disconnected for five minutes with the alternate connected, the toggle switches to the alternate (prefs/UI update; preference unchanged). Preferred device reconnect restores the toggle immediately. Manual transmit toggle updates preference and clears auto-failover. Failover and restore lines appear in the main plugin log window.
+- **Mesh beacon runtime limits:** New `MeshBeaconLimits` applies floors at TX decision time when MeshCore transmit is active and mesh limiting is not disabled: fixed interval / slow rate ≥ 1800 s, fast rate / min turn time ≥ 300 s. Stored Smart Beacon prefs are not rewritten; UV-PRO periodic beacons ignore these caps.
+- **Periodic beacon transport:** Startup and periodic OPENRL beacons use the **active transmit transport** (`resolvePeriodicBeaconTransportManager()`), not UV-PRO only, when MeshCore transmit is selected.
+- **Automatic beacon logging:** Startup/periodic OPENRL (MeshCore or UV-PRO) and periodic APRS sends append timestamped lines to the main plugin panel log for mesh/radio field testing.
+- **Mesh map Delete Contact:** `MeshDetailsDropDownReceiver` adds **Delete Contact** on the mesh marker details dropdown to remove the selected node marker and its ATAK contact entry.
+- **AX.25 Packet Terminal:** Graceful BBS hangup (`B` I-frame when connected, spaced DISC with poll/nopoll), KISS TX timing prime and frequency-lock reaffirm on disconnect, `hangupInProgress` blocks auto-reconnect during teardown, and last remote callsign/SSID persist across terminal reopen. Terminal is embedded inline in the scrollable plugin panel.
+- **Independent transmit toggles:** MeshCore and UV-PRO transmit switches operate independently with persisted prefs; `TransmitTransportResolver` routes TX to the connected path with silent fallback when the preferred transport is down (failover additionally updates the toggle after 5 min).
+- **Boot / BT (carry-over):** UV-PRO-first boot auto-connect, MeshCore boot after radio resolves (~35 s watchdog), classic BT passive reconnect with scan-button strobe feedback, and mesh fast-restore after radio/mesh BLE contention.
 
 ### 2026-06-11 Progress Update (Tool Preferences UI + restore buttons)
 

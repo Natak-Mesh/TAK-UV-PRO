@@ -251,7 +251,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private TextView gpsBeaconIntervalLabel;
     private View rowBeaconInterval;
     private Switch switchSmartBeacon;
-    private Button btnManageSmartBeaconSettings;
     private Button btnManagePluginBeaconSettings;
     private Button btnAprsBeaconArm;
     private TextView textAprsStatusCall;
@@ -948,7 +947,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
             rowBeaconInterval.setOnClickListener(v -> showBeaconIntervalPicker());
         }
         switchSmartBeacon = rootView.findViewById(getId("switch_smart_beacon"));
-        btnManageSmartBeaconSettings = rootView.findViewById(getId("btn_manage_smart_beacon_settings"));
         btnManagePluginBeaconSettings = rootView.findViewById(getId("btn_manage_plugin_beacon_settings"));
         btnAprsBeaconArm = rootView.findViewById(getId("btn_aprs_beacon_arm"));
         textAprsStatusCall = rootView.findViewById(getId("text_aprs_status_call"));
@@ -1269,9 +1267,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         if (switchSmartBeacon != null) {
             switchSmartBeacon.setOnCheckedChangeListener(smartBeaconCheckedListener);
-        }
-        if (btnManageSmartBeaconSettings != null) {
-            btnManageSmartBeaconSettings.setOnClickListener(v -> openPluginSmartBeaconSettings());
         }
         if (btnManagePluginBeaconSettings != null) {
             btnManagePluginBeaconSettings.setOnClickListener(v -> openPluginRadioSettings());
@@ -7571,14 +7566,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
             return;
         }
         SettingsFragment.openRadioSettings(ctx);
-    }
-
-    private void openPluginSmartBeaconSettings() {
-        Context ctx = getMapView() != null ? getMapView().getContext() : null;
-        if (ctx == null) {
-            return;
-        }
-        SettingsFragment.openSmartBeaconSettings(ctx);
     }
 
     private void openPluginAprsSettings() {

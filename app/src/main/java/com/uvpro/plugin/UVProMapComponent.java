@@ -2546,6 +2546,7 @@ try {
             Context beaconCtx = getBeaconPrefsContext();
             final boolean meshLimitedBeacon = beaconTransport == meshBtConnectionManager
                     && MeshBeaconLimits.isActive(beaconCtx);
+            int meshLimitSec = -1;
             if (!forceImmediate && SmartBeacon.isEnabled(beaconCtx)) {
                 boolean smartFire = smartBeacon.shouldBeacon(
                         beaconCtx, speedMph, course, meshLimitedBeacon);
@@ -2566,11 +2567,24 @@ try {
                         + " smartFire=" + smartFire + " floorFire=" + floorFire
                         + " floorSec=" + fixedIntervalSec);
                 if (!smartFire && !floorFire) return;
+                if (meshLimitedBeacon) {
+                    if (smartFire) {
+                        meshLimitSec = smartBeacon.getFiringLimitSec(
+                                beaconCtx, speedMph, course, true);
+                    }
+                    if (meshLimitSec < 1 && floorFire) {
+                        meshLimitSec = fixedIntervalSec;
+                    }
+                }
                 smartBeacon.recordBeacon(course);
                 Log.d(TAG, "Smart beacon fired (smartFire=" + smartFire
                         + " floorFire=" + floorFire + ")");
             } else if (forceImmediate) {
                 Log.d(TAG, "Post-connect startup beacon fired (30s)");
+            } else if (meshLimitedBeacon) {
+                int intervalSec = SettingsFragment.getBeaconIntervalSec(pluginContext);
+                if (intervalSec < 1) intervalSec = 60;
+                meshLimitSec = MeshBeaconLimits.capIntervalSec(beaconCtx, intervalSec);
             }
 
             boolean disableAtak = com.uvpro.plugin.ui.SettingsFragment
@@ -2596,11 +2610,8 @@ try {
                         ? "MeshCore" : "UV-PRO";
                 String beaconKind = forceImmediate ? "Startup" : "Periodic";
                 Log.d(TAG, beaconKind + " OPENRL beacon sent");
-                logBeaconSentToPluginUi(String.format(Locale.US,
-                        "%s beacon sent (%s OPENRL)%s",
-                        beaconKind,
-                        transportLabel,
-                        meshLimitedBeacon ? " [mesh limits]" : ""));
+                logBeaconSentToPluginUi(formatBeaconSentLog(
+                        beaconKind, transportLabel, meshLimitedBeacon, meshLimitSec));
             }
 
             if (aprsEnabled && !openRlSent
@@ -2630,6 +2641,16 @@ try {
         if (dropDownReceiver != null) {
             dropDownReceiver.appendPluginLog(message);
         }
+    }
+
+    private static String formatBeaconSentLog(String beaconKind, String transportLabel,
+                                              boolean meshLimited, int limitSec) {
+        String base = String.format(Locale.US, "%s beacon sent (%s OPENRL)",
+                beaconKind, transportLabel);
+        if (meshLimited && limitSec > 0) {
+            return base + String.format(Locale.US, " (limited to %d seconds)", limitSec);
+        }
+        return base;
     }
 
     private void applyActiveTransmitTransportFromPreference() {

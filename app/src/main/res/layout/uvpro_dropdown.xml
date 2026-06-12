@@ -911,15 +911,6 @@
                 android:paddingTop="2dp"
                 android:paddingBottom="4dp" />
 
-            <Button
-                android:id="@+id/btn_manage_smart_beacon_settings"
-                style="@style/UvproPillButton.Beacon"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Smart Beacon Settings"
-                android:background="@drawable/bg_uvpro_beacon_button" />
-
             <LinearLayout
                 android:id="@+id/row_beacon_interval"
                 android:layout_width="match_parent"

@@ -22,7 +22,7 @@ Follow **MeshcoreAtak** as the baseline unless the user overrides:
 When working on Darksteal Tool Preferences, **preserve** established styling:
 
 - **Category headers**: yellow (`#FFEB3B`), bold, 18sp, **centered** (Beacon, Radio, APRS, Security, Administrative)
-- **Smart Beacon sub-header**: blue (`#FF1976D2`), bold, centered
+- **Smart Beacon / SA Relay sub-headers**: blue (`#FF1976D2`), bold, **left-aligned**
 - **Setting titles**: white, 16sp
 - **Summaries**: white description line + **green** (`#4CAF50`) value line, 16sp, two rows
 - **Admin-gated rows**: grey when locked/disabled

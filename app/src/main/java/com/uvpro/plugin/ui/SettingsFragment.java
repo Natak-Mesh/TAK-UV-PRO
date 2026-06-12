@@ -1,8 +1,12 @@
 package com.uvpro.plugin.ui;
 
+import android.animation.ArgbEvaluator;
+import android.animation.ValueAnimator;
+import android.graphics.drawable.GradientDrawable;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
@@ -22,14 +26,18 @@ import android.preference.PreferenceCategory;
 import android.preference.PreferenceGroup;
 import android.preference.PreferenceManager;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.AbsListView;
 import android.widget.ListView;
 import android.widget.Spinner;
 import android.widget.Switch;
@@ -50,7 +58,9 @@ import com.uvpro.plugin.UVProMapComponent;
 import com.uvpro.plugin.beacon.SmartBeacon;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Settings screen for the UVPro plugin.
@@ -70,16 +80,37 @@ public class SettingsFragment extends PluginPreferenceFragment
     private static final int COLOR_VALUE_GREEN = 0xFF4CAF50;
     private static final int COLOR_DISABLED_GREY = 0xFF757575;
     private static final int COLOR_WARNING_RED = 0xFFFF5252;
+    private static final int PILL_CORNER_RADIUS_DP = 20;
+    private static final int COLOR_PILL_BUTTON_PRIMARY = 0xFF455A64;
+    private static final int COLOR_PILL_BUTTON_STROKE = 0xFF00BCD4;
+    private static final int PILL_BUTTON_TEXT_SP = 15;
+    private static final int PILL_PULSE_STROKE_DP = 3;
+    /** Matches {@code @style/UvproPillButton} on the plugin dropdown panel. */
+    private static final int PILL_BUTTON_MIN_HEIGHT_DP = 40;
+    private static final int PILL_BUTTON_PAD_HORIZONTAL_DP = 16;
+    private static final int PILL_BUTTON_PAD_VERTICAL_DP = 8;
+    private static final int PILL_BUTTON_ROW_MARGIN_VERTICAL_DP = 4;
+    private static final String EMBEDDED_PILL_BUTTON_TAG = "uvpro_embedded_pill_button";
+    private static final String EMBEDDED_CHECKBOX_TAG = "uvpro_embedded_checkbox";
+
+    private static View distributeNetButtonRowView;
+    private static ValueAnimator distributeButtonPulseAnimator;
+    private static GradientDrawable distributeButtonPulseDrawable;
+    private static View distributeButtonPulseTarget;
+    private static boolean distributeButtonPulseRestoreEnabled = true;
     private static final int PREFERENCE_TITLE_TEXT_SP = 16;
     private static final float CATEGORY_TITLE_TEXT_SP = 18f;
 
     /** Beacon interval + Smart Beacon (Tool Preferences section). */
+    public static final String KEY_RESTORE_ALL_DEFAULTS = "uvpro_restore_all_defaults";
     public static final String KEY_CAT_BEACON = "uvpro_cat_beacon";
+    public static final String KEY_RESTORE_BEACON_DEFAULTS = "uvpro_restore_beacon_defaults";
     public static final String KEY_SMART_BEACON_SECTION_HEADER = "uvpro_smart_beacon_section_header";
     private static final String BEACON_INTERVAL_DESC =
             "Sets the ATAK call sign beacon interval";
     private static final String APRS_ICON_DESC = "Map symbol for your position beacons";
     private static final String APRS_ICON_NOT_SET = "Not Set";
+    private static final int APRS_ICON_SUMMARY_DP = 36;
 
     /** Key registered with {@code ToolsPreferenceFragment} in {@link com.uvpro.plugin.UVProMapComponent}. */
     public static final String TOOL_SETTINGS_KEY = "uvproPreference";
@@ -97,8 +128,9 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String PREF_PING_REPLY_SAME_TRANSPORT = "uvpro_ping_reply_same_transport";
     public static final String PREF_ATAK_MESHCORE_TRANSMIT = "uvpro_atak_meshcore_transmit";
     public static final String PREF_ATAK_UVPRO_TRANSMIT = "uvpro_atak_uvpro_transmit";
-  /** National-only mesh periodic beacons — hidden until administrative unlock. */
-    public static final String PREF_MESH_BEACON_ENABLED = "uvpro_mesh_beacon_enabled";
+    /** Admin-only — UI persistence only; limiting logic wired elsewhere. */
+    public static final String PREF_DISABLE_MESH_BEACON_LIMITING =
+            "uvpro_disable_mesh_beacon_limiting";
 
     public static final String PREF_APRS_CALLSIGN = "uvpro_aprs_callsign";
     public static final String PREF_APRS_SSID = "uvpro_aprs_ssid";
@@ -120,14 +152,55 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String KEY_DISTRIBUTE_NET_WARNING = "uvpro_distribute_net_warning";
     private static final String DISTRIBUTE_NET_WARNING =
             "WARNING: DO NOT SEND THIS FEATURE UNLESS SPECIFICALLY DIRECTED BY HIGHER";
-    public static final String KEY_ADMIN_CURRENT_SLOT_STATUS = "uvpro_admin_current_slot_status";
-    public static final String KEY_MESH_BEACON_NATIONAL_WARNING = "uvpro_mesh_beacon_national_warning";
+    private static final String DISABLE_MESH_BEACON_LIMITING_DESC =
+            "When disabled, this allows mesh beaconing to follow all smart beacon "
+                    + "settings without mesh limits";
     public static final String KEY_SA_RELAY_SECTION_HEADER = "uvpro_sa_relay_section_header";
 
+    /** String prefs mirrored into ATAK default SharedPreferences (runtime source of truth). */
+    private static final String[] MIRROR_STRING_PREF_KEYS = {
+            PREF_BEACON_INTERVAL,
+            PREF_RETRY_INTERVAL_MIN,
+            PREF_RETRY_MAX,
+            PREF_APRS_CALLSIGN,
+            PREF_APRS_SSID,
+            PREF_APRS_MESSAGE,
+            PREF_ENCRYPTION_PASSPHRASE,
+            NetSlotConfig.PREF_SLOT_COUNT,
+            NetSlotConfig.PREF_SLOT_TIME_SEC,
+            SmartBeacon.KEY_LOW_SPEED,
+            SmartBeacon.KEY_HIGH_SPEED,
+            SmartBeacon.KEY_SLOW_RATE,
+            SmartBeacon.KEY_FAST_RATE,
+            SmartBeacon.KEY_MIN_TURN_TIME,
+            SmartBeacon.KEY_TURN_THRESHOLD,
+            SmartBeacon.KEY_TURN_SLOPE,
+    };
+
+    private static final String[] MIRROR_BOOLEAN_PREF_KEYS = {
+            PREF_PING_REPLY_ENABLED,
+            PREF_SA_RELAY_ENABLED,
+            PREF_RF_TO_TAK_UPLINK_ENABLED,
+            PREF_DISABLE_MESH_BEACON_LIMITING,
+            NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED,
+    };
+
+    private static boolean isCheckboxPreferenceKey(String key) {
+        return PREF_PING_REPLY_ENABLED.equals(key)
+                || PREF_SA_RELAY_ENABLED.equals(key)
+                || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)
+                || PREF_DISABLE_MESH_BEACON_LIMITING.equals(key)
+                || NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED.equals(key);
+    }
+
+    private static boolean isCheckboxPreference(Preference pref) {
+        return pref != null
+                && (pref instanceof CheckBoxPreference
+                || isCheckboxPreferenceKey(pref.getKey()));
+    }
+
     private static final String[] ADMIN_GATED_PREF_KEYS = {
-            KEY_ADMIN_LEADERSHIP_WARNING,
-            KEY_MESH_BEACON_NATIONAL_WARNING,
-            PREF_MESH_BEACON_ENABLED,
+            PREF_DISABLE_MESH_BEACON_LIMITING,
             KEY_SA_RELAY_SECTION_HEADER,
             PREF_SA_RELAY_ENABLED,
             PREF_RF_TO_TAK_UPLINK_ENABLED,
@@ -135,20 +208,39 @@ public class SettingsFragment extends PluginPreferenceFragment
             NetSlotConfig.PREF_SLOT_TIME_SEC,
             KEY_DISTRIBUTE_NET_WARNING,
             KEY_DISTRIBUTE_NET_SLOTS,
-            KEY_ADMIN_CURRENT_SLOT_STATUS,
+    };
+
+    /** Bottom of Administrative Settings — warning then distribute button. */
+    private static final String[] ADMIN_FOOTER_PREF_KEYS = {
+            NetSlotConfig.PREF_SLOT_COUNT,
+            NetSlotConfig.PREF_SLOT_TIME_SEC,
+            KEY_DISTRIBUTE_NET_WARNING,
+            KEY_DISTRIBUTE_NET_SLOTS,
+    };
+
+    /** Never belong inside Administrative Settings. */
+    private static final String[] REMOVE_FROM_ADMIN_KEYS = {
+            KEY_RESTORE_BEACON_DEFAULTS,
+            KEY_RESTORE_ALL_DEFAULTS,
     };
 
     /** Injected after inflate — some ATAK builds omit custom Pan* prefs from XML. */
     public static final String KEY_BLUETOOTH_DEVICES = "uvpro_bluetooth_devices";
     public static final String KEY_CAT_RADIO = "uvpro_cat_radio";
 
-    public static final String DEFAULT_BEACON_INTERVAL = "600";
+    public static final String DEFAULT_BEACON_INTERVAL = "300";
     public static final String DEFAULT_RETRY_INTERVAL_MIN = "2";
     public static final String DEFAULT_RETRY_MAX = "3";
+    public static final String DEFAULT_APRS_SSID = "9";
 
     private static Context staticPluginContext;
 
     private PreferenceCategory adminCategory;
+    private final Map<String, Preference.OnPreferenceClickListener> preferenceClickHandlers =
+            new HashMap<>();
+    private boolean adminUnlockDialogOpen = false;
+    /** Blocks spurious enable events fired while disabling admin settings. */
+    private boolean suppressAdminPasswordPrompt = false;
 
     /**
      * Zero-arg constructor required by Android fragment system.
@@ -176,6 +268,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         super.onCreate(savedInstanceState);
         ensureRequiredPreferences();
         removeObsoletePreferences();
+        normalizeAdministrationSection();
         Context ctx = getContext();
         if (ctx == null) {
             ctx = staticPluginContext;
@@ -184,14 +277,321 @@ public class SettingsFragment extends PluginPreferenceFragment
             NetSlotConfig.ensureDefaults(ctx);
         }
         ensureBluetoothDevicesPreference();
+        wireGlobalPreferences();
         wireBeaconPreferences();
         wireAprsPreferences();
         wireAdministrationPreferences();
+        wirePersistentPreferenceWriters();
+    }
+
+    /** Ensure Pan* widgets persist into ATAK SharedPreferences when the user saves. */
+    private void wirePersistentPreferenceWriters() {
+        wireEditTextPreference(PREF_APRS_CALLSIGN, true);
+        wireEditTextPreference(PREF_APRS_MESSAGE, false);
+        wireEditTextPreference(PREF_ENCRYPTION_PASSPHRASE, false);
+        wireEditTextPreference(NetSlotConfig.PREF_SLOT_COUNT, false);
+        wireEditTextPreference(NetSlotConfig.PREF_SLOT_TIME_SEC, false);
+        wireEditTextPreference(SmartBeacon.KEY_LOW_SPEED, false);
+        wireEditTextPreference(SmartBeacon.KEY_HIGH_SPEED, false);
+        wireEditTextPreference(SmartBeacon.KEY_SLOW_RATE, false);
+        wireEditTextPreference(SmartBeacon.KEY_FAST_RATE, false);
+        wireEditTextPreference(SmartBeacon.KEY_MIN_TURN_TIME, false);
+        wireEditTextPreference(SmartBeacon.KEY_TURN_THRESHOLD, false);
+        wireEditTextPreference(SmartBeacon.KEY_TURN_SLOPE, false);
+
+        wireListPreference(PREF_BEACON_INTERVAL);
+        wireListPreference(PREF_RETRY_INTERVAL_MIN);
+        wireListPreference(PREF_RETRY_MAX);
+        wireListPreference(PREF_APRS_SSID);
+
+        wireCheckBoxPreference(PREF_PING_REPLY_ENABLED, true);
+        wireCheckBoxPreference(PREF_SA_RELAY_ENABLED, false);
+        wireCheckBoxPreference(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
+        wireCheckBoxPreference(PREF_DISABLE_MESH_BEACON_LIMITING, false);
         wireAdminSettingsGate();
+    }
+
+    private void wireCheckBoxPreference(String key, boolean defaultValue) {
+        Preference pref = findPreference(key);
+        if (!(pref instanceof CheckBoxPreference)) {
+            return;
+        }
+        pref.setOnPreferenceChangeListener((preference, newValue) -> {
+            boolean checked = Boolean.TRUE.equals(newValue);
+            persistBooleanPrefToAtak(key, checked);
+            if (preference instanceof CheckBoxPreference) {
+                ((CheckBoxPreference) preference).setChecked(checked);
+            }
+            afterPreferenceValueSaved(key);
+            if (PREF_SA_RELAY_ENABLED.equals(key)) {
+                updateDependentPreferences();
+                ListView list = getPreferenceListView();
+                if (list != null) {
+                    list.post(this::applyRowStyles);
+                }
+            }
+            return true;
+        });
+    }
+
+    private void wireEditTextPreference(String key, boolean uppercase) {
+        Preference pref = findPreference(key);
+        if (!(pref instanceof EditTextPreference)) {
+            return;
+        }
+        pref.setOnPreferenceChangeListener((preference, newValue) -> {
+            String text = newValue != null ? newValue.toString().trim() : "";
+            if (uppercase) {
+                text = text.toUpperCase(java.util.Locale.US);
+            }
+            persistStringPrefToAtak(key, text);
+            if (preference instanceof PanEditTextPreference) {
+                ((PanEditTextPreference) preference).setText(text);
+            }
+            afterPreferenceValueSaved(key);
+            return true;
+        });
+    }
+
+    private void wireListPreference(String key) {
+        Preference pref = findPreference(key);
+        if (!(pref instanceof ListPreference)) {
+            return;
+        }
+        pref.setOnPreferenceChangeListener((preference, newValue) -> {
+            String value = newValue != null ? newValue.toString() : "";
+            persistStringPrefToAtak(key, value);
+            if (preference instanceof ListPreference) {
+                ((ListPreference) preference).setValue(value);
+            }
+            afterPreferenceValueSaved(key);
+            return true;
+        });
+    }
+
+    private void persistStringPrefToAtak(String key, String value) {
+        Context ctx = resolveSettingsContext();
+        if (ctx == null) {
+            return;
+        }
+        if (value == null) {
+            value = "";
+        }
+        value = value.trim();
+        if (PREF_APRS_CALLSIGN.equals(key)) {
+            value = value.toUpperCase(java.util.Locale.US);
+        }
+        getPrefs(ctx).edit().putString(key, value).apply();
+    }
+
+    private void persistBooleanPrefToAtak(String key, boolean value) {
+        Context ctx = resolveSettingsContext();
+        if (ctx == null) {
+            return;
+        }
+        getPrefs(ctx).edit().putBoolean(key, value).apply();
+    }
+
+    private void afterPreferenceValueSaved(String key) {
+        if (isSmartBeaconParamKey(key)) {
+            Context smartCtx = resolveSettingsContext();
+            if (smartCtx != null) {
+                persistSmartBeaconFromPreferences(getPrefs(smartCtx));
+            }
+        }
+        if (NetSlotConfig.PREF_SLOT_COUNT.equals(key)
+                || NetSlotConfig.PREF_SLOT_TIME_SEC.equals(key)) {
+            normalizeSlotPreferences(getPreferenceManager().getSharedPreferences());
+        }
+        if (PREF_BEACON_INTERVAL.equals(key)
+                || isSmartBeaconParamKey(key)
+                || PREF_PING_REPLY_ENABLED.equals(key)) {
+            notifyRuntimeSettingsChanged();
+        }
+        if (PREF_APRS_CALLSIGN.equals(key) || PREF_APRS_MESSAGE.equals(key)
+                || PREF_APRS_SSID.equals(key)) {
+            notifyRuntimeSettingsChanged();
+        }
+        if (PREF_ENCRYPTION_PASSPHRASE.equals(key)) {
+            com.uvpro.plugin.protocol.UVProRadioServices.syncEncryptionFromSettings(
+                    resolveSettingsContext());
+        }
+        if (PREF_SA_RELAY_ENABLED.equals(key)) {
+            updateDependentPreferences();
+        }
+        updateSummaries();
+        ListView list = getPreferenceListView();
+        if (list != null) {
+            list.post(this::applyRowStyles);
+        }
+    }
+
+    private void wireGlobalPreferences() {
+        registerPreferenceClickHandler(KEY_RESTORE_ALL_DEFAULTS, preference -> {
+            showRestoreConfirmDialog("Restore All Defaults",
+                    () -> restoreAllDefaults(resolveSettingsContext()));
+            return true;
+        });
+        Preference restoreAll = findPreference(KEY_RESTORE_ALL_DEFAULTS);
+        if (restoreAll != null) {
+            restoreAll.setSummary("");
+        }
+    }
+
+    private void registerPreferenceClickHandler(String key,
+                                                Preference.OnPreferenceClickListener listener) {
+        preferenceClickHandlers.put(key, listener);
+        Preference pref = findPreference(key);
+        if (pref != null) {
+            pref.setOnPreferenceClickListener(listener);
+        }
+    }
+
+    private void firePreferenceClick(Preference pref) {
+        if (pref == null || !pref.isEnabled()) {
+            return;
+        }
+        String key = pref.getKey();
+        if (key == null) {
+            return;
+        }
+        Preference.OnPreferenceClickListener listener = preferenceClickHandlers.get(key);
+        if (listener != null) {
+            listener.onPreferenceClick(pref);
+        }
+    }
+
+    private void showRestoreConfirmDialog(String title, Runnable onConfirm) {
+        Context dialogCtx = getActivity() != null ? getActivity() : getContext();
+        if (dialogCtx == null || onConfirm == null) {
+            return;
+        }
+        new AlertDialog.Builder(dialogCtx)
+                .setTitle(title)
+                .setMessage("Are you sure?")
+                .setPositiveButton("Confirm", (dialog, which) -> onConfirm.run())
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void wireBeaconPreferences() {
         syncSmartBeaconPreferenceValues();
+        registerPreferenceClickHandler(KEY_RESTORE_BEACON_DEFAULTS, preference -> {
+            showRestoreConfirmDialog("Restore Defaults",
+                    () -> restoreBeaconDefaults(resolveSettingsContext()));
+            return true;
+        });
+        Preference restoreDefaults = findPreference(KEY_RESTORE_BEACON_DEFAULTS);
+        if (restoreDefaults != null) {
+            restoreDefaults.setSummary("");
+        }
+    }
+
+    private void restoreBeaconDefaults(Context ctx) {
+        if (ctx == null) {
+            return;
+        }
+        getPrefs(ctx).edit()
+                .putString(PREF_BEACON_INTERVAL, DEFAULT_BEACON_INTERVAL)
+                .apply();
+        setListPreferenceValue(PREF_BEACON_INTERVAL, DEFAULT_BEACON_INTERVAL);
+        SmartBeacon.setEnabled(ctx, SmartBeacon.DEFAULT_ENABLED);
+        SmartBeacon.saveAll(ctx,
+                SmartBeacon.DEFAULT_LOW_SPEED,
+                SmartBeacon.DEFAULT_HIGH_SPEED,
+                SmartBeacon.DEFAULT_SLOW_RATE,
+                SmartBeacon.DEFAULT_FAST_RATE,
+                SmartBeacon.DEFAULT_MIN_TURN_TIME,
+                SmartBeacon.DEFAULT_TURN_THRESHOLD,
+                SmartBeacon.DEFAULT_TURN_SLOPE);
+        refreshSettingsUiAfterRestore(ctx);
+    }
+
+    private void restoreAllDefaults(Context ctx) {
+        if (ctx == null) {
+            return;
+        }
+        getPrefs(ctx).edit()
+                .putString(PREF_BEACON_INTERVAL, DEFAULT_BEACON_INTERVAL)
+                .putBoolean(PREF_PING_REPLY_ENABLED, true)
+                .putString(PREF_RETRY_INTERVAL_MIN, DEFAULT_RETRY_INTERVAL_MIN)
+                .putString(PREF_RETRY_MAX, DEFAULT_RETRY_MAX)
+                .putString(PREF_APRS_CALLSIGN, "")
+                .putString(PREF_APRS_SSID, DEFAULT_APRS_SSID)
+                .putString(PREF_APRS_SYMBOL_TABLE, "/")
+                .putString(PREF_APRS_SYMBOL_CODE, ">")
+                .putBoolean(PREF_APRS_ICON_SELECTED, false)
+                .putString(PREF_APRS_MESSAGE, "")
+                .putString(PREF_ENCRYPTION_PASSPHRASE, "")
+                .putBoolean(PREF_ENCRYPTION_ENABLED, false)
+                .putBoolean(PREF_SA_RELAY_ENABLED, false)
+                .putBoolean(PREF_RF_TO_TAK_UPLINK_ENABLED, false)
+                .putBoolean(PREF_DISABLE_MESH_BEACON_LIMITING, false)
+                .putString(NetSlotConfig.PREF_SLOT_COUNT,
+                        String.valueOf(NetSlotConfig.DEFAULT_SLOT_COUNT))
+                .putString(NetSlotConfig.PREF_SLOT_TIME_SEC,
+                        String.valueOf(NetSlotConfig.DEFAULT_SLOT_TIME_SEC))
+                .apply();
+        SmartBeacon.setEnabled(ctx, SmartBeacon.DEFAULT_ENABLED);
+        SmartBeacon.saveAll(ctx,
+                SmartBeacon.DEFAULT_LOW_SPEED,
+                SmartBeacon.DEFAULT_HIGH_SPEED,
+                SmartBeacon.DEFAULT_SLOW_RATE,
+                SmartBeacon.DEFAULT_FAST_RATE,
+                SmartBeacon.DEFAULT_MIN_TURN_TIME,
+                SmartBeacon.DEFAULT_TURN_THRESHOLD,
+                SmartBeacon.DEFAULT_TURN_SLOPE);
+        AdminAccessGate.lock(ctx);
+        setListPreferenceValue(PREF_BEACON_INTERVAL, DEFAULT_BEACON_INTERVAL);
+        setCheckBoxPreferenceValue(PREF_PING_REPLY_ENABLED, true);
+        setListPreferenceValue(PREF_RETRY_INTERVAL_MIN, DEFAULT_RETRY_INTERVAL_MIN);
+        setListPreferenceValue(PREF_RETRY_MAX, DEFAULT_RETRY_MAX);
+        setEditTextPreferenceText(PREF_APRS_CALLSIGN, "");
+        setListPreferenceValue(PREF_APRS_SSID, DEFAULT_APRS_SSID);
+        setEditTextPreferenceText(PREF_APRS_MESSAGE, "");
+        setEditTextPreferenceText(PREF_ENCRYPTION_PASSPHRASE, "");
+        setCheckBoxPreferenceValue(PREF_SA_RELAY_ENABLED, false);
+        setCheckBoxPreferenceValue(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
+        setCheckBoxPreferenceValue(PREF_DISABLE_MESH_BEACON_LIMITING, false);
+        setCheckBoxPreferenceValue(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false);
+        setEditTextPreferenceText(NetSlotConfig.PREF_SLOT_COUNT,
+                String.valueOf(NetSlotConfig.DEFAULT_SLOT_COUNT));
+        setEditTextPreferenceText(NetSlotConfig.PREF_SLOT_TIME_SEC,
+                String.valueOf(NetSlotConfig.DEFAULT_SLOT_TIME_SEC));
+        refreshSettingsUiAfterRestore(ctx);
+    }
+
+    private void refreshSettingsUiAfterRestore(Context ctx) {
+        syncAllPreferencesFromAtakToUi();
+        syncSmartBeaconPreferenceValues();
+        syncAdminSettingsGateOnResume();
+        updateAdminControlsEnabled();
+        updateDependentPreferences();
+        updateSummaries();
+        Preference aprsIconPref = findPreference(KEY_APRS_ICON);
+        if (aprsIconPref != null) {
+            updateAprsIconSummary(aprsIconPref);
+        }
+        com.uvpro.plugin.protocol.UVProRadioServices.syncEncryptionFromSettings(ctx);
+        notifyRuntimeSettingsChanged();
+        ListView list = getPreferenceListView();
+        if (list != null) {
+            list.post(this::applyRowStyles);
+        }
+    }
+
+    private void setListPreferenceValue(String key, String value) {
+        Preference pref = findPreference(key);
+        if (pref instanceof ListPreference) {
+            ((ListPreference) pref).setValue(value);
+        }
+    }
+
+    private void setCheckBoxPreferenceValue(String key, boolean checked) {
+        Preference pref = findPreference(key);
+        if (pref instanceof CheckBoxPreference) {
+            ((CheckBoxPreference) pref).setChecked(checked);
+        }
     }
 
     private void syncSmartBeaconPreferenceValues() {
@@ -219,28 +619,64 @@ public class SettingsFragment extends PluginPreferenceFragment
 
     private void setEditTextPreferenceText(String key, String value) {
         Preference pref = findPreference(key);
-        if (pref instanceof PanEditTextPreference) {
-            ((PanEditTextPreference) pref).setText(value);
+        if (pref instanceof EditTextPreference) {
+            ((EditTextPreference) pref).setText(value != null ? value : "");
         }
     }
 
     @Override
     public void onActivityCreated(Bundle savedInstanceState) {
         super.onActivityCreated(savedInstanceState);
+        normalizeAdministrationSection();
+        ensureAdminCheckboxPreferences();
+        wireCheckBoxPreference(PREF_SA_RELAY_ENABLED, false);
+        wireCheckBoxPreference(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
+        wireCheckBoxPreference(PREF_DISABLE_MESH_BEACON_LIMITING, false);
+        updateAdminControlsEnabled();
         ListView list = getPreferenceListView();
         if (list != null) {
             list.setOnHierarchyChangeListener(new ViewGroup.OnHierarchyChangeListener() {
                 @Override
                 public void onChildViewAdded(View parent, View child) {
-                    child.post(SettingsFragment.this::applyRowStyles);
+                    scheduleApplyRowStyles();
                 }
 
                 @Override
                 public void onChildViewRemoved(View parent, View child) {
                 }
             });
+            list.setOnScrollListener(new AbsListView.OnScrollListener() {
+                @Override
+                public void onScrollStateChanged(AbsListView view, int scrollState) {
+                    if (scrollState == AbsListView.OnScrollListener.SCROLL_STATE_IDLE) {
+                        scheduleApplyRowStyles();
+                    }
+                }
+
+                @Override
+                public void onScroll(AbsListView view, int firstVisibleItem,
+                                     int visibleItemCount, int totalItemCount) {
+                }
+            });
+            attachRowStylePreDrawListener(list);
             list.post(this::applyRowStyles);
         }
+    }
+
+    /** Pan onBindView runs during layout — re-apply after bind so icon gutters stay collapsed. */
+    private void attachRowStylePreDrawListener(ListView list) {
+        if (list == null || rowStylePreDrawListenerAttached) {
+            return;
+        }
+        rowStylePreDrawListenerAttached = true;
+        ViewTreeObserver observer = list.getViewTreeObserver();
+        observer.addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+            @Override
+            public boolean onPreDraw() {
+                scheduleApplyRowStyles();
+                return true;
+            }
+        });
     }
 
     private ListView getPreferenceListView() {
@@ -251,18 +687,38 @@ public class SettingsFragment extends PluginPreferenceFragment
         return root.findViewById(android.R.id.list);
     }
 
+    private Runnable pendingRowStyleApply;
+    private boolean rowStylePreDrawListenerAttached;
+
+    private void scheduleApplyRowStyles() {
+        ListView list = getPreferenceListView();
+        if (list == null) {
+            return;
+        }
+        if (pendingRowStyleApply == null) {
+            pendingRowStyleApply = this::applyRowStyles;
+        }
+        list.removeCallbacks(pendingRowStyleApply);
+        list.post(pendingRowStyleApply);
+    }
+
     private void applyRowStyles() {
         ListView list = getPreferenceListView();
         if (list == null) {
             return;
         }
-        List<Preference> ordered = buildOrderedPreferences();
         for (int i = 0; i < list.getChildCount(); i++) {
             try {
                 View row = list.getChildAt(i);
-                Preference pref = resolvePreferenceForRow(list, row, i, ordered);
-                if (pref != null) {
+                if (hasVisibleEmbeddedPillButton(row)) {
+                    styleCenteredPillButtonRow(row);
+                    continue;
+                }
+                Preference pref = resolvePreferenceForRow(row);
+                if (pref != null && titleMatchesPreference(row, pref)) {
                     stylePreferenceRow(row, pref);
+                } else {
+                    forceLeftAlignRow(row);
                 }
             } catch (Exception e) {
                 android.util.Log.w("UVPro.Settings", "applyRowStyles failed for row " + i, e);
@@ -270,43 +726,48 @@ public class SettingsFragment extends PluginPreferenceFragment
         }
     }
 
-    private List<Preference> buildOrderedPreferences() {
-        List<Preference> out = new ArrayList<>();
-        android.preference.PreferenceScreen screen = getPreferenceScreen();
-        if (screen != null) {
-            collectPreferencesInOrder(screen, out);
-        }
-        return out;
-    }
-
-    private void collectPreferencesInOrder(PreferenceGroup group, List<Preference> out) {
-        for (int i = 0; i < group.getPreferenceCount(); i++) {
-            Preference pref = group.getPreference(i);
-            out.add(pref);
-            if (pref instanceof PreferenceGroup) {
-                collectPreferencesInOrder((PreferenceGroup) pref, out);
-            }
-        }
-    }
-
-    private Preference resolvePreferenceForRow(ListView list, View row, int childIndex,
-                                               List<Preference> ordered) {
-        int position = list.getFirstVisiblePosition() + childIndex;
-        if (position >= 0 && position < ordered.size()) {
-            Preference candidate = ordered.get(position);
-            if (preferenceMatchesRow(candidate, row)) {
-                return candidate;
-            }
+    /** Match row to preference by visible title only — never list position or stale row tags. */
+    private Preference resolvePreferenceForRow(View row) {
+        if (row == null) {
+            return null;
         }
         TextView titleView = row.findViewById(android.R.id.title);
-        if (titleView != null && titleView.getText() != null) {
-            Preference byTitle = findPreferenceByTitle(titleView.getText().toString());
-            if (byTitle != null) {
-                return byTitle;
-            }
+        if (titleView == null || titleView.getVisibility() != View.VISIBLE) {
+            return null;
         }
-        if (position >= 0 && position < ordered.size()) {
-            return ordered.get(position);
+        CharSequence rowTitle = titleView.getText();
+        if (rowTitle == null || rowTitle.length() == 0) {
+            return null;
+        }
+        return findPreferenceByTitle(rowTitle.toString());
+    }
+
+    private static boolean titleMatchesPreference(View row, Preference pref) {
+        if (row == null || pref == null || pref.getTitle() == null) {
+            return false;
+        }
+        TextView titleView = row.findViewById(android.R.id.title);
+        if (titleView == null || titleView.getText() == null) {
+            return false;
+        }
+        return titleView.getText().toString().equals(pref.getTitle().toString());
+    }
+
+    private static boolean hasVisibleEmbeddedPillButton(View row) {
+        Button pill = findEmbeddedPillButton(row);
+        return pill != null && pill.getVisibility() == View.VISIBLE;
+    }
+
+    private static Button findEmbeddedPillButton(View row) {
+        if (!(row instanceof ViewGroup)) {
+            return null;
+        }
+        ViewGroup group = (ViewGroup) row;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child instanceof Button && EMBEDDED_PILL_BUTTON_TAG.equals(child.getTag())) {
+                return (Button) child;
+            }
         }
         return null;
     }
@@ -338,51 +799,76 @@ public class SettingsFragment extends PluginPreferenceFragment
         return null;
     }
 
-    private boolean preferenceMatchesRow(Preference pref, View row) {
-        if (pref == null || row == null) {
-            return false;
+    private static final float DISABLED_ROW_ALPHA = 0.38f;
+
+    private void applyGatedRowVisualState(View row, Preference pref) {
+        if (row == null || pref == null) {
+            return;
         }
-        TextView titleView = row.findViewById(android.R.id.title);
-        if (titleView == null || titleView.getText() == null
-                || titleView.getText().length() == 0) {
-            return true;
-        }
-        if (pref.getTitle() == null) {
-            return false;
-        }
-        return titleView.getText().toString().equals(pref.getTitle().toString());
+        row.setAlpha(pref.isEnabled() ? 1f : DISABLED_ROW_ALPHA);
     }
 
     private void stylePreferenceRow(View row, Preference pref) {
-        if (row == null || pref == null) {
+        if (row == null || pref == null || !titleMatchesPreference(row, pref)) {
+            stripRowLeadingInset(row);
             return;
         }
         TextView title = row.findViewById(android.R.id.title);
         TextView summary = row.findViewById(android.R.id.summary);
         if (pref instanceof PreferenceCategory) {
-            if (title != null) {
-                styleCategoryTitle(title);
-                centerTitleInRow(title);
-            }
-            if (summary != null) {
-                summary.setVisibility(View.GONE);
-            }
+            styleCategoryRow(row, title, summary);
             return;
         }
+        forceLeftAlignRow(row);
         if (KEY_SMART_BEACON_SECTION_HEADER.equals(pref.getKey())
                 || KEY_SA_RELAY_SECTION_HEADER.equals(pref.getKey())) {
             styleBlueSectionHeaderRow(row, pref);
+            applyGatedRowVisualState(row, pref);
             return;
         }
         if (KEY_DISTRIBUTE_NET_WARNING.equals(pref.getKey())) {
             styleDistributeNetWarningRow(row, pref);
+            row.setAlpha(1f);
             return;
         }
         if (KEY_DISTRIBUTE_NET_SLOTS.equals(pref.getKey())) {
             styleDistributeNetButtonRow(row, pref);
+            row.setAlpha(1f);
             return;
         }
-        resetStandardPreferenceRow(row, pref);
+        if (KEY_RESTORE_BEACON_DEFAULTS.equals(pref.getKey())) {
+            stylePillActionButtonRow(row, pref, "Restore Defaults");
+            row.setAlpha(1f);
+            return;
+        }
+        if (KEY_RESTORE_ALL_DEFAULTS.equals(pref.getKey())) {
+            stylePillActionButtonRow(row, pref, "Restore All Defaults");
+            row.setAlpha(1f);
+            return;
+        }
+        if (KEY_ADMIN_LEADERSHIP_WARNING.equals(pref.getKey())) {
+            styleLeftAlignedNoteRow(row, pref);
+            row.setAlpha(1f);
+            return;
+        }
+        if (NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED.equals(pref.getKey())) {
+            styleCheckBoxPreferenceRow(row, pref);
+            row.setAlpha(1f);
+            return;
+        }
+        if (PREF_RF_TO_TAK_UPLINK_ENABLED.equals(pref.getKey())
+                || PREF_SA_RELAY_ENABLED.equals(pref.getKey())
+                || PREF_DISABLE_MESH_BEACON_LIMITING.equals(pref.getKey())) {
+            styleCheckBoxPreferenceRow(row, pref);
+            applyGatedRowVisualState(row, pref);
+            return;
+        }
+        if (isCheckboxPreference(pref)) {
+            styleCheckBoxPreferenceRow(row, pref);
+            applyGatedRowVisualState(row, pref);
+            return;
+        }
+        resetStandardPreferenceRow(row);
         if (title != null) {
             resetStandardRowTitle(title);
             title.setTextSize(TypedValue.COMPLEX_UNIT_SP, PREFERENCE_TITLE_TEXT_SP);
@@ -391,82 +877,362 @@ public class SettingsFragment extends PluginPreferenceFragment
         }
         if (summary != null) {
             resetStandardSummary(summary);
-            applySummaryText(summary, pref);
+            refreshSummaryIfMatched(summary, row, pref);
+        }
+        applyGatedRowVisualState(row, pref);
+    }
+
+    /** Yellow category headers only — centered. */
+    private void styleCategoryRow(View row, TextView title, TextView summary) {
+        Context ctx = resolveSettingsContext();
+        if (ctx == null && row != null) {
+            ctx = row.getContext();
+        }
+        int edgePad = dp(ctx, 16);
+        row.setPaddingRelative(edgePad, row.getPaddingTop(), edgePad, row.getPaddingBottom());
+        if (row instanceof LinearLayout) {
+            ((LinearLayout) row).setGravity(Gravity.CENTER_VERTICAL | Gravity.CENTER_HORIZONTAL);
+        }
+        if (title != null) {
+            styleCategoryTitle(title);
+            centerTitleInRow(title);
+            title.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
+        }
+        if (summary != null) {
+            summary.setVisibility(View.GONE);
         }
     }
 
-    private void styleBlueSectionHeaderRow(View row, Preference pref) {
-        resetStandardPreferenceRow(row, pref);
+    /** Pill action rows — full-width button, centered in the list row. */
+    private void styleCenteredPillButtonRow(View row) {
+        if (row == null) {
+            return;
+        }
+        Context ctx = resolveSettingsContext();
+        if (ctx == null) {
+            ctx = row.getContext();
+        }
+        int edgePad = dp(ctx, 16);
+        row.setPaddingRelative(edgePad, row.getPaddingTop(), edgePad, row.getPaddingBottom());
+        if (row instanceof LinearLayout) {
+            ((LinearLayout) row).setGravity(Gravity.CENTER_VERTICAL | Gravity.CENTER_HORIZONTAL);
+        }
+        Button pill = findEmbeddedPillButton(row);
+        if (pill != null) {
+            pill.setGravity(Gravity.CENTER);
+        }
+    }
+
+    /** Flush-left rows: collapse ATAK icon wrapper (48dp minWidth), content margin, title reuse. */
+    private void stripRowLeadingInset(View row) {
+        if (row == null) {
+            return;
+        }
+        removeHiddenEmbeddedPillButtons(row);
+        Context ctx = resolveSettingsContext();
+        if (ctx == null) {
+            ctx = row.getContext();
+        }
+        int edgePad = dp(ctx, 16);
+        row.setPaddingRelative(edgePad, row.getPaddingTop(), edgePad, row.getPaddingBottom());
+
+        if (row instanceof LinearLayout) {
+            ((LinearLayout) row).setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        }
+
+        TextView title = row.findViewById(android.R.id.title);
+        TextView summary = row.findViewById(android.R.id.summary);
+        View contentColumn = findRowContentColumn(row, title);
+        collapseLeadingRowSlots(row, contentColumn);
+        collapseIconFrameById(row, ctx);
+        hidePanListArrowIndicator(row);
+
+        if (contentColumn != null) {
+            zeroHorizontalInset(contentColumn);
+            if (contentColumn instanceof LinearLayout) {
+                ((LinearLayout) contentColumn).setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            }
+            ViewGroup.LayoutParams colLp = contentColumn.getLayoutParams();
+            if (colLp != null) {
+                zeroHorizontalMargins(colLp);
+                if (colLp instanceof LinearLayout.LayoutParams && row instanceof LinearLayout) {
+                    LinearLayout.LayoutParams llp = (LinearLayout.LayoutParams) colLp;
+                    llp.width = 0;
+                    llp.weight = 1f;
+                    llp.gravity = Gravity.START;
+                }
+                contentColumn.setLayoutParams(colLp);
+            }
+        }
+
+        resetStandardRowTitle(title);
+        resetStandardSummary(summary);
+        clearNonCheckboxWidgets(row);
+    }
+
+    /** Title lives inside RelativeLayout/LinearLayout between row root and TextView. */
+    private static View findRowContentColumn(View row, TextView title) {
+        if (row == null || title == null) {
+            return null;
+        }
+        View column = title;
+        while (column.getParent() instanceof View) {
+            View parent = (View) column.getParent();
+            if (parent == row) {
+                return column;
+            }
+            column = parent;
+        }
+        return title;
+    }
+
+    /** ATAK child prefs use preference_holo: icon sits in a minWidth wrapper before content. */
+    private static void collapseLeadingRowSlots(View row, View contentColumn) {
+        if (!(row instanceof ViewGroup) || contentColumn == null) {
+            return;
+        }
+        ViewGroup rowGroup = (ViewGroup) row;
+        for (int i = 0; i < rowGroup.getChildCount(); i++) {
+            View child = rowGroup.getChildAt(i);
+            if (child == contentColumn) {
+                break;
+            }
+            collapseHorizontalSlot(child);
+        }
+    }
+
+    private static void collapseIconFrameById(View row, Context ctx) {
+        if (row == null || ctx == null) {
+            return;
+        }
+        int iconFrameId = ctx.getResources().getIdentifier("icon_frame", "id", "android");
+        if (iconFrameId != 0) {
+            collapseHorizontalSlot(row.findViewById(iconFrameId));
+        }
+        collapseHorizontalSlot(row.findViewById(android.R.id.icon));
+    }
+
+    /** Pan list prefs append a trailing arrow ImageView — values live in the summary line. */
+    private static void hidePanListArrowIndicator(View row) {
+        if (!(row instanceof ViewGroup)) {
+            return;
+        }
+        ViewGroup rowGroup = (ViewGroup) row;
+        View widgetFrame = row.findViewById(android.R.id.widget_frame);
+        for (int i = 0; i < rowGroup.getChildCount(); i++) {
+            View child = rowGroup.getChildAt(i);
+            if (child instanceof ImageView
+                    && child.getId() != android.R.id.icon
+                    && child != widgetFrame
+                    && !(child instanceof ViewGroup)) {
+                collapseHorizontalSlot(child);
+            }
+        }
+    }
+
+    private void forceLeftAlignRow(View row) {
+        stripRowLeadingInset(row);
+    }
+
+    private static void zeroHorizontalInset(View view) {
+        if (view == null) {
+            return;
+        }
+        view.setPaddingRelative(0, view.getPaddingTop(), 0, view.getPaddingBottom());
+        view.setPadding(0, view.getPaddingTop(), 0, view.getPaddingBottom());
+        zeroHorizontalMargins(view.getLayoutParams());
+    }
+
+    private static void zeroHorizontalMargins(ViewGroup.LayoutParams lp) {
+        if (lp instanceof ViewGroup.MarginLayoutParams) {
+            ViewGroup.MarginLayoutParams mlp = (ViewGroup.MarginLayoutParams) lp;
+            mlp.setMarginStart(0);
+            mlp.setMarginEnd(0);
+            mlp.leftMargin = 0;
+            mlp.rightMargin = 0;
+        }
+    }
+
+    private static void collapseHorizontalSlot(View view) {
+        if (view == null) {
+            return;
+        }
+        view.setVisibility(View.GONE);
+        view.setMinimumWidth(0);
+        view.setMinimumHeight(0);
+        ViewGroup.LayoutParams lp = view.getLayoutParams();
+        if (lp != null) {
+            lp.width = 0;
+            lp.height = 0;
+            zeroHorizontalMargins(lp);
+            view.setLayoutParams(lp);
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                collapseHorizontalSlot(group.getChildAt(i));
+            }
+        }
+    }
+
+    /** Non-selectable note rows — left-aligned like standard settings (not centered). */
+    private void styleLeftAlignedNoteRow(View row, Preference pref) {
+        removeEmbeddedPillButtons(row);
+        resetStandardPreferenceRow(row);
         TextView title = row.findViewById(android.R.id.title);
         TextView summary = row.findViewById(android.R.id.summary);
         if (title != null) {
             resetStandardRowTitle(title);
-            title.setTextColor(COLOR_STD_BLUE);
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, PREFERENCE_TITLE_TEXT_SP);
+            title.setTypeface(Typeface.DEFAULT_BOLD);
+            title.setTextColor(pref.isEnabled() ? COLOR_WHITE : COLOR_DISABLED_GREY);
+        }
+        if (summary != null) {
+            resetStandardSummary(summary);
+            refreshSummaryIfMatched(summary, row, pref);
+        }
+    }
+
+    private void styleCheckBoxPreferenceRow(View row, Preference pref) {
+        resetStandardPreferenceRow(row);
+        TextView title = row.findViewById(android.R.id.title);
+        TextView summary = row.findViewById(android.R.id.summary);
+        if (title != null) {
+            resetStandardRowTitle(title);
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, PREFERENCE_TITLE_TEXT_SP);
+            title.setTypeface(Typeface.DEFAULT);
+            title.setTextColor(pref.isEnabled() ? COLOR_WHITE : COLOR_DISABLED_GREY);
+        }
+        if (summary != null) {
+            resetStandardSummary(summary);
+            refreshSummaryIfMatched(summary, row, pref);
+            summary.setTextColor(pref.isEnabled() ? COLOR_WHITE : COLOR_DISABLED_GREY);
+        }
+        ensureCheckBoxWidgetVisible(row, pref);
+    }
+
+    /** Always show a green checkbox on the right — Pan widgets often omit or hide it on bind. */
+    private void ensureCheckBoxWidgetVisible(View row, Preference pref) {
+        if (!(pref instanceof CheckBoxPreference) || row == null) {
+            return;
+        }
+        View widgetFrame = row.findViewById(android.R.id.widget_frame);
+        if (!(widgetFrame instanceof ViewGroup)) {
+            return;
+        }
+        widgetFrame.setVisibility(View.VISIBLE);
+        ViewGroup widgetGroup = (ViewGroup) widgetFrame;
+        CheckBox box = null;
+        for (int i = 0; i < widgetGroup.getChildCount(); i++) {
+            View child = widgetGroup.getChildAt(i);
+            if (child instanceof CheckBox && EMBEDDED_CHECKBOX_TAG.equals(child.getTag())) {
+                box = (CheckBox) child;
+                break;
+            }
+        }
+        if (box == null) {
+            widgetGroup.removeAllViews();
+            box = new CheckBox(row.getContext());
+            box.setTag(EMBEDDED_CHECKBOX_TAG);
+            box.setFocusable(false);
+            box.setClickable(false);
+            widgetGroup.addView(box, new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        CheckBoxPreference checkPref = (CheckBoxPreference) pref;
+        box.setChecked(checkPref.isChecked());
+        box.setEnabled(pref.isEnabled());
+        try {
+            box.setButtonTintList(ColorStateList.valueOf(
+                    pref.isEnabled() ? COLOR_VALUE_GREEN : COLOR_DISABLED_GREY));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void styleBlueSectionHeaderRow(View row, Preference pref) {
+        resetStandardPreferenceRow(row);
+        TextView title = row.findViewById(android.R.id.title);
+        TextView summary = row.findViewById(android.R.id.summary);
+        if (title != null) {
+            resetStandardRowTitle(title);
+            title.setTextColor(pref.isEnabled() ? COLOR_STD_BLUE : COLOR_DISABLED_GREY);
             title.setTextSize(TypedValue.COMPLEX_UNIT_SP, PREFERENCE_TITLE_TEXT_SP);
             title.setTypeface(Typeface.DEFAULT_BOLD);
         }
         if (summary != null) {
             resetStandardSummary(summary);
             summary.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
-            applySummaryText(summary, pref);
+            refreshSummaryIfMatched(summary, row, pref);
             summary.setVisibility(View.VISIBLE);
+            summary.setTextColor(pref.isEnabled() ? COLOR_WHITE : COLOR_DISABLED_GREY);
         }
     }
 
-    private void resetStandardPreferenceRow(View row, Preference pref) {
+    private void resetStandardPreferenceRow(View row) {
         if (row == null) {
             return;
         }
-        Context ctx = resolveSettingsContext();
-        int padStart = dp(ctx, 16);
-        int padEnd = dp(ctx, 16);
-        row.setPaddingRelative(padStart, row.getPaddingTop(), padEnd, row.getPaddingBottom());
+        restoreStandardRowChildVisibility(row);
+        stripRowLeadingInset(row);
+    }
 
-        if (row instanceof LinearLayout) {
-            ((LinearLayout) row).setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+    /** List prefs leave a value TextView in widget_frame — remove it so rows match EditText prefs. */
+    private static void clearNonCheckboxWidgets(View row) {
+        View widgetFrame = row.findViewById(android.R.id.widget_frame);
+        if (!(widgetFrame instanceof ViewGroup)) {
+            return;
         }
-
-        View icon = row.findViewById(android.R.id.icon);
-        if (icon != null) {
-            icon.setVisibility(View.GONE);
-            ViewGroup.LayoutParams iconLp = icon.getLayoutParams();
-            if (iconLp != null) {
-                iconLp.width = 0;
-                icon.setLayoutParams(iconLp);
+        ViewGroup widgetGroup = (ViewGroup) widgetFrame;
+        for (int i = 0; i < widgetGroup.getChildCount(); i++) {
+            View child = widgetGroup.getChildAt(i);
+            if (child instanceof CheckBox && EMBEDDED_CHECKBOX_TAG.equals(child.getTag())) {
+                return;
             }
         }
-
-        TextView title = row.findViewById(android.R.id.title);
-        if (title != null && title.getParent() instanceof ViewGroup) {
-            ViewGroup contentCol = (ViewGroup) title.getParent();
-            if (contentCol instanceof LinearLayout) {
-                ((LinearLayout) contentCol).setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        for (int i = widgetGroup.getChildCount() - 1; i >= 0; i--) {
+            View child = widgetGroup.getChildAt(i);
+            if (!(child instanceof CompoundButton)) {
+                widgetGroup.removeViewAt(i);
             }
-            ViewGroup.LayoutParams colLp = contentCol.getLayoutParams();
-            if (colLp instanceof LinearLayout.LayoutParams) {
-                LinearLayout.LayoutParams llp = (LinearLayout.LayoutParams) colLp;
-                llp.width = 0;
-                llp.weight = 1f;
-                llp.gravity = Gravity.START;
-                contentCol.setLayoutParams(llp);
-            }
-            contentCol.setPaddingRelative(0, contentCol.getPaddingTop(), 0,
-                    contentCol.getPaddingBottom());
         }
+        if (widgetGroup.getChildCount() == 0) {
+            collapseHorizontalSlot(widgetFrame);
+        }
+    }
 
-        clearRedundantListValueWidget(row, pref);
+    /** Recycled list rows may still have pill-only visibility from a prior bind. */
+    private static void restoreStandardRowChildVisibility(View row) {
+        if (!(row instanceof ViewGroup)) {
+            return;
+        }
+        removeHiddenEmbeddedPillButtons(row);
+        ViewGroup rowGroup = (ViewGroup) row;
+        for (int i = 0; i < rowGroup.getChildCount(); i++) {
+            View child = rowGroup.getChildAt(i);
+            if (child instanceof Button && EMBEDDED_PILL_BUTTON_TAG.equals(child.getTag())) {
+                rowGroup.removeViewAt(i);
+                i--;
+                continue;
+            }
+            child.setVisibility(View.VISIBLE);
+        }
     }
 
     private void styleDistributeNetWarningRow(View row, Preference pref) {
-        resetStandardPreferenceRow(row, pref);
+        removeEmbeddedPillButtons(row);
+        resetStandardPreferenceRow(row);
         TextView title = row.findViewById(android.R.id.title);
         TextView summary = row.findViewById(android.R.id.summary);
         if (title != null) {
             resetStandardRowTitle(title);
-            title.setText(DISTRIBUTE_NET_WARNING);
             title.setTextColor(pref.isEnabled() ? COLOR_WARNING_RED : COLOR_DISABLED_GREY);
             title.setTextSize(TypedValue.COMPLEX_UNIT_SP, PREFERENCE_TITLE_TEXT_SP);
             title.setTypeface(Typeface.DEFAULT_BOLD);
+            title.setVisibility(View.VISIBLE);
+            if (titleMatchesPreference(row, pref)) {
+                title.setText(DISTRIBUTE_NET_WARNING);
+            }
         }
         if (summary != null) {
             summary.setVisibility(View.GONE);
@@ -474,38 +1240,218 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private void styleDistributeNetButtonRow(View row, Preference pref) {
-        Context ctx = resolveSettingsContext();
-        int hPad = dp(ctx, 16);
-        int vPad = dp(ctx, 12);
-        row.setPaddingRelative(hPad, vPad, hPad, vPad);
-        row.setBackgroundColor(pref.isEnabled() ? COLOR_STD_BLUE : COLOR_DISABLED_GREY);
+        removeEmbeddedPillButtons(row);
+        Button pillButton = ensureEmbeddedPillButton(row, pref, "Distribute to net");
+        distributeNetButtonRowView = pillButton != null ? pillButton : row;
+    }
 
+    private void stylePillActionButtonRow(View row, Preference pref, String label) {
+        removeEmbeddedPillButtons(row);
+        ensureEmbeddedPillButton(row, pref, label);
+    }
+
+    private static void removeEmbeddedPillButtons(View root) {
+        if (!(root instanceof ViewGroup)) {
+            return;
+        }
+        ViewGroup group = (ViewGroup) root;
+        for (int i = group.getChildCount() - 1; i >= 0; i--) {
+            View child = group.getChildAt(i);
+            if (child instanceof Button && EMBEDDED_PILL_BUTTON_TAG.equals(child.getTag())) {
+                group.removeViewAt(i);
+            } else {
+                removeEmbeddedPillButtons(child);
+            }
+        }
+    }
+
+    /** Recycled pill rows leave hidden buttons that block left-align styling. */
+    private static void removeHiddenEmbeddedPillButtons(View root) {
+        if (!(root instanceof ViewGroup)) {
+            return;
+        }
+        ViewGroup group = (ViewGroup) root;
+        for (int i = group.getChildCount() - 1; i >= 0; i--) {
+            View child = group.getChildAt(i);
+            if (child instanceof Button
+                    && EMBEDDED_PILL_BUTTON_TAG.equals(child.getTag())
+                    && child.getVisibility() != View.VISIBLE) {
+                group.removeViewAt(i);
+            } else if (child instanceof ViewGroup) {
+                removeHiddenEmbeddedPillButtons(child);
+            }
+        }
+    }
+
+    /**
+     * Real {@link Button} matching plugin panel {@code UvproPillButton.Beacon} — preference rows
+     * are too tall when the list item background is styled as a pill.
+     */
+    private Button ensureEmbeddedPillButton(View row, Preference pref, String label) {
+        Context ctx = resolveSettingsContext();
+        if (ctx == null || row == null || pref == null) {
+            return null;
+        }
+        removeEmbeddedPillButtons(row);
+        int vMargin = dp(ctx, PILL_BUTTON_ROW_MARGIN_VERTICAL_DP);
+        row.setPaddingRelative(0, vMargin, 0, vMargin);
+        row.setBackgroundColor(0);
+        row.setMinimumHeight(0);
+
+        TextView title = row.findViewById(android.R.id.title);
+        TextView summary = row.findViewById(android.R.id.summary);
+        if (title != null) {
+            title.setVisibility(View.GONE);
+        }
+        if (summary != null) {
+            summary.setVisibility(View.GONE);
+        }
         View icon = row.findViewById(android.R.id.icon);
         if (icon != null) {
             icon.setVisibility(View.GONE);
         }
         View widgetFrame = row.findViewById(android.R.id.widget_frame);
-        if (widgetFrame instanceof ViewGroup) {
-            ((ViewGroup) widgetFrame).removeAllViews();
+        if (widgetFrame != null) {
+            widgetFrame.setVisibility(View.GONE);
         }
 
-        TextView title = row.findViewById(android.R.id.title);
-        TextView summary = row.findViewById(android.R.id.summary);
-        if (title != null) {
-            title.setGravity(Gravity.CENTER);
-            title.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
-            ViewGroup.LayoutParams lp = title.getLayoutParams();
-            if (lp != null) {
-                lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
-                title.setLayoutParams(lp);
+        Button pillButton = null;
+        if (row instanceof ViewGroup) {
+            ViewGroup rowGroup = (ViewGroup) row;
+            for (int i = 0; i < rowGroup.getChildCount(); i++) {
+                View child = rowGroup.getChildAt(i);
+                if (child instanceof Button
+                        && EMBEDDED_PILL_BUTTON_TAG.equals(child.getTag())) {
+                    pillButton = (Button) child;
+                    break;
+                }
             }
-            title.setText("Distribute to net");
-            title.setTextColor(COLOR_WHITE);
-            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, PREFERENCE_TITLE_TEXT_SP);
-            title.setTypeface(Typeface.DEFAULT_BOLD);
+            if (pillButton == null) {
+                pillButton = new Button(ctx);
+                pillButton.setTag(EMBEDDED_PILL_BUTTON_TAG);
+                pillButton.setAllCaps(false);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+                rowGroup.addView(pillButton, lp);
+            }
+            pillButton.setOnClickListener(v -> firePreferenceClick(pref));
+            for (int i = 0; i < rowGroup.getChildCount(); i++) {
+                View child = rowGroup.getChildAt(i);
+                child.setVisibility(child == pillButton ? View.VISIBLE : View.GONE);
+            }
         }
-        if (summary != null) {
-            summary.setVisibility(View.GONE);
+        if (pillButton != null) {
+            pillButton.setText(label);
+            applyPillButtonStyle(pillButton, pref.isEnabled());
+        }
+        styleCenteredPillButtonRow(row);
+        return pillButton;
+    }
+
+    private static GradientDrawable buildPillButtonBackground(Context ctx, int fillColor,
+                                                     int strokeColor, int strokeDp) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setShape(GradientDrawable.RECTANGLE);
+        drawable.setCornerRadius(dp(ctx, PILL_CORNER_RADIUS_DP));
+        drawable.setColor(fillColor);
+        if (strokeDp > 0) {
+            drawable.setStroke(dp(ctx, strokeDp), strokeColor);
+        }
+        return drawable;
+    }
+
+    private static void applyPillButtonStyle(Button button, boolean enabled) {
+        if (button == null) {
+            return;
+        }
+        Context ctx = button.getContext();
+        button.setTextColor(COLOR_WHITE);
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, PILL_BUTTON_TEXT_SP);
+        button.setTypeface(Typeface.DEFAULT);
+        button.setAllCaps(false);
+        button.setMinHeight(dp(ctx, PILL_BUTTON_MIN_HEIGHT_DP));
+        button.setPadding(dp(ctx, PILL_BUTTON_PAD_HORIZONTAL_DP), dp(ctx, PILL_BUTTON_PAD_VERTICAL_DP),
+                dp(ctx, PILL_BUTTON_PAD_HORIZONTAL_DP), dp(ctx, PILL_BUTTON_PAD_VERTICAL_DP));
+        button.setBackground(buildPillButtonBackground(ctx,
+                enabled ? COLOR_PILL_BUTTON_PRIMARY : COLOR_DISABLED_GREY,
+                enabled ? COLOR_PILL_BUTTON_STROKE : COLOR_DISABLED_GREY,
+                enabled ? 2 : 0));
+    }
+
+    private static void pulseDistributeButtonFeedback(View target, boolean enabledAfterPulse) {
+        if (target == null) {
+            return;
+        }
+        try {
+            target.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+        } catch (Exception ignored) {
+        }
+        stopDistributeButtonPulse(false);
+        distributeButtonPulseTarget = target;
+        distributeButtonPulseRestoreEnabled = enabledAfterPulse;
+        Context ctx = target.getContext();
+        if (MapView.getMapView() != null && MapView.getMapView().getContext() != null) {
+            ctx = MapView.getMapView().getContext();
+        } else if (ctx == null && staticPluginContext != null) {
+            ctx = staticPluginContext;
+        }
+        if (ctx == null) {
+            return;
+        }
+        final Context pulseCtx = ctx;
+        distributeButtonPulseDrawable = buildPillButtonBackground(
+                pulseCtx, COLOR_PILL_BUTTON_PRIMARY, 0x00FFEB3B, PILL_PULSE_STROKE_DP);
+        target.setBackground(distributeButtonPulseDrawable);
+        distributeButtonPulseAnimator = ValueAnimator.ofObject(
+                new ArgbEvaluator(),
+                0x11FFEB3B,
+                0xFFFFEB3B);
+        distributeButtonPulseAnimator.setDuration(220L);
+        distributeButtonPulseAnimator.setRepeatMode(ValueAnimator.REVERSE);
+        distributeButtonPulseAnimator.setRepeatCount(4);
+        distributeButtonPulseAnimator.addUpdateListener(animation -> {
+            if (distributeButtonPulseDrawable == null || distributeButtonPulseTarget == null) {
+                return;
+            }
+            int color = (Integer) animation.getAnimatedValue();
+            distributeButtonPulseDrawable.setStroke(dp(pulseCtx, PILL_PULSE_STROKE_DP), color);
+            distributeButtonPulseTarget.invalidate();
+        });
+        distributeButtonPulseAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                stopDistributeButtonPulse(true);
+            }
+
+            @Override
+            public void onAnimationCancel(android.animation.Animator animation) {
+                stopDistributeButtonPulse(true);
+            }
+        });
+        distributeButtonPulseAnimator.start();
+    }
+
+    private static void stopDistributeButtonPulse(boolean restoreBackground) {
+        ValueAnimator animator = distributeButtonPulseAnimator;
+        distributeButtonPulseAnimator = null;
+        if (animator != null) {
+            animator.cancel();
+        }
+        distributeButtonPulseDrawable = null;
+        View target = distributeButtonPulseTarget;
+        distributeButtonPulseTarget = null;
+        if (restoreBackground && target != null) {
+            Context ctx = target.getContext();
+            if (MapView.getMapView() != null && MapView.getMapView().getContext() != null) {
+                ctx = MapView.getMapView().getContext();
+            }
+            target.setBackground(buildPillButtonBackground(ctx,
+                    distributeButtonPulseRestoreEnabled
+                            ? COLOR_PILL_BUTTON_PRIMARY : COLOR_DISABLED_GREY,
+                    distributeButtonPulseRestoreEnabled
+                            ? COLOR_PILL_BUTTON_STROKE : COLOR_DISABLED_GREY,
+                    distributeButtonPulseRestoreEnabled ? 2 : 0));
         }
     }
 
@@ -576,9 +1522,12 @@ public class SettingsFragment extends PluginPreferenceFragment
         title.setTypeface(Typeface.DEFAULT_BOLD);
     }
 
-    private void applySummaryText(TextView summary, Preference pref) {
-        CharSequence styledSummary = buildStyledSummaryForPreference(pref);
-        if (styledSummary != null) {
+    private void refreshSummaryIfMatched(TextView summary, View row, Preference pref) {
+        if (summary == null || pref == null || !titleMatchesPreference(row, pref)) {
+            return;
+        }
+        CharSequence styledSummary = pref.getSummary();
+        if (styledSummary != null && styledSummary.length() > 0) {
             summary.setText(styledSummary);
             summary.setVisibility(View.VISIBLE);
         }
@@ -591,6 +1540,92 @@ public class SettingsFragment extends PluginPreferenceFragment
         removePreferenceFromScreen(PREF_ENCRYPTION_ENABLED);
         removePreferenceFromScreen("uvpro_sa_relay_header");
         removePreferenceFromScreen("uvpro_cat_sa_relay");
+    }
+
+    /**
+     * ATAK can persist stale preference rows across plugin updates. Keep one distribute
+     * block at the bottom of Administrative Settings and drop stray restore/distribute rows.
+     */
+    private void normalizeAdministrationSection() {
+        PreferenceCategory admin = (PreferenceCategory) findPreference(KEY_CAT_ADMINISTRATION);
+        if (admin == null) {
+            return;
+        }
+        for (String key : REMOVE_FROM_ADMIN_KEYS) {
+            Preference pref = findPreference(key);
+            if (pref != null && pref.getParent() == admin) {
+                admin.removePreference(pref);
+            }
+        }
+        removeAdminPreferencesByTitle(admin, "Restore Defaults");
+        removeAdminPreferencesByTitle(admin, "Restore All Defaults");
+        dedupeAdminPreferencesByTitle(admin, "Distribute to net", KEY_DISTRIBUTE_NET_SLOTS);
+        dedupeAdminPreferencesByTitle(admin, DISTRIBUTE_NET_WARNING, KEY_DISTRIBUTE_NET_WARNING);
+        reorderAdministrationFooter(admin);
+    }
+
+    private void removeAdminPreferencesByTitle(PreferenceCategory admin, String title) {
+        if (admin == null || title == null) {
+            return;
+        }
+        List<Preference> remove = new ArrayList<>();
+        for (int i = 0; i < admin.getPreferenceCount(); i++) {
+            Preference pref = admin.getPreference(i);
+            if (pref != null && pref.getTitle() != null
+                    && title.contentEquals(pref.getTitle())) {
+                remove.add(pref);
+            }
+        }
+        for (Preference pref : remove) {
+            admin.removePreference(pref);
+        }
+    }
+
+    private void dedupeAdminPreferencesByTitle(PreferenceCategory admin, String title,
+                                                      String keepKey) {
+        if (admin == null || title == null) {
+            return;
+        }
+        List<Preference> remove = new ArrayList<>();
+        for (int i = 0; i < admin.getPreferenceCount(); i++) {
+            Preference pref = admin.getPreference(i);
+            if (pref == null || pref.getTitle() == null) {
+                continue;
+            }
+            if (!title.contentEquals(pref.getTitle())) {
+                continue;
+            }
+            if (keepKey != null && keepKey.equals(pref.getKey())) {
+                continue;
+            }
+            remove.add(pref);
+        }
+        for (Preference pref : remove) {
+            admin.removePreference(pref);
+        }
+    }
+
+    /** Slot fields, red warning, then Distribute to net — always last in the category. */
+    private void reorderAdministrationFooter(PreferenceCategory admin) {
+        if (admin == null) {
+            return;
+        }
+        int order = 0;
+        for (int i = 0; i < admin.getPreferenceCount(); i++) {
+            Preference pref = admin.getPreference(i);
+            if (pref != null) {
+                order = Math.max(order, pref.getOrder());
+            }
+        }
+        for (String key : ADMIN_FOOTER_PREF_KEYS) {
+            Preference pref = findPreference(key);
+            if (pref == null || pref.getParent() != admin) {
+                continue;
+            }
+            admin.removePreference(pref);
+            pref.setOrder(++order);
+            admin.addPreference(pref);
+        }
     }
 
     private void removePreferenceFromScreen(String key) {
@@ -616,26 +1651,116 @@ public class SettingsFragment extends PluginPreferenceFragment
     private void ensureRequiredPreferences() {
         PreferenceCategory radio = (PreferenceCategory) findPreference(KEY_CAT_RADIO);
         if (radio != null) {
-            ensureCheckBoxPreference(radio, PREF_PING_REPLY_ENABLED,
+            ensureCheckBoxPreferenceOrReplace(radio, PREF_PING_REPLY_ENABLED,
                     "Send Ping Reply",
                     "Automatically reply to incoming pings with your position",
                     true);
         }
+    }
+
+    /** Admin SA Relay / RF uplink — force checkbox widgets after the activity exists. */
+    private void ensureAdminCheckboxPreferences() {
         PreferenceCategory admin = (PreferenceCategory) findPreference(KEY_CAT_ADMINISTRATION);
-        PreferenceCategory saRelay = (PreferenceCategory) findPreference("uvpro_cat_sa_relay");
-        if (saRelay != null) {
-            ensureCheckBoxPreference(saRelay, PREF_SA_RELAY_ENABLED,
-                    "Enable SA Relay",
-                    "Re-broadcast inbound network positions over radio to off-grid users. "
-                            + "Throttled to one update per contact per 30 seconds.",
-                    false);
-        } else if (admin != null) {
-            ensureCheckBoxPreference(admin, PREF_SA_RELAY_ENABLED,
-                    "Enable SA Relay",
-                    "Re-broadcast inbound network positions over radio to off-grid users. "
-                            + "Throttled to one update per contact per 30 seconds.",
-                    false);
+        if (admin == null) {
+            return;
         }
+        forceCheckBoxPreference(admin, PREF_DISABLE_MESH_BEACON_LIMITING,
+                "Disable Mesh Beacon Limiting",
+                DISABLE_MESH_BEACON_LIMITING_DESC,
+                false);
+        forceCheckBoxPreference(admin, PREF_SA_RELAY_ENABLED,
+                "Enable SA Relay",
+                "Re-broadcast inbound network positions over radio to off-grid users. "
+                        + "Throttled to one update per contact per 30 seconds.",
+                false);
+        forceCheckBoxPreference(admin, PREF_RF_TO_TAK_UPLINK_ENABLED,
+                "Enable RF to TAK Uplink Relay",
+                "When SA Relay is enabled, forward inbound RF CoT to TAK network. "
+                        + "Use with care to avoid unintended rebroadcast loops.",
+                false);
+    }
+
+    /** Ensure admin SA Relay / RF uplink prefs are PanCheckBoxPreference with saved state. */
+    private void forceCheckBoxPreference(PreferenceGroup parent, String key, String title,
+                                         String summary, boolean defaultValue) {
+        if (parent == null) {
+            return;
+        }
+        Context ctx = getActivity() != null ? getActivity() : staticPluginContext;
+        if (ctx == null) {
+            return;
+        }
+        Preference existing = findPreference(key);
+        boolean checked = defaultValue;
+        Context prefsCtx = resolveSettingsContext();
+        if (prefsCtx != null) {
+            checked = getPrefs(prefsCtx).getBoolean(key, defaultValue);
+        } else if (existing instanceof CheckBoxPreference) {
+            checked = ((CheckBoxPreference) existing).isChecked();
+        }
+        CheckBoxPreference pref;
+        if (existing instanceof CheckBoxPreference) {
+            pref = (CheckBoxPreference) existing;
+            pref.setTitle(title);
+            pref.setSummary(summary);
+        } else {
+            int order = existing != null ? existing.getOrder() : Preference.DEFAULT_ORDER;
+            if (existing != null && existing.getParent() != null) {
+                existing.getParent().removePreference(existing);
+            }
+            PanCheckBoxPreference created = new PanCheckBoxPreference(ctx);
+            created.setKey(key);
+            created.setTitle(title);
+            created.setSummary(summary);
+            created.setDefaultValue(defaultValue);
+            created.setOrder(order);
+            created.setPersistent(true);
+            parent.addPreference(created);
+            pref = created;
+        }
+        pref.setChecked(checked);
+        applyAdminCheckboxEnabledState(pref, key);
+    }
+
+    private void applyAdminCheckboxEnabledState(CheckBoxPreference pref, String key) {
+        if (pref == null) {
+            return;
+        }
+        Context ctx = resolveSettingsContext();
+        if (NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED.equals(key)) {
+            applyPreferenceEnabled(pref, true);
+            return;
+        }
+        boolean adminUnlocked = isAdminSectionUnlocked(ctx);
+        if (PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
+            applyPreferenceEnabled(pref, adminUnlocked && isSaRelayEnabledForUi(ctx));
+            return;
+        }
+        if (PREF_DISABLE_MESH_BEACON_LIMITING.equals(key)
+                || PREF_SA_RELAY_ENABLED.equals(key)) {
+            applyPreferenceEnabled(pref, adminUnlocked);
+        }
+    }
+
+    private boolean isSaRelayEnabledForUi(Context ctx) {
+        Preference saPref = findPreference(PREF_SA_RELAY_ENABLED);
+        if (saPref instanceof CheckBoxPreference) {
+            return ((CheckBoxPreference) saPref).isChecked();
+        }
+        return isSaRelayEnabled(ctx);
+    }
+
+    private void ensureCheckBoxPreferenceOrReplace(PreferenceGroup parent, String key,
+                                                   String title, String summary,
+                                                   boolean defaultValue) {
+        Preference existing = findPreference(key);
+        if (existing instanceof CheckBoxPreference) {
+            return;
+        }
+        if (existing != null && existing.getParent() != null) {
+            existing.getParent().removePreference(existing);
+        }
+        ensureCheckBoxPreference(parent, key, title, summary, defaultValue);
     }
 
     private void ensureCheckBoxPreference(PreferenceGroup parent, String key, String title,
@@ -656,10 +1781,27 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private void updateDependentPreferences() {
-        SharedPreferences prefs = getPreferenceManager().getSharedPreferences();
+        Context ctx = resolveSettingsContext();
+        boolean adminUnlocked = isAdminSectionUnlocked(ctx);
+        boolean saRelayOn = adminUnlocked && isSaRelayEnabledForUi(ctx);
+        Preference saRelayPref = findPreference(PREF_SA_RELAY_ENABLED);
+        if (saRelayPref != null) {
+            applyPreferenceEnabled(saRelayPref, adminUnlocked);
+        }
         Preference rfUplinkPref = findPreference(PREF_RF_TO_TAK_UPLINK_ENABLED);
         if (rfUplinkPref != null) {
-            rfUplinkPref.setEnabled(prefs.getBoolean(PREF_SA_RELAY_ENABLED, false));
+            applyPreferenceEnabled(rfUplinkPref, saRelayOn);
+            if (!saRelayOn && rfUplinkPref instanceof CheckBoxPreference) {
+                CheckBoxPreference rfCheck = (CheckBoxPreference) rfUplinkPref;
+                if (rfCheck.isChecked()) {
+                    rfCheck.setChecked(false);
+                    persistBooleanPrefToAtak(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
+                }
+            }
+        }
+        ListView list = getPreferenceListView();
+        if (list != null) {
+            list.post(this::applyRowStyles);
         }
     }
 
@@ -691,9 +1833,8 @@ public class SettingsFragment extends PluginPreferenceFragment
                 .registerOnSharedPreferenceChangeListener(this);
         styleAdminLeadershipWarning();
         syncAdminSettingsGateOnResume();
+        syncAllPreferencesFromAtakToUi();
         updateAdminControlsEnabled();
-        syncSmartBeaconPreferenceValues();
-        updateDependentPreferences();
         updateSummaries();
         ListView list = getPreferenceListView();
         if (list != null) {
@@ -703,7 +1844,9 @@ public class SettingsFragment extends PluginPreferenceFragment
 
     @Override
     public void onPause() {
+        syncAllPreferencesToAtak();
         super.onPause();
+        stopDistributeButtonPulse(true);
         getPreferenceManager().getSharedPreferences()
                 .unregisterOnSharedPreferenceChangeListener(this);
     }
@@ -711,6 +1854,9 @@ public class SettingsFragment extends PluginPreferenceFragment
     @Override
     public void onSharedPreferenceChanged(SharedPreferences prefs,
                                           String key) {
+        if (shouldMirrorPreferenceToAtak(key)) {
+            mirrorPreferenceToAtak(prefs, key);
+        }
         if (NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED.equals(key)) {
             updateAdminControlsEnabled();
         }
@@ -719,14 +1865,17 @@ public class SettingsFragment extends PluginPreferenceFragment
             normalizeSlotPreferences(prefs);
         }
         if (PREF_BEACON_INTERVAL.equals(key)
-                || PREF_MESH_BEACON_ENABLED.equals(key)
                 || PREF_SA_RELAY_ENABLED.equals(key)
                 || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)
                 || PREF_PING_REPLY_ENABLED.equals(key)
                 || isSmartBeaconParamKey(key)) {
             if (isSmartBeaconParamKey(key)) {
-                persistSmartBeaconFromPreferences();
+                persistSmartBeaconFromPreferences(prefs);
             }
+            notifyRuntimeSettingsChanged();
+        }
+        if (PREF_APRS_CALLSIGN.equals(key) || PREF_APRS_MESSAGE.equals(key)
+                || PREF_APRS_SSID.equals(key)) {
             notifyRuntimeSettingsChanged();
         }
         if (PREF_SA_RELAY_ENABLED.equals(key)) {
@@ -743,20 +1892,146 @@ public class SettingsFragment extends PluginPreferenceFragment
         }
     }
 
+    /** ATAK host context for SharedPreferences — never the plugin package store. */
+    private static Context resolveAtakContext() {
+        MapView mv = MapView.getMapView();
+        if (mv != null && mv.getContext() != null) {
+            return mv.getContext();
+        }
+        return null;
+    }
+
     private Context resolveSettingsContext() {
-        Context ctx = getActivity() != null ? getActivity() : getContext();
-        if (ctx == null && MapView.getMapView() != null) {
-            ctx = MapView.getMapView().getContext();
+        Context ctx = resolveAtakContext();
+        if (ctx != null) {
+            return ctx;
         }
-        if (ctx == null) {
-            ctx = staticPluginContext;
+        if (getActivity() != null) {
+            return getActivity();
         }
-        return ctx;
+        if (getContext() != null) {
+            return getContext();
+        }
+        return staticPluginContext;
     }
 
     /** ATAK default SharedPreferences — never the plugin package store. */
     private SharedPreferences atakPrefs() {
         return getPrefs(resolveSettingsContext());
+    }
+
+    private boolean shouldMirrorPreferenceToAtak(String key) {
+        Preference pref = findPreference(key);
+        return pref != null && pref.isPersistent();
+    }
+
+    /** Copy UI preference writes into ATAK default SharedPreferences. */
+    private void mirrorPreferenceToAtak(SharedPreferences source, String key) {
+        Context ctx = resolveSettingsContext();
+        if (ctx == null || source == null || key == null || !source.contains(key)) {
+            return;
+        }
+        Object raw = source.getAll().get(key);
+        if (raw == null) {
+            return;
+        }
+        SharedPreferences.Editor editor = getPrefs(ctx).edit();
+        if (raw instanceof String) {
+            String value = ((String) raw).trim();
+            if (PREF_APRS_CALLSIGN.equals(key)) {
+                value = value.toUpperCase(java.util.Locale.US);
+            }
+            editor.putString(key, value);
+        } else if (raw instanceof Boolean) {
+            editor.putBoolean(key, (Boolean) raw);
+        } else if (raw instanceof Integer) {
+            editor.putInt(key, (Integer) raw);
+        } else if (raw instanceof Long) {
+            editor.putLong(key, (Long) raw);
+        } else if (raw instanceof Float) {
+            editor.putFloat(key, (Float) raw);
+        } else {
+            return;
+        }
+        editor.apply();
+        if (raw instanceof String) {
+            String value = ((String) raw).trim();
+            if (PREF_APRS_CALLSIGN.equals(key)) {
+                value = value.toUpperCase(java.util.Locale.US);
+                setEditTextPreferenceText(key, value);
+            } else if (isListPreferenceKey(key)) {
+                setListPreferenceValue(key, value);
+            }
+        }
+    }
+
+    private static boolean isListPreferenceKey(String key) {
+        return PREF_BEACON_INTERVAL.equals(key)
+                || PREF_RETRY_INTERVAL_MIN.equals(key)
+                || PREF_RETRY_MAX.equals(key)
+                || PREF_APRS_SSID.equals(key);
+    }
+
+    /** Load ATAK prefs into Pan widgets so dialogs show saved values. */
+    private void syncAllPreferencesFromAtakToUi() {
+        Context ctx = resolveSettingsContext();
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences atak = getPrefs(ctx);
+        setListPreferenceValue(PREF_BEACON_INTERVAL,
+                atak.getString(PREF_BEACON_INTERVAL, DEFAULT_BEACON_INTERVAL));
+        setListPreferenceValue(PREF_RETRY_INTERVAL_MIN,
+                atak.getString(PREF_RETRY_INTERVAL_MIN, DEFAULT_RETRY_INTERVAL_MIN));
+        setListPreferenceValue(PREF_RETRY_MAX,
+                atak.getString(PREF_RETRY_MAX, DEFAULT_RETRY_MAX));
+        setListPreferenceValue(PREF_APRS_SSID,
+                atak.getString(PREF_APRS_SSID, DEFAULT_APRS_SSID));
+        setEditTextPreferenceText(PREF_APRS_CALLSIGN, getAprsCallsign(ctx));
+        setEditTextPreferenceText(PREF_APRS_MESSAGE, getAprsMessage(ctx));
+        setEditTextPreferenceText(PREF_ENCRYPTION_PASSPHRASE,
+                nullToEmpty(atak.getString(PREF_ENCRYPTION_PASSPHRASE, "")));
+        setEditTextPreferenceText(NetSlotConfig.PREF_SLOT_COUNT,
+                String.valueOf(NetSlotConfig.getSlotCount(ctx)));
+        setEditTextPreferenceText(NetSlotConfig.PREF_SLOT_TIME_SEC,
+                String.valueOf(NetSlotConfig.getSlotTimeSec(ctx)));
+        setCheckBoxPreferenceValue(PREF_PING_REPLY_ENABLED,
+                atak.getBoolean(PREF_PING_REPLY_ENABLED, true));
+        setCheckBoxPreferenceValue(PREF_SA_RELAY_ENABLED,
+                atak.getBoolean(PREF_SA_RELAY_ENABLED, false));
+        setCheckBoxPreferenceValue(PREF_RF_TO_TAK_UPLINK_ENABLED,
+                atak.getBoolean(PREF_RF_TO_TAK_UPLINK_ENABLED, false));
+        setCheckBoxPreferenceValue(PREF_DISABLE_MESH_BEACON_LIMITING,
+                atak.getBoolean(PREF_DISABLE_MESH_BEACON_LIMITING, false));
+        setCheckBoxPreferenceValue(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED,
+                atak.getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false));
+        syncSmartBeaconPreferenceValues();
+    }
+
+    /** Flush UI preference writes into ATAK store (covers Pan widgets that skip listeners). */
+    private void syncAllPreferencesToAtak() {
+        SharedPreferences ui = getPreferenceManager().getSharedPreferences();
+        if (ui == null) {
+            return;
+        }
+        for (String key : MIRROR_STRING_PREF_KEYS) {
+            if (ui.contains(key)) {
+                mirrorPreferenceToAtak(ui, key);
+            }
+        }
+        for (String key : MIRROR_BOOLEAN_PREF_KEYS) {
+            if (ui.contains(key)) {
+                mirrorPreferenceToAtak(ui, key);
+            }
+        }
+        Context ctx = resolveSettingsContext();
+        if (ctx != null) {
+            persistSmartBeaconFromPreferences(getPrefs(ctx));
+        }
+    }
+
+    private static String nullToEmpty(String value) {
+        return value != null ? value : "";
     }
 
     private void wireAdminSettingsGate() {
@@ -766,32 +2041,100 @@ public class SettingsFragment extends PluginPreferenceFragment
             return;
         }
         CheckBoxPreference adminCheck = (CheckBoxPreference) adminToggle;
-        adminCheck.setOnPreferenceChangeListener(null);
-        adminCheck.setOnPreferenceClickListener(preference -> {
-            Context prefsCtx = resolveSettingsContext();
-            if (prefsCtx == null) {
-                return false;
-            }
-            CheckBoxPreference checkbox = (CheckBoxPreference) preference;
-            boolean turningOn = !checkbox.isChecked();
+        adminCheck.setOnPreferenceChangeListener((preference, newValue) ->
+                handleAdminSettingsChange((CheckBoxPreference) preference,
+                        Boolean.TRUE.equals(newValue)));
+    }
 
-            if (!turningOn) {
-                AdminAccessGate.lock(prefsCtx);
-                checkbox.setChecked(false);
-                refreshAdminGateUi();
-                return true;
-            }
+    /**
+     * @return {@code true} when the preference framework should accept the new checked state
+     */
+    private boolean handleAdminSettingsChange(CheckBoxPreference checkbox, boolean enable) {
+        Context prefsCtx = resolveSettingsContext();
+        if (prefsCtx == null || checkbox == null) {
+            return false;
+        }
 
-            if (AdminAccessGate.isUnlocked(prefsCtx)) {
-                enableAdminSettings(checkbox, prefsCtx);
-                return true;
-            }
-
-            Context dialogCtx = getActivity() != null ? getActivity() : prefsCtx;
-            promptAdministrativeUnlock(dialogCtx, prefsCtx, () ->
-                    enableAdminSettings(checkbox, prefsCtx));
+        if (!enable) {
+            suppressAdminPasswordPrompt = true;
+            AdminAccessGate.lock(prefsCtx);
+            checkbox.setChecked(false);
+            refreshAdminGateUi();
+            postClearAdminPasswordPromptSuppression();
             return true;
-        });
+        }
+
+        if (suppressAdminPasswordPrompt) {
+            checkbox.setChecked(false);
+            return false;
+        }
+
+        if (AdminAccessGate.isUnlocked(prefsCtx)) {
+            enableAdminSettings(checkbox, prefsCtx);
+            return true;
+        }
+
+        checkbox.setChecked(false);
+        Context dialogCtx = getActivity() != null ? getActivity() : prefsCtx;
+        promptAdministrativeUnlockForToggle(dialogCtx, prefsCtx, checkbox);
+        return false;
+    }
+
+    private void postClearAdminPasswordPromptSuppression() {
+        ListView list = getPreferenceListView();
+        if (list != null) {
+            list.post(() -> suppressAdminPasswordPrompt = false);
+        } else {
+            suppressAdminPasswordPrompt = false;
+        }
+    }
+
+    private void promptAdministrativeUnlockForToggle(Context dialogCtx, Context prefsCtx,
+                                                     CheckBoxPreference checkbox) {
+        if (dialogCtx == null || checkbox == null || adminUnlockDialogOpen) {
+            return;
+        }
+        if (prefsCtx == null) {
+            prefsCtx = dialogCtx;
+        }
+        if (!AdminAccessGate.isConfigured()) {
+            Toast.makeText(dialogCtx,
+                    "Administrative password not configured in this build",
+                    Toast.LENGTH_LONG).show();
+            checkbox.setChecked(false);
+            refreshAdminGateUi();
+            return;
+        }
+        adminUnlockDialogOpen = true;
+        final EditText input = new EditText(dialogCtx);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        final Context storeCtx = prefsCtx;
+        AlertDialog dialog = new AlertDialog.Builder(dialogCtx)
+                .setTitle("Administrative Settings")
+                .setMessage("Enter password to unlock hidden settings.")
+                .setView(input)
+                .setPositiveButton("Unlock", (d, which) -> {
+                    if (AdminAccessGate.unlock(storeCtx, input.getText().toString())) {
+                        Toast.makeText(dialogCtx, "Administrative Settings unlocked",
+                                Toast.LENGTH_SHORT).show();
+                        enableAdminSettings(checkbox, storeCtx);
+                    } else {
+                        Toast.makeText(dialogCtx, "Incorrect password", Toast.LENGTH_LONG).show();
+                        checkbox.setChecked(false);
+                        refreshAdminGateUi();
+                    }
+                })
+                .setNegativeButton("Cancel", (d, which) -> {
+                    checkbox.setChecked(false);
+                    refreshAdminGateUi();
+                })
+                .setOnCancelListener(d -> {
+                    checkbox.setChecked(false);
+                    refreshAdminGateUi();
+                })
+                .create();
+        dialog.setOnDismissListener(d -> adminUnlockDialogOpen = false);
+        dialog.show();
     }
 
     private void enableAdminSettings(CheckBoxPreference checkbox, Context prefsCtx) {
@@ -895,7 +2238,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         Preference distribute = findPreference(KEY_DISTRIBUTE_NET_SLOTS);
         if (distribute != null) {
             distribute.setSummary("");
-            distribute.setOnPreferenceClickListener(preference -> {
+            registerPreferenceClickHandler(KEY_DISTRIBUTE_NET_SLOTS, preference -> {
                 Context ctx = getActivity() != null ? getActivity() : getContext();
                 if (ctx == null && MapView.getMapView() != null) {
                     ctx = MapView.getMapView().getContext();
@@ -903,6 +2246,8 @@ public class SettingsFragment extends PluginPreferenceFragment
                 if (ctx == null) {
                     return true;
                 }
+                boolean enabled = preference.isEnabled();
+                pulseDistributeButtonFeedback(distributeNetButtonRowView, enabled);
                 String error = distributeNetSlotsOrError(ctx);
                 if (error == null) {
                     int slots = NetSlotConfig.getSlotCount(ctx);
@@ -1024,7 +2369,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         sb.append('\uFFFC');
         Bitmap scaled = scaleBitmapForSummaryLine(drawableCtx, iconBitmap);
         BitmapDrawable drawable = new BitmapDrawable(drawableCtx.getResources(), scaled);
-        int sizePx = dp(drawableCtx, 20);
+        int sizePx = dp(drawableCtx, APRS_ICON_SUMMARY_DP);
         drawable.setBounds(0, 0, sizePx, sizePx);
         sb.setSpan(new ImageSpan(drawable, ImageSpan.ALIGN_BOTTOM), valueStart, valueStart + 1,
                 Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -1035,7 +2380,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (ctx == null || src == null) {
             return src;
         }
-        int targetPx = dp(ctx, 20);
+        int targetPx = dp(ctx, APRS_ICON_SUMMARY_DP);
         int w = src.getWidth();
         int h = src.getHeight();
         if (w <= 0 || h <= 0) {
@@ -1053,7 +2398,8 @@ public class SettingsFragment extends PluginPreferenceFragment
     private void styleAdminLeadershipWarning() {
         Preference warning = findPreference(KEY_ADMIN_LEADERSHIP_WARNING);
         if (warning != null) {
-            warning.setTitle("For Team Leadership ONLY — Do not use unless directed by higher");
+            warning.setTitle("For Team Leadership ONLY");
+            warning.setSummary("Do not use unless directed by higher");
         }
     }
 
@@ -1063,13 +2409,46 @@ public class SettingsFragment extends PluginPreferenceFragment
         boolean adminOn = prefs.getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false);
         boolean unlocked = ctx != null && AdminAccessGate.isUnlocked(ctx);
         boolean enableChildren = adminOn && unlocked;
-        for (String key : ADMIN_GATED_PREF_KEYS) {
-            setPreferenceEnabled(key, enableChildren);
+
+        if (adminCategory == null) {
+            adminCategory = (PreferenceCategory) findPreference(KEY_CAT_ADMINISTRATION);
         }
-        setPreferenceEnabled(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, true);
-        if (enableChildren) {
-            updateDependentPreferences();
+        if (adminCategory != null) {
+            boolean pastAdminToggle = false;
+            for (int i = 0; i < adminCategory.getPreferenceCount(); i++) {
+                Preference p = adminCategory.getPreference(i);
+                if (p == null) {
+                    continue;
+                }
+                String key = p.getKey();
+                if (KEY_ADMIN_LEADERSHIP_WARNING.equals(key)) {
+                    applyPreferenceEnabled(p, true);
+                    continue;
+                }
+                if (NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED.equals(key)) {
+                    applyPreferenceEnabled(p, true);
+                    pastAdminToggle = true;
+                    continue;
+                }
+                if (pastAdminToggle) {
+                    applyPreferenceEnabled(p, enableChildren);
+                }
+            }
+        } else {
+            for (String key : ADMIN_GATED_PREF_KEYS) {
+                applyPreferenceEnabled(findPreference(key), enableChildren);
+            }
         }
+
+        updateDependentPreferences();
+    }
+
+    private void applyPreferenceEnabled(Preference pref, boolean enabled) {
+        if (pref == null) {
+            return;
+        }
+        pref.setEnabled(enabled);
+        pref.setShouldDisableView(true);
     }
 
     private boolean isAdminSectionUnlocked(Context ctx) {
@@ -1082,10 +2461,7 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private void setPreferenceEnabled(String key, boolean enabled) {
-        Preference p = findPreference(key);
-        if (p != null) {
-            p.setEnabled(enabled);
-        }
+        applyPreferenceEnabled(findPreference(key), enabled);
     }
 
     private void normalizeSlotPreferences(SharedPreferences prefs) {
@@ -1125,9 +2501,8 @@ public class SettingsFragment extends PluginPreferenceFragment
 
         updateSmartBeaconFieldSummaries();
 
-        setSummaryWithValue(PREF_PING_REPLY_ENABLED,
-                "Automatically reply to incoming pings with your position",
-                getCheckBoxPreferenceValueLabel(PREF_PING_REPLY_ENABLED, true));
+        setCheckBoxDescriptionSummary(PREF_PING_REPLY_ENABLED,
+                "Automatically reply to incoming pings with your position");
         setSummaryWithValue(PREF_RETRY_INTERVAL_MIN,
                 "How long to wait before retransmitting an unacknowledged message",
                 getListPreferenceValueLabel(PREF_RETRY_INTERVAL_MIN));
@@ -1140,7 +2515,7 @@ public class SettingsFragment extends PluginPreferenceFragment
                 emptyToNotSet(getEditTextPreferenceValue(PREF_APRS_CALLSIGN)));
         setSummaryWithValue(PREF_APRS_SSID,
                 "Standard APRS SSID 0–15",
-                getListPreferenceValueLabel(PREF_APRS_SSID));
+                ctx != null ? getAprsSsidDisplayLabel(ctx) : getListPreferenceValueLabel(PREF_APRS_SSID));
         setSummaryWithValue(PREF_APRS_MESSAGE,
                 "Comment text appended to position reports",
                 emptyToNotSet(getEditTextPreferenceValue(PREF_APRS_MESSAGE)));
@@ -1149,20 +2524,16 @@ public class SettingsFragment extends PluginPreferenceFragment
                 "Same value on every radio that uses RF encryption",
                 maskSecret(getEditTextPreferenceValue(PREF_ENCRYPTION_PASSPHRASE)));
 
-        setSummaryWithValue(PREF_MESH_BEACON_ENABLED,
-                "Timed mesh position beacons (MeshCore transport)",
-                getCheckBoxPreferenceValueLabel(PREF_MESH_BEACON_ENABLED, false));
-        setSummaryWithValue(PREF_SA_RELAY_ENABLED,
+        setCheckBoxDescriptionSummary(PREF_SA_RELAY_ENABLED,
                 "Re-broadcast inbound network positions over radio to off-grid users. "
-                        + "Throttled to one update per contact per 30 seconds.",
-                getCheckBoxPreferenceValueLabel(PREF_SA_RELAY_ENABLED, false));
-        setSummaryWithValue(PREF_RF_TO_TAK_UPLINK_ENABLED,
+                        + "Throttled to one update per contact per 30 seconds.");
+        setCheckBoxDescriptionSummary(PREF_RF_TO_TAK_UPLINK_ENABLED,
                 "When SA Relay is enabled, forward inbound RF CoT to TAK network. "
-                        + "Use with care to avoid unintended rebroadcast loops.",
-                getCheckBoxPreferenceValueLabel(PREF_RF_TO_TAK_UPLINK_ENABLED, false));
-        setSummaryWithValue(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED,
-                "Unlock slot assignment controls for net leadership",
-                getCheckBoxPreferenceValueLabel(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false));
+                        + "Use with care to avoid unintended rebroadcast loops.");
+        setCheckBoxDescriptionSummary(PREF_DISABLE_MESH_BEACON_LIMITING,
+                DISABLE_MESH_BEACON_LIMITING_DESC);
+        setCheckBoxDescriptionSummary(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED,
+                "Unlock slot assignment controls for net leadership");
 
         if (ctx != null) {
             setSummaryWithValue(NetSlotConfig.PREF_SLOT_COUNT,
@@ -1181,27 +2552,9 @@ public class SettingsFragment extends PluginPreferenceFragment
                     getEditTextPreferenceValue(NetSlotConfig.PREF_SLOT_TIME_SEC));
         }
 
-        updateDependentPreferences();
-
         Preference aprsIconPref = findPreference(KEY_APRS_ICON);
         if (aprsIconPref != null) {
             updateAprsIconSummary(aprsIconPref);
-        }
-
-        if (ctx != null) {
-            int slots = NetSlotConfig.getSlotCount(ctx);
-            float slotSec = NetSlotConfig.getSlotTimeSec(ctx);
-            Preference currentStatus = findPreference(KEY_ADMIN_CURRENT_SLOT_STATUS);
-            if (currentStatus != null) {
-                String status = String.format(java.util.Locale.US,
-                        "Slot count: %d — Slot time: %.1f s", slots, slotSec);
-                String issuer = prefs.getString(NetSlotConfig.PREF_LAST_NET_SLOT_ISSUER, "");
-                int seq = prefs.getInt(NetSlotConfig.PREF_NET_SLOT_CONFIG_SEQ, 0);
-                if (seq > 0 && issuer != null && !issuer.isEmpty()) {
-                    status += "\nLast net update from " + issuer;
-                }
-                currentStatus.setSummary(status);
-            }
         }
     }
 
@@ -1233,6 +2586,13 @@ public class SettingsFragment extends PluginPreferenceFragment
         setSummaryWithValue(SmartBeacon.KEY_TURN_SLOPE,
                 "Scales turn sensitivity with speed (higher = less sensitive at low speed)",
                 String.valueOf(SmartBeacon.getTurnSlope(ctx)));
+    }
+
+    private void setCheckBoxDescriptionSummary(String key, String description) {
+        Preference pref = findPreference(key);
+        if (pref != null) {
+            pref.setSummary(formatDescriptionOnly(description));
+        }
     }
 
     private void setSummaryWithValue(String key, String description, String value) {
@@ -1293,14 +2653,20 @@ public class SettingsFragment extends PluginPreferenceFragment
             return formatDescriptionOnly(summary != null ? summary.toString() : "");
         }
         if (KEY_ADMIN_LEADERSHIP_WARNING.equals(key)
-                || KEY_MESH_BEACON_NATIONAL_WARNING.equals(key)
-                || KEY_ADMIN_CURRENT_SLOT_STATUS.equals(key)
                 || KEY_DISTRIBUTE_NET_WARNING.equals(key)
-                || KEY_DISTRIBUTE_NET_SLOTS.equals(key)) {
+                || KEY_DISTRIBUTE_NET_SLOTS.equals(key)
+                || KEY_RESTORE_BEACON_DEFAULTS.equals(key)
+                || KEY_RESTORE_ALL_DEFAULTS.equals(key)) {
             return pref.getSummary();
         }
         if (KEY_APRS_ICON.equals(key)) {
             return formatAprsIconSummary(pref.isEnabled());
+        }
+        if (pref instanceof CheckBoxPreference || isCheckboxPreferenceKey(key)) {
+            String description = getDescriptionForPreferenceKey(key);
+            if (description != null) {
+                return formatDescriptionOnly(description);
+            }
         }
         String description = getDescriptionForPreferenceKey(key);
         if (description == null) {
@@ -1360,9 +2726,6 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (PREF_ENCRYPTION_PASSPHRASE.equals(key)) {
             return "Same value on every radio that uses RF encryption";
         }
-        if (PREF_MESH_BEACON_ENABLED.equals(key)) {
-            return "Timed mesh position beacons (MeshCore transport)";
-        }
         if (PREF_SA_RELAY_ENABLED.equals(key)) {
             return "Re-broadcast inbound network positions over radio to off-grid users. "
                     + "Throttled to one update per contact per 30 seconds.";
@@ -1370,6 +2733,9 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
             return "When SA Relay is enabled, forward inbound RF CoT to TAK network. "
                     + "Use with care to avoid unintended rebroadcast loops.";
+        }
+        if (PREF_DISABLE_MESH_BEACON_LIMITING.equals(key)) {
+            return DISABLE_MESH_BEACON_LIMITING_DESC;
         }
         if (NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED.equals(key)) {
             return "Unlock slot assignment controls for net leadership";
@@ -1384,9 +2750,10 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private String resolvePreferenceDisplayValue(String key) {
-        Context ctx = MapView.getMapView() != null
-                ? MapView.getMapView().getContext()
-                : staticPluginContext;
+        Context ctx = resolveAtakContext();
+        if (ctx == null) {
+            ctx = resolveSettingsContext();
+        }
         if (PREF_BEACON_INTERVAL.equals(key)) {
             if (ctx != null && SmartBeacon.isEnabled(ctx)) {
                 return "Smart Beacon active";
@@ -1422,9 +2789,6 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (PREF_PING_REPLY_ENABLED.equals(key)) {
             return getCheckBoxPreferenceValueLabel(key, true);
         }
-        if (PREF_MESH_BEACON_ENABLED.equals(key)) {
-            return getCheckBoxPreferenceValueLabel(key, false);
-        }
         if (PREF_SA_RELAY_ENABLED.equals(key)) {
             return getCheckBoxPreferenceValueLabel(key, false);
         }
@@ -1434,12 +2798,17 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED.equals(key)) {
             return getCheckBoxPreferenceValueLabel(key, false);
         }
-        if (PREF_RETRY_INTERVAL_MIN.equals(key) || PREF_RETRY_MAX.equals(key)
-                || PREF_APRS_SSID.equals(key)) {
+        if (PREF_RETRY_INTERVAL_MIN.equals(key) || PREF_RETRY_MAX.equals(key)) {
             return getListPreferenceValueLabel(key);
         }
-        if (PREF_APRS_CALLSIGN.equals(key) || PREF_APRS_MESSAGE.equals(key)) {
-            return emptyToNotSet(getEditTextPreferenceValue(key));
+        if (PREF_APRS_CALLSIGN.equals(key) && ctx != null) {
+            return emptyToNotSet(getAprsCallsign(ctx));
+        }
+        if (PREF_APRS_MESSAGE.equals(key) && ctx != null) {
+            return emptyToNotSet(getAprsMessage(ctx));
+        }
+        if (PREF_APRS_SSID.equals(key) && ctx != null) {
+            return getAprsSsidDisplayLabel(ctx);
         }
         if (PREF_ENCRYPTION_PASSPHRASE.equals(key)) {
             return maskSecret(getEditTextPreferenceValue(key));
@@ -1482,27 +2851,71 @@ public class SettingsFragment extends PluginPreferenceFragment
             return "";
         }
         ListPreference listPref = (ListPreference) pref;
-        CharSequence entry = listPref.getEntry();
-        if (entry != null && entry.length() > 0) {
-            return entry.toString();
-        }
-        String value = listPref.getValue();
+        String value = getStoredListPreferenceValue(key);
         if (value == null || value.isEmpty()) {
-            value = getPreferenceManager().getSharedPreferences().getString(key, null);
+            value = listPref.getValue();
         }
+        if (value == null || value.isEmpty()) {
+            try {
+                value = getPreferenceManager().getSharedPreferences().getString(key, null);
+            } catch (ClassCastException ignored) {
+            }
+        }
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        return resolveListPreferenceEntryLabel(listPref, value);
+    }
+
+    private String getStoredListPreferenceValue(String key) {
+        Context ctx = resolveSettingsContext();
+        if (ctx == null) {
+            return null;
+        }
+        try {
+            return getPrefs(ctx).getString(key, null);
+        } catch (ClassCastException ignored) {
+            return null;
+        }
+    }
+
+    private String getAprsSsidDisplayLabel(Context ctx) {
+        String value = getPrefs(ctx).getString(PREF_APRS_SSID, DEFAULT_APRS_SSID);
+        Preference pref = findPreference(PREF_APRS_SSID);
+        if (pref instanceof ListPreference && value != null) {
+            return resolveListPreferenceEntryLabel((ListPreference) pref, value);
+        }
+        return value != null ? value : "";
+    }
+
+    private static String resolveListPreferenceEntryLabel(ListPreference listPref, String value) {
         CharSequence[] entries = listPref.getEntries();
         CharSequence[] values = listPref.getEntryValues();
-        if (value != null && entries != null && values != null) {
+        if (entries != null && values != null) {
             for (int i = 0; i < values.length; i++) {
                 if (value.equals(String.valueOf(values[i]))) {
                     return String.valueOf(entries[i]);
                 }
             }
         }
-        return value != null ? value : "";
+        return value;
     }
 
     private String getEditTextPreferenceValue(String key) {
+        Context ctx = resolveSettingsContext();
+        if (ctx != null) {
+            if (PREF_APRS_CALLSIGN.equals(key)) {
+                return getAprsCallsign(ctx);
+            }
+            if (PREF_APRS_MESSAGE.equals(key)) {
+                return getAprsMessage(ctx);
+            }
+            try {
+                String fromAtak = getPrefs(ctx).getString(key, "");
+                return fromAtak != null ? fromAtak : "";
+            } catch (ClassCastException ignored) {
+            }
+        }
         Preference pref = findPreference(key);
         if (pref instanceof EditTextPreference) {
             String text = ((EditTextPreference) pref).getText();
@@ -1512,12 +2925,15 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private String getCheckBoxPreferenceValueLabel(String key, boolean defaultValue) {
+        Context ctx = resolveSettingsContext();
+        if (ctx != null) {
+            return getPrefs(ctx).getBoolean(key, defaultValue) ? "On" : "Off";
+        }
         Preference pref = findPreference(key);
         if (pref instanceof CheckBoxPreference) {
             return ((CheckBoxPreference) pref).isChecked() ? "On" : "Off";
         }
-        SharedPreferences prefs = getPreferenceManager().getSharedPreferences();
-        return prefs.getBoolean(key, defaultValue) ? "On" : "Off";
+        return defaultValue ? "On" : "Off";
     }
 
     private static boolean isSmartBeaconParamKey(String key) {
@@ -1531,26 +2947,29 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private void persistSmartBeaconFromPreferences() {
+        persistSmartBeaconFromPreferences(getPreferenceManager().getSharedPreferences());
+    }
+
+    private void persistSmartBeaconFromPreferences(SharedPreferences source) {
         Context ctx = MapView.getMapView() != null
                 ? MapView.getMapView().getContext()
                 : staticPluginContext;
-        if (ctx == null) {
+        if (ctx == null || source == null) {
             return;
         }
-        SharedPreferences prefs = getPrefs(ctx);
-        int lowSpeed = readSmartBeaconInt(prefs, SmartBeacon.KEY_LOW_SPEED,
+        int lowSpeed = readSmartBeaconInt(source, SmartBeacon.KEY_LOW_SPEED,
                 SmartBeacon.DEFAULT_LOW_SPEED);
-        int highSpeed = readSmartBeaconInt(prefs, SmartBeacon.KEY_HIGH_SPEED,
+        int highSpeed = readSmartBeaconInt(source, SmartBeacon.KEY_HIGH_SPEED,
                 SmartBeacon.DEFAULT_HIGH_SPEED);
-        int slowRate = readSmartBeaconInt(prefs, SmartBeacon.KEY_SLOW_RATE,
+        int slowRate = readSmartBeaconInt(source, SmartBeacon.KEY_SLOW_RATE,
                 SmartBeacon.DEFAULT_SLOW_RATE);
-        int fastRate = readSmartBeaconInt(prefs, SmartBeacon.KEY_FAST_RATE,
+        int fastRate = readSmartBeaconInt(source, SmartBeacon.KEY_FAST_RATE,
                 SmartBeacon.DEFAULT_FAST_RATE);
-        int minTurnTime = readSmartBeaconInt(prefs, SmartBeacon.KEY_MIN_TURN_TIME,
+        int minTurnTime = readSmartBeaconInt(source, SmartBeacon.KEY_MIN_TURN_TIME,
                 SmartBeacon.DEFAULT_MIN_TURN_TIME);
-        int turnThreshold = readSmartBeaconInt(prefs, SmartBeacon.KEY_TURN_THRESHOLD,
+        int turnThreshold = readSmartBeaconInt(source, SmartBeacon.KEY_TURN_THRESHOLD,
                 SmartBeacon.DEFAULT_TURN_THRESHOLD);
-        int turnSlope = readSmartBeaconInt(prefs, SmartBeacon.KEY_TURN_SLOPE,
+        int turnSlope = readSmartBeaconInt(source, SmartBeacon.KEY_TURN_SLOPE,
                 SmartBeacon.DEFAULT_TURN_SLOPE);
 
         if (highSpeed <= lowSpeed) {
@@ -1596,9 +3015,16 @@ public class SettingsFragment extends PluginPreferenceFragment
     private static android.content.SharedPreferences getPrefs(Context context) {
         // Plugin context can't write to its own shared_prefs dir because it
         // runs inside ATAK's process. Always use ATAK's context.
-        Context ctx = com.atakmap.android.maps.MapView.getMapView() != null
-                ? com.atakmap.android.maps.MapView.getMapView().getContext()
-                : context;
+        Context ctx = resolveAtakContext();
+        if (ctx == null) {
+            ctx = context;
+        }
+        if (ctx == null) {
+            ctx = staticPluginContext;
+        }
+        if (ctx != null) {
+            ctx = ctx.getApplicationContext();
+        }
         return PreferenceManager.getDefaultSharedPreferences(ctx);
     }
 
@@ -1667,8 +3093,10 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     public static boolean isSaRelayEnabled(Context context) {
-        return getPrefs(context)
-                .getBoolean(PREF_SA_RELAY_ENABLED, false);
+        if (context == null) {
+            return false;
+        }
+        return getPrefs(context).getBoolean(PREF_SA_RELAY_ENABLED, false);
     }
 
     public static boolean isPingReplyEnabled(Context context) {
@@ -1691,26 +3119,14 @@ public class SettingsFragment extends PluginPreferenceFragment
                 .getBoolean(PREF_ATAK_UVPRO_TRANSMIT, false);
     }
 
-    public static boolean isMeshBeaconEnabled(Context context) {
-        if (context == null) {
-            return false;
-        }
-        if (!AdminAccessGate.isUnlocked(context)) {
-            return false;
-        }
-        return getPrefs(context).getBoolean(PREF_MESH_BEACON_ENABLED, false);
-    }
-
-    public static void setMeshBeaconEnabled(Context context, boolean enabled) {
-        if (context == null) {
-            return;
-        }
-        getPrefs(context).edit().putBoolean(PREF_MESH_BEACON_ENABLED, enabled).apply();
-    }
-
     public static boolean isRfToTakUplinkEnabled(Context context) {
         return getPrefs(context)
                 .getBoolean(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
+    }
+
+    public static boolean isDisableMeshBeaconLimiting(Context context) {
+        return getPrefs(context)
+                .getBoolean(PREF_DISABLE_MESH_BEACON_LIMITING, false);
     }
 
     public static boolean isRestrictChatToReachablePeers(Context context) {
@@ -1963,7 +3379,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         iconRow.setOrientation(LinearLayout.HORIZONTAL);
         iconRow.setGravity(Gravity.CENTER_VERTICAL);
         ui.iconPreview = new ImageView(mapCtx);
-        int iconPx = (int) (40 * mapCtx.getResources().getDisplayMetrics().density);
+        int iconPx = (int) (48 * mapCtx.getResources().getDisplayMetrics().density);
         LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(iconPx, iconPx);
         iconLp.setMargins(0, 0, 16, 0);
         ui.iconPreview.setLayoutParams(iconLp);
@@ -2049,14 +3465,12 @@ public class SettingsFragment extends PluginPreferenceFragment
      * Administration block for ping-reply slot net config (Tools prefs or plugin dialog).
      */
     public static final class AdministrationUi {
-        public Switch saRelayEnabled;
-        public Switch rfToTakUplinkEnabled;
+        public CheckBox saRelayEnabled;
+        public CheckBox rfToTakUplinkEnabled;
         public Switch adminEnabled;
-        public Switch meshBeaconEnabled;
         public EditText editSlotCount;
         public EditText editSlotTime;
         public Button btnDistribute;
-        public TextView currentStatus;
         View[] gatedViews;
     }
 
@@ -2101,30 +3515,6 @@ public class SettingsFragment extends PluginPreferenceFragment
         warning.setPadding(0, 8, 0, 8);
         layout.addView(warning);
 
-        TextView meshBeaconWarning = new TextView(ctx);
-        meshBeaconWarning.setText(
-                "Mesh Beacon: activated by national only. Do not use unless directed by your team leader.");
-        meshBeaconWarning.setTextColor(0xFFFFFFFF);
-        meshBeaconWarning.setTextSize(12);
-        meshBeaconWarning.setTypeface(Typeface.DEFAULT_BOLD);
-        meshBeaconWarning.setPadding(0, 4, 0, 8);
-        layout.addView(meshBeaconWarning);
-
-        LinearLayout rowMeshBeacon = new LinearLayout(ctx);
-        rowMeshBeacon.setOrientation(LinearLayout.HORIZONTAL);
-        rowMeshBeacon.setGravity(Gravity.CENTER_VERTICAL);
-        TextView labelMeshBeacon = new TextView(ctx);
-        labelMeshBeacon.setLayoutParams(new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        labelMeshBeacon.setText("Enable Mesh Beacon");
-        labelMeshBeacon.setTextColor(0xFFFFFFFF);
-        labelMeshBeacon.setTextSize(13);
-        rowMeshBeacon.addView(labelMeshBeacon);
-        ui.meshBeaconEnabled = new Switch(ctx);
-        ui.meshBeaconEnabled.setChecked(isMeshBeaconEnabled(ctx));
-        rowMeshBeacon.addView(ui.meshBeaconEnabled);
-        layout.addView(rowMeshBeacon);
-
         TextView headerSaRelay = new TextView(ctx);
         headerSaRelay.setText("\nSA Relay");
         headerSaRelay.setTextColor(COLOR_STD_BLUE);
@@ -2149,7 +3539,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         labelSaRelay.setTextColor(0xFFFFFFFF);
         labelSaRelay.setTextSize(13);
         rowSaRelay.addView(labelSaRelay);
-        ui.saRelayEnabled = new Switch(ctx);
+        ui.saRelayEnabled = new CheckBox(ctx);
         ui.saRelayEnabled.setChecked(isSaRelayEnabled(ctx));
         rowSaRelay.addView(ui.saRelayEnabled);
         layout.addView(rowSaRelay);
@@ -2164,7 +3554,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         labelRfToTak.setTextColor(0xFFFFFFFF);
         labelRfToTak.setTextSize(13);
         rowRfToTak.addView(labelRfToTak);
-        ui.rfToTakUplinkEnabled = new Switch(ctx);
+        ui.rfToTakUplinkEnabled = new CheckBox(ctx);
         ui.rfToTakUplinkEnabled.setChecked(isRfToTakUplinkEnabled(ctx));
         ui.rfToTakUplinkEnabled.setEnabled(ui.saRelayEnabled.isChecked());
         rowRfToTak.addView(ui.rfToTakUplinkEnabled);
@@ -2241,16 +3631,12 @@ public class SettingsFragment extends PluginPreferenceFragment
 
         ui.btnDistribute = new Button(ctx);
         ui.btnDistribute.setText("Distribute to net");
-        ui.btnDistribute.setTextColor(COLOR_WHITE);
-        ui.btnDistribute.setBackgroundColor(COLOR_STD_BLUE);
-        ui.btnDistribute.setOnClickListener(v -> distributeNetSlotsFromUi(ctx, ui));
+        applyPillButtonStyle(ui.btnDistribute, true);
+        ui.btnDistribute.setOnClickListener(v -> {
+            pulseDistributeButtonFeedback(v, v.isEnabled());
+            distributeNetSlotsFromUi(ctx, ui);
+        });
         layout.addView(ui.btnDistribute);
-
-        ui.currentStatus = new TextView(ctx);
-        ui.currentStatus.setTextColor(0xFF00BCD4);
-        ui.currentStatus.setTextSize(12);
-        ui.currentStatus.setPadding(0, 4, 0, 8);
-        layout.addView(ui.currentStatus);
 
         ui.gatedViews = new View[]{
                 ui.editSlotCount, ui.editSlotTime, ui.btnDistribute
@@ -2258,7 +3644,6 @@ public class SettingsFragment extends PluginPreferenceFragment
         ui.adminEnabled.setOnCheckedChangeListener((buttonView, isChecked) ->
                 applyAdministrationGating(ui, isChecked));
         applyAdministrationGating(ui, ui.adminEnabled.isChecked());
-        refreshAdministrationStatus(ctx, ui);
         return ui;
     }
 
@@ -2270,8 +3655,6 @@ public class SettingsFragment extends PluginPreferenceFragment
         prefs.edit()
                 .putBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED,
                         ui.adminEnabled.isChecked())
-                .putBoolean(PREF_MESH_BEACON_ENABLED,
-                        ui.meshBeaconEnabled != null && ui.meshBeaconEnabled.isChecked())
                 .putBoolean(PREF_SA_RELAY_ENABLED,
                         ui.saRelayEnabled != null && ui.saRelayEnabled.isChecked())
                 .putBoolean(PREF_RF_TO_TAK_UPLINK_ENABLED,
@@ -2288,23 +3671,6 @@ public class SettingsFragment extends PluginPreferenceFragment
         }
     }
 
-    public static void refreshAdministrationStatus(Context ctx, AdministrationUi ui) {
-        if (ctx == null || ui == null || ui.currentStatus == null) {
-            return;
-        }
-        int slots = NetSlotConfig.getSlotCount(ctx);
-        float sec = NetSlotConfig.getSlotTimeSec(ctx);
-        String status = String.format(java.util.Locale.US,
-                "Currently set on this device: %d slots, %.1f s slot time", slots, sec);
-        SharedPreferences prefs = getPrefs(ctx);
-        String issuer = prefs.getString(NetSlotConfig.PREF_LAST_NET_SLOT_ISSUER, "");
-        int seq = prefs.getInt(NetSlotConfig.PREF_NET_SLOT_CONFIG_SEQ, 0);
-        if (seq > 0 && issuer != null && !issuer.isEmpty()) {
-            status += "\nLast net update from " + issuer;
-        }
-        ui.currentStatus.setText(status);
-    }
-
     private static void applyAdministrationGating(AdministrationUi ui, boolean enabled) {
         if (ui.gatedViews == null) {
             return;
@@ -2315,6 +3681,9 @@ public class SettingsFragment extends PluginPreferenceFragment
                 v.setEnabled(enabled);
                 v.setAlpha(alpha);
             }
+        }
+        if (ui.btnDistribute != null) {
+            applyPillButtonStyle(ui.btnDistribute, enabled);
         }
     }
 
@@ -2331,7 +3700,6 @@ public class SettingsFragment extends PluginPreferenceFragment
             Toast.makeText(ctx,
                     "Slot config sent (" + slots + " slots, " + sec + " s)",
                     Toast.LENGTH_LONG).show();
-            refreshAdministrationStatus(ctx, ui);
         } else {
             Toast.makeText(ctx, error, Toast.LENGTH_LONG).show();
         }

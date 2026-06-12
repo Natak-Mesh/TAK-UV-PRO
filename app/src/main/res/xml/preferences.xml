@@ -4,11 +4,39 @@
 
 
 
+    <Preference
+
+        android:key="uvpro_restore_all_defaults"
+
+        android:title="Restore All Defaults"
+
+        android:summary=""
+
+        android:persistent="false"
+
+        android:selectable="true" />
+
+
+
     <PreferenceCategory
 
         android:key="uvpro_cat_beacon"
 
         android:title="Beacon Settings">
+
+
+
+        <Preference
+
+            android:key="uvpro_restore_beacon_defaults"
+
+            android:title="Restore Defaults"
+
+            android:summary=""
+
+            android:persistent="false"
+
+            android:selectable="true" />
 
 
 
@@ -20,7 +48,7 @@
 
             android:summary="Sets the ATAK call sign beacon interval"
 
-            android:defaultValue="600"
+            android:defaultValue="300"
 
             android:dialogTitle="Beacon Interval"
 
@@ -54,7 +82,7 @@
 
             android:summary="Below this speed the slowest rate is used"
 
-            android:defaultValue="5"
+            android:defaultValue="1"
 
             android:dialogTitle="Low Speed Threshold (mph)"
 
@@ -86,7 +114,7 @@
 
             android:summary="Max time between beacons when slow or stopped"
 
-            android:defaultValue="1800"
+            android:defaultValue="300"
 
             android:dialogTitle="Slow Rate (seconds)"
 
@@ -102,7 +130,7 @@
 
             android:summary="Min time between beacons when moving fast"
 
-            android:defaultValue="180"
+            android:defaultValue="60"
 
             android:dialogTitle="Fast Rate (seconds)"
 
@@ -334,18 +362,6 @@
 
 
 
-        <com.atakmap.android.gui.PanCheckBoxPreference
-
-            android:key="uvpro_admin_settings_enabled"
-
-            android:title="Enable administrative settings"
-
-            android:summary="Unlock slot assignment controls for net leadership"
-
-            android:defaultValue="false" />
-
-
-
         <Preference
 
             android:key="uvpro_admin_leadership_warning"
@@ -362,29 +378,25 @@
 
 
 
-        <Preference
+        <com.atakmap.android.gui.PanCheckBoxPreference
 
-            android:key="uvpro_mesh_beacon_national_warning"
+            android:key="uvpro_admin_settings_enabled"
 
-            android:title="Mesh Beacon — national activation only"
+            android:title="Enable administrative settings"
 
-            android:summary="Do not use unless directed by your team leader"
+            android:summary="Unlock slot assignment controls for net leadership"
 
-            android:selectable="false"
-
-            android:persistent="false"
-
-            android:enabled="true" />
+            android:defaultValue="false" />
 
 
 
         <com.atakmap.android.gui.PanCheckBoxPreference
 
-            android:key="uvpro_mesh_beacon_enabled"
+            android:key="uvpro_disable_mesh_beacon_limiting"
 
-            android:title="Enable Mesh Beacon"
+            android:title="Disable Mesh Beacon Limiting"
 
-            android:summary="Timed mesh position beacons (MeshCore transport)"
+            android:summary="When disabled, this allows mesh beaconing to follow all smart beacon settings without mesh limits"
 
             android:defaultValue="false" />
 
@@ -487,22 +499,6 @@
             android:persistent="false"
 
             android:selectable="true" />
-
-
-
-        <Preference
-
-            android:key="uvpro_admin_current_slot_status"
-
-            android:title="Currently set on this device"
-
-            android:summary="Slot count: 20 — Slot time: 2.5 s"
-
-            android:selectable="false"
-
-            android:persistent="false"
-
-            android:enabled="true" />
 
 
 

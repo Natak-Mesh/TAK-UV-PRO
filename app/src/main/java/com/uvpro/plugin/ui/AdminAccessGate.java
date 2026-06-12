@@ -33,8 +33,7 @@ public final class AdminAccessGate {
         if (ctx == null) {
             return false;
         }
-        return PreferenceManager.getDefaultSharedPreferences(ctx)
-                .getBoolean(PREF_UNLOCKED, false);
+        return prefs(ctx).getBoolean(PREF_UNLOCKED, false);
     }
 
     public static boolean isConfigured() {
@@ -55,8 +54,7 @@ public final class AdminAccessGate {
         if (!verifyPassword(password)) {
             return false;
         }
-        PreferenceManager.getDefaultSharedPreferences(ctx)
-                .edit()
+        prefs(ctx).edit()
                 .putBoolean(PREF_UNLOCKED, true)
                 .apply();
         return true;
@@ -66,11 +64,15 @@ public final class AdminAccessGate {
         if (ctx == null) {
             return;
         }
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
-        prefs.edit()
+        prefs(ctx).edit()
                 .putBoolean(PREF_UNLOCKED, false)
                 .putBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false)
                 .apply();
+    }
+
+    private static SharedPreferences prefs(Context ctx) {
+        Context app = ctx.getApplicationContext() != null ? ctx.getApplicationContext() : ctx;
+        return PreferenceManager.getDefaultSharedPreferences(app);
     }
 
     public static String sha256Hex(String input) {

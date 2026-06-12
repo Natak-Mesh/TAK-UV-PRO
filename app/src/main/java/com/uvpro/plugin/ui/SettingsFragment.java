@@ -149,6 +149,7 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String PREF_APRS_DISABLE_ATAK_TRAFFIC = "uvpro_aprs_disable_atak_traffic";
 
     public static final String KEY_CAT_APRS = "uvpro_cat_aprs";
+    public static final String KEY_CAT_SA_RELAY = "uvpro_cat_sa_relay";
     public static final String KEY_CAT_SECURITY = "uvpro_cat_security";
     public static final String KEY_APRS_ICON = "uvpro_aprs_icon";
 
@@ -163,6 +164,8 @@ public class SettingsFragment extends PluginPreferenceFragment
     private static final String DISABLE_MESH_BEACON_LIMITING_DESC =
             "When disabled, this allows mesh beaconing to follow all smart beacon "
                     + "settings without mesh limits";
+    private static final String SA_RELAY_SECTION_DESC =
+            "Re-broadcast network positions over radio";
     public static final String KEY_SA_RELAY_SECTION_HEADER = "uvpro_sa_relay_section_header";
     public static final String KEY_REPLY_SLOT_TIMES_SECTION_HEADER =
             "uvpro_reply_slot_times_section_header";
@@ -211,10 +214,7 @@ public class SettingsFragment extends PluginPreferenceFragment
 
     private static final String[] ADMIN_GATED_PREF_KEYS = {
             PREF_DISABLE_MESH_BEACON_LIMITING,
-            KEY_SA_RELAY_SECTION_HEADER,
             KEY_REPLY_SLOT_TIMES_SECTION_HEADER,
-            PREF_SA_RELAY_ENABLED,
-            PREF_RF_TO_TAK_UPLINK_ENABLED,
             NetSlotConfig.PREF_SLOT_COUNT,
             NetSlotConfig.PREF_SLOT_TIME_SEC,
             KEY_DISTRIBUTE_NET_WARNING,
@@ -243,6 +243,13 @@ public class SettingsFragment extends PluginPreferenceFragment
 
     /** Never belong inside APRS Settings. */
     private static final String[] REMOVE_FROM_APRS_KEYS = {
+            KEY_RESTORE_ALL_DEFAULTS,
+            KEY_RESTORE_BEACON_DEFAULTS,
+            KEY_RESTORE_ADMIN_DEFAULTS,
+    };
+
+    /** Never belong inside SA Relay. */
+    private static final String[] REMOVE_FROM_SA_RELAY_KEYS = {
             KEY_RESTORE_ALL_DEFAULTS,
             KEY_RESTORE_BEACON_DEFAULTS,
             KEY_RESTORE_ADMIN_DEFAULTS,
@@ -294,6 +301,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         removeObsoletePreferences();
         normalizeBeaconSection();
         normalizeAprsSection();
+        normalizeSaRelaySection();
         normalizeAdministrationSection();
         normalizeAllRestoreControls();
         wireRestorePreferenceHandlers();
@@ -772,10 +780,12 @@ public class SettingsFragment extends PluginPreferenceFragment
         super.onActivityCreated(savedInstanceState);
         normalizeBeaconSection();
         normalizeAprsSection();
+        normalizeSaRelaySection();
         normalizeAdministrationSection();
         normalizeAllRestoreControls();
         wireRestorePreferenceHandlers();
         ensureAdminCheckboxPreferences();
+        ensureSaRelayCheckboxPreferences();
         wireCheckBoxPreference(PREF_SA_RELAY_ENABLED, false);
         wireCheckBoxPreference(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
         wireCheckBoxPreference(PREF_DISABLE_MESH_BEACON_LIMITING, false);
@@ -1326,9 +1336,13 @@ public class SettingsFragment extends PluginPreferenceFragment
             row.setAlpha(1f);
             return;
         }
+        if (PREF_DISABLE_MESH_BEACON_LIMITING.equals(pref.getKey())) {
+            styleCheckBoxPreferenceRow(row, pref);
+            applyGatedRowVisualState(row, pref);
+            return;
+        }
         if (PREF_RF_TO_TAK_UPLINK_ENABLED.equals(pref.getKey())
-                || PREF_SA_RELAY_ENABLED.equals(pref.getKey())
-                || PREF_DISABLE_MESH_BEACON_LIMITING.equals(pref.getKey())) {
+                || PREF_SA_RELAY_ENABLED.equals(pref.getKey())) {
             styleCheckBoxPreferenceRow(row, pref);
             applyGatedRowVisualState(row, pref);
             return;
@@ -2149,7 +2163,6 @@ public class SettingsFragment extends PluginPreferenceFragment
         removePreferenceFromScreen(KEY_UNLOCK_ADMIN);
         removePreferenceFromScreen(PREF_ENCRYPTION_ENABLED);
         removePreferenceFromScreen("uvpro_sa_relay_header");
-        removePreferenceFromScreen("uvpro_cat_sa_relay");
     }
 
     /**
@@ -2182,6 +2195,74 @@ public class SettingsFragment extends PluginPreferenceFragment
                 aprs.removePreference(pref);
             }
         }
+    }
+
+    /** Keep SA Relay prefs under the SA Relay category after plugin updates. */
+    private void normalizeSaRelaySection() {
+        PreferenceCategory saRelay = (PreferenceCategory) findPreference(KEY_CAT_SA_RELAY);
+        if (saRelay == null) {
+            return;
+        }
+        for (String key : REMOVE_FROM_SA_RELAY_KEYS) {
+            Preference pref = findPreference(key);
+            if (pref != null && pref.getParent() == saRelay) {
+                saRelay.removePreference(pref);
+            }
+        }
+        migrateSaRelayPreferencesToCategory(saRelay);
+        ensureSaRelaySectionHeader(saRelay);
+    }
+
+    private void migrateSaRelayPreferencesToCategory(PreferenceCategory saRelay) {
+        if (saRelay == null) {
+            return;
+        }
+        String[] keys = {
+                KEY_SA_RELAY_SECTION_HEADER,
+                PREF_SA_RELAY_ENABLED,
+                PREF_RF_TO_TAK_UPLINK_ENABLED,
+        };
+        for (String key : keys) {
+            Preference pref = findPreference(key);
+            if (pref == null || pref.getParent() == saRelay) {
+                continue;
+            }
+            if (pref.getParent() != null) {
+                pref.getParent().removePreference(pref);
+            }
+            saRelay.addPreference(pref);
+        }
+    }
+
+    private void ensureSaRelaySectionHeader(PreferenceCategory saRelay) {
+        if (saRelay == null) {
+            return;
+        }
+        Context ctx = getActivity() != null ? getActivity() : staticPluginContext;
+        Preference header = findPreference(KEY_SA_RELAY_SECTION_HEADER);
+        if (header == null) {
+            if (ctx == null) {
+                return;
+            }
+            header = new Preference(ctx);
+            header.setKey(KEY_SA_RELAY_SECTION_HEADER);
+            header.setTitle("SA Relay");
+            header.setSummary(SA_RELAY_SECTION_DESC);
+            header.setSelectable(false);
+            header.setPersistent(false);
+            header.setEnabled(true);
+        } else if (header.getParent() != null && header.getParent() != saRelay) {
+            header.getParent().removePreference(header);
+        }
+        if (header.getParent() == saRelay) {
+            saRelay.removePreference(header);
+        }
+        Preference saRelayToggle = findPreference(PREF_SA_RELAY_ENABLED);
+        int order = saRelayToggle != null && saRelayToggle.getParent() == saRelay
+                ? saRelayToggle.getOrder() - 1
+                : Preference.DEFAULT_ORDER;
+        header.setOrder(order);
+        saRelay.addPreference(header);
     }
 
     /**
@@ -2486,7 +2567,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         }
     }
 
-    /** Admin SA Relay / RF uplink — force checkbox widgets after the activity exists. */
+    /** Admin mesh beacon limit — force checkbox widgets after the activity exists. */
     private void ensureAdminCheckboxPreferences() {
         PreferenceCategory admin = (PreferenceCategory) findPreference(KEY_CAT_ADMINISTRATION);
         if (admin == null) {
@@ -2496,12 +2577,20 @@ public class SettingsFragment extends PluginPreferenceFragment
                 "Disable Mesh Beacon Limiting",
                 DISABLE_MESH_BEACON_LIMITING_DESC,
                 false);
-        forceCheckBoxPreference(admin, PREF_SA_RELAY_ENABLED,
+    }
+
+    /** SA Relay checkboxes — always available under the SA Relay category. */
+    private void ensureSaRelayCheckboxPreferences() {
+        PreferenceCategory saRelay = (PreferenceCategory) findPreference(KEY_CAT_SA_RELAY);
+        if (saRelay == null) {
+            return;
+        }
+        forceCheckBoxPreference(saRelay, PREF_SA_RELAY_ENABLED,
                 "Enable SA Relay",
                 "Re-broadcast inbound network positions over radio to off-grid users. "
                         + "Throttled to one update per contact per 30 seconds.",
                 false);
-        forceCheckBoxPreference(admin, PREF_RF_TO_TAK_UPLINK_ENABLED,
+        forceCheckBoxPreference(saRelay, PREF_RF_TO_TAK_UPLINK_ENABLED,
                 "Enable RF to TAK Uplink Relay",
                 "When SA Relay is enabled, forward inbound RF CoT to TAK network. "
                         + "Use with care to avoid unintended rebroadcast loops.",
@@ -2559,14 +2648,16 @@ public class SettingsFragment extends PluginPreferenceFragment
             applyPreferenceEnabled(pref, true);
             return;
         }
-        boolean adminUnlocked = isAdminSectionUnlocked(ctx);
-        if (PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
-            applyPreferenceEnabled(pref, adminUnlocked);
+        if (PREF_SA_RELAY_ENABLED.equals(key)) {
+            applyPreferenceEnabled(pref, true);
             return;
         }
-        if (PREF_DISABLE_MESH_BEACON_LIMITING.equals(key)
-                || PREF_SA_RELAY_ENABLED.equals(key)) {
-            applyPreferenceEnabled(pref, adminUnlocked);
+        if (PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
+            applyPreferenceEnabled(pref, true);
+            return;
+        }
+        if (PREF_DISABLE_MESH_BEACON_LIMITING.equals(key)) {
+            applyPreferenceEnabled(pref, isAdminSectionUnlocked(ctx));
         }
     }
 
@@ -2613,15 +2704,10 @@ public class SettingsFragment extends PluginPreferenceFragment
 
     private void updateDependentPreferences() {
         Context ctx = resolveSettingsContext();
-        boolean adminUnlocked = isAdminSectionUnlocked(ctx);
-        boolean saRelayOn = adminUnlocked && isSaRelayEnabledForUi(ctx);
-        Preference saRelayPref = findPreference(PREF_SA_RELAY_ENABLED);
-        if (saRelayPref != null) {
-            applyPreferenceEnabled(saRelayPref, adminUnlocked);
-        }
+        boolean saRelayOn = isSaRelayEnabledForUi(ctx);
         Preference rfUplinkPref = findPreference(PREF_RF_TO_TAK_UPLINK_ENABLED);
         if (rfUplinkPref != null) {
-            applyPreferenceEnabled(rfUplinkPref, adminUnlocked);
+            applyPreferenceEnabled(rfUplinkPref, true);
             if (!saRelayOn && rfUplinkPref instanceof CheckBoxPreference) {
                 CheckBoxPreference rfCheck = (CheckBoxPreference) rfUplinkPref;
                 if (rfCheck.isChecked()) {

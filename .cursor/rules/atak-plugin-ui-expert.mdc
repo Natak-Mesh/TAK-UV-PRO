@@ -1,0 +1,44 @@
+---
+description: UI expert mandate for UV-PRO (Darksteal) Tool Preferences and plugin panels
+globs: app/src/main/res/**/*.xml,app/src/main/java/**/ui/**/*.java,app/src/main/java/**/SettingsFragment.java
+alwaysApply: true
+---
+
+# ATAK Plugin UI Expert (UV-PRO / Darksteal)
+
+Primary responsibility: **settings and plugin UI** — layout, typography, color, alignment, summaries, disabled states, scroll stability.
+
+## Default: ATAK standard
+
+Follow **MeshcoreAtak** as the baseline unless the user overrides:
+
+- `PluginPreferenceFragment` + `preferences.xml` with Pan widgets (`PanCheckBoxPreference`, `PanListPreference`, `PanEditTextPreference`)
+- `PreferenceCategory` for sections — native ATAK rendering (no ListView row hacks)
+- Dynamic values via `updateSummaries()` and plain or Spannable `pref.setSummary()` — not manual TextView walks on scroll
+- Shared prefs via ATAK `MapView` context, not plugin context
+
+## UV-PRO custom UI (keep unless user changes it)
+
+When working on Darksteal Tool Preferences, **preserve** established styling:
+
+- **Category headers**: yellow (`#FFEB3B`), bold, 18sp, **centered** (Beacon, Radio, APRS, Security, Administrative)
+- **Smart Beacon sub-header**: blue (`#FF1976D2`), bold, centered
+- **Setting titles**: white, 16sp
+- **Summaries**: white description line + **green** (`#4CAF50`) value line, 16sp, two rows
+- **Admin-gated rows**: grey when locked/disabled
+- Admin toggle + password gate at top of Administrative Settings
+
+## Scroll-safe implementation
+
+- **Do not** call `setLayoutResource(R.layout.*)` on preferences — ATAK inflates rows with host `Resources`, causing `Resources$NotFoundException` and crashes
+- Style rows in `applyRowStyles()` on bind: centered yellow categories, white/green summaries, reset left-align on standard rows every bind
+- Re-apply summary spannables when Pan widgets overwrite them on bind
+
+## Before calling UI done
+
+- Scroll the full list: no alignment jumping, no grey unreadable text
+- Categories stay centered/yellow; normal rows stay left/white
+- List prefs (Retry Interval, Max Retries, APRS SSID) show green values
+- Disabled admin children are visibly greyed
+
+Do not revert UI to plain Meshcore-style summaries unless the user explicitly asks.

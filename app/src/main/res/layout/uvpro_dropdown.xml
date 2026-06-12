@@ -513,46 +513,11 @@
                     android:checked="false" />
             </LinearLayout>
 
-            <LinearLayout
-                android:id="@+id/passphrase_row"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:paddingTop="8dp"
-                android:visibility="gone">
-
-                <EditText
-                    android:id="@+id/edit_passphrase"
-                    android:layout_width="0dp"
-                    android:layout_height="40dp"
-                    android:layout_weight="1"
-                    android:hint="Shared secret"
-                    android:textColor="#FFFFFFFF"
-                    android:textColorHint="#FF666666"
-                    android:textSize="13sp"
-                    android:background="#FF1B1B1B"
-                    android:padding="8dp"
-                    android:inputType="textPassword"
-                    android:singleLine="true"
-                    android:layout_marginEnd="4dp" />
-
-                <Button
-                    android:id="@+id/btn_set_passphrase"
-                    style="@style/UvproPillButton"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="SET"
-                    android:textSize="11sp"
-                    android:background="@drawable/bg_uvpro_connection_button"
-                    android:minWidth="60dp" />
-            </LinearLayout>
-
             <TextView
                 android:id="@+id/text_encryption_status"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="All radios must use the same shared secret"
+                android:text="Shared secret is configured in Tool Preferences"
                 android:textColor="#FF888888"
                 android:textSize="11sp"
                 android:paddingTop="4dp" />
@@ -1443,7 +1408,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Plugin settings: tap the button below. Full ATAK list: Settings → Tool Preferences → UV-PRO Settings."
+                android:text="Opens ATAK Settings → Tool Preferences → UV-PRO Settings."
                 android:textColor="#FF888888"
                 android:textSize="11sp"
                 android:paddingBottom="6dp" />

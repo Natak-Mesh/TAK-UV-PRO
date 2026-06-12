@@ -320,9 +320,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private TextView textMeshUseCallsignLocation;
 
     private Switch switchEncryption;
-    private View passphraseRow;
-    private EditText editPassphrase;
-    private Button btnSetPassphrase;
 
     private final List<BluetoothDevice> foundDevices = new ArrayList<>();
     private final List<BluetoothDevice> meshFoundDevices = new ArrayList<>();
@@ -1020,9 +1017,6 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         // Interactive switches
         switchEncryption = rootView.findViewById(getId("switch_encryption"));
-        passphraseRow = rootView.findViewById(getId("passphrase_row"));
-        editPassphrase = rootView.findViewById(getId("edit_passphrase"));
-        btnSetPassphrase = rootView.findViewById(getId("btn_set_passphrase"));
     }
 
     private void setupListeners() {
@@ -1244,51 +1238,25 @@ public class UVProDropDownReceiver extends DropDownReceiver
         // --- Encryption switch ---
         if (switchEncryption != null) {
             switchEncryption.setOnCheckedChangeListener((buttonView, isChecked) -> {
-                SharedPreferences prefs = PreferenceManager
-                        .getDefaultSharedPreferences(getMapView().getContext());
-                prefs.edit().putBoolean(SettingsFragment.PREF_ENCRYPTION_ENABLED, isChecked).apply();
-
-                if (passphraseRow != null) {
-                    passphraseRow.setVisibility(isChecked ? View.VISIBLE : View.GONE);
-                }
-
-                if (!isChecked && encryptionManager != null) {
-                    encryptionManager.setSharedSecret(null);
-                    updateEncryptionStatus();
-                    appendLog("Encryption disabled");
-                } else if (isChecked) {
-                    String existing = SettingsFragment.getEncryptionPassphrase(
-                            getMapView().getContext());
-                    if (existing != null && !existing.isEmpty() && encryptionManager != null) {
-                        encryptionManager.setSharedSecret(existing);
-                        updateEncryptionStatus();
-                        appendLog("Encryption enabled (AES-256-GCM)");
-                    } else {
-                        updateEncryptionStatus();
-                        appendLog("Configure shared secret to enable encryption");
-                    }
-                }
-            });
-        }
-
-        if (btnSetPassphrase != null) {
-            btnSetPassphrase.setOnClickListener(v -> {
-                if (editPassphrase == null) return;
-                String pass = editPassphrase.getText().toString().trim();
-                if (pass.isEmpty()) {
-                    appendLog("Shared secret cannot be empty");
+                if (!buttonView.isPressed()) {
                     return;
                 }
                 SharedPreferences prefs = PreferenceManager
                         .getDefaultSharedPreferences(getMapView().getContext());
-                prefs.edit().putString(SettingsFragment.PREF_ENCRYPTION_PASSPHRASE, pass).apply();
-
-                if (encryptionManager != null) {
-                    encryptionManager.setSharedSecret(pass);
-                }
-                editPassphrase.setText("");
+                prefs.edit().putBoolean(SettingsFragment.PREF_ENCRYPTION_ENABLED, isChecked).apply();
+                syncEncryptionFromSettings();
                 updateEncryptionStatus();
-                appendLog("Shared secret saved — encryption active");
+                if (!isChecked) {
+                    appendLog("Encryption disabled");
+                } else {
+                    String pass = SettingsFragment.getEncryptionPassphrase(
+                            getMapView().getContext());
+                    if (pass != null && !pass.isEmpty()) {
+                        appendLog("Encryption enabled (AES-256-GCM)");
+                    } else {
+                        appendLog("Encryption enabled — set shared secret in Tool Preferences");
+                    }
+                }
             });
         }
 
@@ -1302,7 +1270,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
         View btnSettings = rootView.findViewById(getId("btn_settings"));
         if (btnSettings != null) {
-            btnSettings.setOnClickListener(v -> showSettingsDialog());
+            btnSettings.setOnClickListener(v -> openPluginToolPreferences());
         }
         if (btnPacketTerminal != null) {
             btnPacketTerminal.setOnClickListener(v -> togglePacketTerminalSection());
@@ -1323,7 +1291,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                             }));
         }
         if (btnManagePluginBeaconSettings != null) {
-            btnManagePluginBeaconSettings.setOnClickListener(v -> showSettingsDialog());
+            btnManagePluginBeaconSettings.setOnClickListener(v -> openPluginRadioSettings());
         }
         wireAprsSection();
 
@@ -4445,10 +4413,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             switchEncryption.setChecked(encOn);
         }
 
-        if (passphraseRow != null) {
-            passphraseRow.setVisibility(encOn ? View.VISIBLE : View.GONE);
-        }
-
+        syncEncryptionFromSettings();
         updateEncryptionStatus();
 
         // Beacon interval
@@ -5599,6 +5564,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
     }
 
+    private void syncEncryptionFromSettings() {
+        com.uvpro.plugin.protocol.UVProRadioServices.syncEncryptionFromSettings(
+                getMapView().getContext());
+    }
+
     private void updateEncryptionStatus() {
         if (encryptionStatusText == null) return;
         boolean encOn = SettingsFragment.isEncryptionEnabled(getMapView().getContext());
@@ -5607,10 +5577,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
             encryptionStatusText.setText("\u2705 AES-256-GCM active");
             encryptionStatusText.setTextColor(0xFF4CAF50);
         } else if (encOn) {
-            encryptionStatusText.setText("\u26A0 Enter shared secret to activate");
+            encryptionStatusText.setText("\u26A0 Set shared secret in Tool Preferences");
             encryptionStatusText.setTextColor(0xFFFF9800);
         } else {
-            encryptionStatusText.setText("All radios must use the same shared secret");
+            encryptionStatusText.setText("Shared secret is configured in Tool Preferences");
             encryptionStatusText.setTextColor(0xFF888888);
         }
     }
@@ -7421,240 +7391,28 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
     }
 
-    private void showSettingsDialog() {
-        Context ctx = getMapView().getContext();
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(ctx);
+    private void openPluginToolPreferences() {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SettingsFragment.openToolPreferences(ctx);
+    }
 
-        // Build a custom dialog with EditTexts for key settings
-        android.widget.ScrollView scrollView = new android.widget.ScrollView(ctx);
-        android.widget.LinearLayout layout = new android.widget.LinearLayout(ctx);
-        layout.setOrientation(android.widget.LinearLayout.VERTICAL);
-        layout.setPadding(48, 32, 48, 16);
+    private void openPluginRadioSettings() {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SettingsFragment.openRadioSettings(ctx);
+    }
 
-        SettingsFragment.AprsSettingsUi aprsUi =
-                SettingsFragment.appendAprsSettingsSection(ctx, pluginContext, layout);
-
-        TextView headerBeacon = new TextView(ctx);
-        headerBeacon.setText("\nBeacon");
-        headerBeacon.setTextColor(0xFF00BCD4);
-        headerBeacon.setTextSize(14);
-        headerBeacon.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        layout.addView(headerBeacon);
-
-        // Beacon interval field (greyed out when smart beacon is on — toggle is on main panel)
-        boolean smartBeaconOn = SmartBeacon.isEnabled(ctx);
-        TextView labelBeacon = new TextView(ctx);
-        labelBeacon.setText("GPS Beacon Interval (seconds)");
-        labelBeacon.setTextColor(smartBeaconOn ? 0xFF666666 : 0xFFAAAAAA);
-        layout.addView(labelBeacon);
-        EditText editBeacon = new EditText(ctx);
-        editBeacon.setText(prefs.getString(SettingsFragment.PREF_BEACON_INTERVAL,
-                SettingsFragment.DEFAULT_BEACON_INTERVAL));
-        editBeacon.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        editBeacon.setEnabled(!smartBeaconOn);
-        editBeacon.setAlpha(smartBeaconOn ? 0.35f : 1.0f);
-        layout.addView(editBeacon);
-
-        // Section header
-        TextView headerMessaging = new TextView(ctx);
-        headerMessaging.setText("Send messages or other ATAK data options");
-        headerMessaging.setTextColor(0xFFFFFFFF);
-        headerMessaging.setTextSize(15);
-        headerMessaging.setPadding(0, 28, 0, 4);
-        layout.addView(headerMessaging);
-
-        // Retry interval field
-        TextView labelRetryInterval = new TextView(ctx);
-        labelRetryInterval.setText("\nRetry Interval (minutes) — wait before retransmitting");
-        labelRetryInterval.setTextColor(0xFFAAAAAA);
-        layout.addView(labelRetryInterval);
-        EditText editRetryInterval = new EditText(ctx);
-        editRetryInterval.setText(prefs.getString(SettingsFragment.PREF_RETRY_INTERVAL_MIN,
-                SettingsFragment.DEFAULT_RETRY_INTERVAL_MIN));
-        editRetryInterval.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        layout.addView(editRetryInterval);
-
-        // Max retries field
-        TextView labelRetryMax = new TextView(ctx);
-        labelRetryMax.setText("\nMax Retries — attempts before declaring failure");
-        labelRetryMax.setTextColor(0xFFAAAAAA);
-        layout.addView(labelRetryMax);
-        EditText editRetryMax = new EditText(ctx);
-        editRetryMax.setText(prefs.getString(SettingsFragment.PREF_RETRY_MAX,
-                SettingsFragment.DEFAULT_RETRY_MAX));
-        editRetryMax.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        layout.addView(editRetryMax);
-
-        // Ping Reply
-        LinearLayout rowPingReply = new LinearLayout(ctx);
-        rowPingReply.setOrientation(LinearLayout.HORIZONTAL);
-        rowPingReply.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        rowPingReply.setPadding(0, 20, 0, 0);
-
-        TextView labelPingReply = new TextView(ctx);
-        labelPingReply.setLayoutParams(new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        labelPingReply.setText("Send Ping Reply");
-        labelPingReply.setTextColor(0xFFFFFFFF);
-        labelPingReply.setTextSize(13);
-        rowPingReply.addView(labelPingReply);
-
-        Switch switchPingReply = new Switch(ctx);
-        switchPingReply.setChecked(SettingsFragment.isPingReplyEnabled(ctx));
-        rowPingReply.addView(switchPingReply);
-        layout.addView(rowPingReply);
-
-        TextView hintPingReply = new TextView(ctx);
-        hintPingReply.setText("Automatically reply to incoming pings with your position.");
-        hintPingReply.setTextColor(0xFF888888);
-        hintPingReply.setTextSize(11);
-        hintPingReply.setPadding(0, 2, 0, 0);
-        layout.addView(hintPingReply);
-
-        LinearLayout rowPingSameTransport = new LinearLayout(ctx);
-        rowPingSameTransport.setOrientation(LinearLayout.HORIZONTAL);
-        rowPingSameTransport.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        rowPingSameTransport.setPadding(0, 12, 0, 0);
-
-        TextView labelPingSameTransport = new TextView(ctx);
-        labelPingSameTransport.setLayoutParams(new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        labelPingSameTransport.setText("Ping Reply on Same Transport");
-        labelPingSameTransport.setTextColor(0xFFFFFFFF);
-        labelPingSameTransport.setTextSize(13);
-        rowPingSameTransport.addView(labelPingSameTransport);
-
-        Switch switchPingSameTransport = new Switch(ctx);
-        switchPingSameTransport.setChecked(
-                SettingsFragment.isPingReplySameTransportEnabled(ctx));
-        rowPingSameTransport.addView(switchPingSameTransport);
-        layout.addView(rowPingSameTransport);
-
-        TextView hintPingSameTransport = new TextView(ctx);
-        hintPingSameTransport.setText(
-                "Mesh ping → Mesh reply; UV-PRO ping → radio reply. Off uses the transmit toggle.");
-        hintPingSameTransport.setTextColor(0xFF888888);
-        hintPingSameTransport.setTextSize(11);
-        hintPingSameTransport.setPadding(0, 2, 0, 0);
-        layout.addView(hintPingSameTransport);
-
-        switchPingReply.setOnCheckedChangeListener((buttonView, isChecked) ->
-                switchPingSameTransport.setEnabled(isChecked));
-
-        TextView headerSaRelay = new TextView(ctx);
-        headerSaRelay.setText("\nSA Relay");
-        headerSaRelay.setTextColor(0xFF00BCD4);
-        headerSaRelay.setTextSize(14);
-        headerSaRelay.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        layout.addView(headerSaRelay);
-        Switch switchSaRelay = new Switch(ctx);
-        switchSaRelay.setText("Re-broadcast TAK network positions over radio");
-        switchSaRelay.setTextColor(0xFFCCCCCC);
-        switchSaRelay.setChecked(SettingsFragment.isSaRelayEnabled(ctx));
-        layout.addView(switchSaRelay);
-
-        Switch switchRfToTakUplink = new Switch(ctx);
-        switchRfToTakUplink.setText("RF -> TAK Uplink Relay");
-        switchRfToTakUplink.setTextColor(0xFFCCCCCC);
-        switchRfToTakUplink.setChecked(SettingsFragment.isRfToTakUplinkEnabled(ctx));
-        switchRfToTakUplink.setEnabled(switchSaRelay.isChecked());
-        layout.addView(switchRfToTakUplink);
-        switchSaRelay.setOnCheckedChangeListener((buttonView, isChecked) ->
-                switchRfToTakUplink.setEnabled(isChecked));
-
-        TextView hintSaRelay = new TextView(ctx);
-        hintSaRelay.setText(
-                "Throttled: one update per contact per 30 s. Requires TAK server + radio connected.");
-        hintSaRelay.setTextColor(0xFF888888);
-        hintSaRelay.setTextSize(12);
-        layout.addView(hintSaRelay);
-
-        TextView hintRfToTakUplink = new TextView(ctx);
-        hintRfToTakUplink.setText(
-                "Forwards RF CoT to TAK network. Active only when SA Relay is enabled.");
-        hintRfToTakUplink.setTextColor(0xFF888888);
-        hintRfToTakUplink.setTextSize(12);
-        layout.addView(hintRfToTakUplink);
-
-        // Team color is controlled by ATAK core settings (locationTeam). Plugin no longer overrides it.
-
-        final LinearLayout adminHost = new LinearLayout(ctx);
-        adminHost.setOrientation(LinearLayout.VERTICAL);
-        layout.addView(adminHost);
-        final SettingsFragment.AdministrationUi[] adminUiHolder =
-                new SettingsFragment.AdministrationUi[1];
-        final Runnable[] refreshAdminSection = new Runnable[1];
-        refreshAdminSection[0] = () -> {
-            adminHost.removeAllViews();
-            if (com.uvpro.plugin.ui.AdminAccessGate.isUnlocked(ctx)) {
-                adminUiHolder[0] = SettingsFragment.appendAdministrationSection(ctx, adminHost);
-            } else {
-                adminUiHolder[0] = null;
-                SettingsFragment.appendAdministrativeUnlockPrompt(ctx, adminHost,
-                        refreshAdminSection[0]);
-            }
-        };
-        refreshAdminSection[0].run();
-
-        scrollView.addView(layout);
-
-        new AlertDialog.Builder(ctx)
-                .setTitle("UV-PRO Settings")
-                .setView(scrollView)
-                .setPositiveButton("Save", (dialog, which) -> {
-                    SharedPreferences.Editor editor = prefs.edit();
-                    editor.putBoolean(SettingsFragment.PREF_SA_RELAY_ENABLED,
-                            switchSaRelay.isChecked());
-                    editor.putBoolean(SettingsFragment.PREF_RF_TO_TAK_UPLINK_ENABLED,
-                            switchRfToTakUplink.isChecked());
-
-                    editor.putBoolean(SettingsFragment.PREF_PING_REPLY_ENABLED,
-                            switchPingReply.isChecked());
-                    editor.putBoolean(SettingsFragment.PREF_PING_REPLY_SAME_TRANSPORT,
-                            switchPingSameTransport.isChecked());
-
-                    String newBeacon = editBeacon.getText().toString().trim();
-                    if (!newBeacon.isEmpty()) {
-                        editor.putString(SettingsFragment.PREF_BEACON_INTERVAL, newBeacon);
-                        if (beaconIntervalText != null)
-                            beaconIntervalText.setText(newBeacon + "s");
-                    }
-
-                    String newRetryInterval = editRetryInterval.getText().toString().trim();
-                    if (!newRetryInterval.isEmpty()) {
-                        editor.putString(SettingsFragment.PREF_RETRY_INTERVAL_MIN, newRetryInterval);
-                    }
-
-                    String newRetryMax = editRetryMax.getText().toString().trim();
-                    if (!newRetryMax.isEmpty()) {
-                        editor.putString(SettingsFragment.PREF_RETRY_MAX, newRetryMax);
-                    }
-
-                    if (adminUiHolder[0] != null) {
-                        SettingsFragment.saveAdministrationFromUi(ctx, adminUiHolder[0]);
-                        SettingsFragment.refreshAdministrationStatus(ctx, adminUiHolder[0]);
-                    }
-                    SettingsFragment.saveAprsSettingsFromUi(ctx, aprsUi);
-
-                    editor.apply();
-                    appendLog("Settings saved");
-                    appendLog("SA Relay " + (switchSaRelay.isChecked() ? "enabled" : "disabled"));
-                    appendLog("RF -> TAK Uplink "
-                            + (switchRfToTakUplink.isChecked() ? "enabled" : "disabled"));
-                    if (rootView != null) {
-                        getMapView().post(() -> {
-                            updateStatusFields();
-                            updateAprsSectionUi();
-                        });
-                    }
-                    try {
-                        AtakBroadcast.getInstance().sendBroadcast(
-                                new Intent(UVProMapComponent.ACTION_BEACON_INTERVAL_CHANGED));
-                    } catch (Exception ignored) {
-                    }
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
+    private void openPluginAprsSettings() {
+        Context ctx = getMapView() != null ? getMapView().getContext() : null;
+        if (ctx == null) {
+            return;
+        }
+        SettingsFragment.openAprsSettings(ctx);
     }
 
     /** Manual beacon follows transmit toggles with cross-transport fallback when preferred is down. */
@@ -7742,7 +7500,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
             btnClearAprsContacts.setOnClickListener(v -> clearAllAprsContacts());
         }
         if (btnEditAprsSettings != null) {
-            btnEditAprsSettings.setOnClickListener(v -> showSettingsDialog());
+            btnEditAprsSettings.setOnClickListener(v -> openPluginAprsSettings());
         }
         updateAprsSectionUi();
     }
@@ -8080,6 +7838,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
             // Check for a pending QR scan result stored by QrScanActivity
             checkPendingQrResult();
             updateMeshBeaconAdminUi();
+            updateStatusFields();
+            updateAprsSectionUi();
         }
     }
 

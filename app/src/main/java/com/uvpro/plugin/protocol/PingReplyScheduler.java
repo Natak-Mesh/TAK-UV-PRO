@@ -150,28 +150,21 @@ public final class PingReplyScheduler {
     }
 
     private BtConnectionManager resolveReplyTransport(Context context) {
-        if (SettingsFragment.isPingReplySameTransportEnabled(context)) {
-            BtConnectionManager preferred = pendingInboundTransport == RfInboundTransport.MESHCORE
+        BtConnectionManager preferred = pendingInboundTransport == RfInboundTransport.MESHCORE
+                ? meshTransport
+                : uvproTransport;
+        if (preferred == meshTransport && !SettingsFragment.isMeshTransmitEnabled(context)) {
+            preferred = SettingsFragment.isUvproTransmitEnabled(context)
+                    ? uvproTransport
+                    : null;
+        } else if (preferred == uvproTransport
+                && !SettingsFragment.isUvproTransmitEnabled(context)) {
+            preferred = SettingsFragment.isMeshTransmitEnabled(context)
                     ? meshTransport
-                    : uvproTransport;
-            if (preferred == meshTransport && !SettingsFragment.isMeshTransmitEnabled(context)) {
-                preferred = SettingsFragment.isUvproTransmitEnabled(context)
-                        ? uvproTransport
-                        : null;
-            } else if (preferred == uvproTransport
-                    && !SettingsFragment.isUvproTransmitEnabled(context)) {
-                preferred = SettingsFragment.isMeshTransmitEnabled(context)
-                        ? meshTransport
-                        : null;
-            }
-            if (preferred != null && preferred.isConnected()) {
-                return preferred;
-            }
-            return resolveTransmitWithToggleFallback(context);
+                    : null;
         }
-        BtConnectionManager active = cotBridge.getActiveBtManager();
-        if (active != null && active.isConnected()) {
-            return active;
+        if (preferred != null && preferred.isConnected()) {
+            return preferred;
         }
         return resolveTransmitWithToggleFallback(context);
     }

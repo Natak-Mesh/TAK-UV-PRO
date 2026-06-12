@@ -3,9 +3,20 @@ package com.uvpro.plugin.ui;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.graphics.Typeface;
+import android.graphics.drawable.BitmapDrawable;
 import android.os.Bundle;
+import android.util.TypedValue;
 import android.text.InputType;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.AbsoluteSizeSpan;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.ImageSpan;
+import android.preference.CheckBoxPreference;
+import android.preference.EditTextPreference;
+import android.preference.ListPreference;
 import android.preference.Preference;
 import android.preference.PreferenceCategory;
 import android.preference.PreferenceGroup;
@@ -19,12 +30,15 @@ import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import com.atakmap.android.chat.ChatManagerMapComponent;
+import com.atakmap.android.gui.PanCheckBoxPreference;
+import com.atakmap.android.gui.PanEditTextPreference;
 import com.atakmap.android.gui.PanPreference;
 import com.atakmap.android.ipc.AtakBroadcast;
 import com.atakmap.android.maps.MapView;
@@ -32,6 +46,11 @@ import com.atakmap.android.preference.PluginPreferenceFragment;
 import com.atakmap.app.SettingsActivity;
 import com.uvpro.plugin.protocol.NetSlotConfig;
 import com.uvpro.plugin.protocol.UVProRadioServices;
+import com.uvpro.plugin.UVProMapComponent;
+import com.uvpro.plugin.beacon.SmartBeacon;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Settings screen for the UVPro plugin.
@@ -47,6 +66,20 @@ public class SettingsFragment extends PluginPreferenceFragment
         implements SharedPreferences.OnSharedPreferenceChangeListener {
     private static final int COLOR_STD_BLUE = 0xFF1976D2;
     private static final int COLOR_WHITE = 0xFFFFFFFF;
+    private static final int COLOR_CATEGORY_YELLOW = 0xFFFFEB3B;
+    private static final int COLOR_VALUE_GREEN = 0xFF4CAF50;
+    private static final int COLOR_DISABLED_GREY = 0xFF757575;
+    private static final int COLOR_WARNING_RED = 0xFFFF5252;
+    private static final int PREFERENCE_TITLE_TEXT_SP = 16;
+    private static final float CATEGORY_TITLE_TEXT_SP = 18f;
+
+    /** Beacon interval + Smart Beacon (Tool Preferences section). */
+    public static final String KEY_CAT_BEACON = "uvpro_cat_beacon";
+    public static final String KEY_SMART_BEACON_SECTION_HEADER = "uvpro_smart_beacon_section_header";
+    private static final String BEACON_INTERVAL_DESC =
+            "Sets the ATAK call sign beacon interval";
+    private static final String APRS_ICON_DESC = "Map symbol for your position beacons";
+    private static final String APRS_ICON_NOT_SET = "Not Set";
 
     /** Key registered with {@code ToolsPreferenceFragment} in {@link com.uvpro.plugin.UVProMapComponent}. */
     public static final String TOOL_SETTINGS_KEY = "uvproPreference";
@@ -77,14 +110,33 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String PREF_APRS_DISABLE_ATAK_TRAFFIC = "uvpro_aprs_disable_atak_traffic";
 
     public static final String KEY_CAT_APRS = "uvpro_cat_aprs";
+    public static final String KEY_CAT_SECURITY = "uvpro_cat_security";
     public static final String KEY_APRS_ICON = "uvpro_aprs_icon";
 
     public static final String KEY_UNLOCK_ADMIN = "uvpro_admin_access";
     public static final String KEY_CAT_ADMINISTRATION = "uvpro_cat_administration";
     public static final String KEY_ADMIN_LEADERSHIP_WARNING = "uvpro_admin_leadership_warning";
     public static final String KEY_DISTRIBUTE_NET_SLOTS = "uvpro_distribute_net_slots";
+    public static final String KEY_DISTRIBUTE_NET_WARNING = "uvpro_distribute_net_warning";
+    private static final String DISTRIBUTE_NET_WARNING =
+            "WARNING: DO NOT SEND THIS FEATURE UNLESS SPECIFICALLY DIRECTED BY HIGHER";
     public static final String KEY_ADMIN_CURRENT_SLOT_STATUS = "uvpro_admin_current_slot_status";
     public static final String KEY_MESH_BEACON_NATIONAL_WARNING = "uvpro_mesh_beacon_national_warning";
+    public static final String KEY_SA_RELAY_SECTION_HEADER = "uvpro_sa_relay_section_header";
+
+    private static final String[] ADMIN_GATED_PREF_KEYS = {
+            KEY_ADMIN_LEADERSHIP_WARNING,
+            KEY_MESH_BEACON_NATIONAL_WARNING,
+            PREF_MESH_BEACON_ENABLED,
+            KEY_SA_RELAY_SECTION_HEADER,
+            PREF_SA_RELAY_ENABLED,
+            PREF_RF_TO_TAK_UPLINK_ENABLED,
+            NetSlotConfig.PREF_SLOT_COUNT,
+            NetSlotConfig.PREF_SLOT_TIME_SEC,
+            KEY_DISTRIBUTE_NET_WARNING,
+            KEY_DISTRIBUTE_NET_SLOTS,
+            KEY_ADMIN_CURRENT_SLOT_STATUS,
+    };
 
     /** Injected after inflate — some ATAK builds omit custom Pan* prefs from XML. */
     public static final String KEY_BLUETOOTH_DEVICES = "uvpro_bluetooth_devices";
@@ -97,30 +149,33 @@ public class SettingsFragment extends PluginPreferenceFragment
     private static Context staticPluginContext;
 
     private PreferenceCategory adminCategory;
-    private boolean adminCategoryRemoved = false;
 
     /**
      * Zero-arg constructor required by Android fragment system.
      * Only valid after the 1-arg constructor has been called once.
      */
     public SettingsFragment() {
-        super(staticPluginContext, getResourceId());
+        super(staticPluginContext, resolvePreferencesResourceId(staticPluginContext));
     }
 
     public SettingsFragment(final Context pluginContext) {
-        super(pluginContext, getResourceId());
+        super(pluginContext, resolvePreferencesResourceId(pluginContext));
         staticPluginContext = pluginContext;
     }
 
-    private static int getResourceId() {
-        if (staticPluginContext == null) return 0;
-        return staticPluginContext.getResources().getIdentifier(
-                "preferences", "xml", staticPluginContext.getPackageName());
+    private static int resolvePreferencesResourceId(Context ctx) {
+        if (ctx == null) {
+            return 0;
+        }
+        return ctx.getResources().getIdentifier(
+                "preferences", "xml", ctx.getPackageName());
     }
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        ensureRequiredPreferences();
+        removeObsoletePreferences();
         Context ctx = getContext();
         if (ctx == null) {
             ctx = staticPluginContext;
@@ -129,9 +184,483 @@ public class SettingsFragment extends PluginPreferenceFragment
             NetSlotConfig.ensureDefaults(ctx);
         }
         ensureBluetoothDevicesPreference();
+        wireBeaconPreferences();
         wireAprsPreferences();
         wireAdministrationPreferences();
-        wireAdminAccessPreference();
+        wireAdminSettingsGate();
+    }
+
+    private void wireBeaconPreferences() {
+        syncSmartBeaconPreferenceValues();
+    }
+
+    private void syncSmartBeaconPreferenceValues() {
+        Context ctx = MapView.getMapView() != null
+                ? MapView.getMapView().getContext()
+                : staticPluginContext;
+        if (ctx == null) {
+            return;
+        }
+        setEditTextPreferenceText(SmartBeacon.KEY_LOW_SPEED,
+                String.valueOf(SmartBeacon.getLowSpeed(ctx)));
+        setEditTextPreferenceText(SmartBeacon.KEY_HIGH_SPEED,
+                String.valueOf(SmartBeacon.getHighSpeed(ctx)));
+        setEditTextPreferenceText(SmartBeacon.KEY_SLOW_RATE,
+                String.valueOf(SmartBeacon.getSlowRate(ctx)));
+        setEditTextPreferenceText(SmartBeacon.KEY_FAST_RATE,
+                String.valueOf(SmartBeacon.getFastRate(ctx)));
+        setEditTextPreferenceText(SmartBeacon.KEY_MIN_TURN_TIME,
+                String.valueOf(SmartBeacon.getMinTurnTime(ctx)));
+        setEditTextPreferenceText(SmartBeacon.KEY_TURN_THRESHOLD,
+                String.valueOf(SmartBeacon.getTurnThreshold(ctx)));
+        setEditTextPreferenceText(SmartBeacon.KEY_TURN_SLOPE,
+                String.valueOf(SmartBeacon.getTurnSlope(ctx)));
+    }
+
+    private void setEditTextPreferenceText(String key, String value) {
+        Preference pref = findPreference(key);
+        if (pref instanceof PanEditTextPreference) {
+            ((PanEditTextPreference) pref).setText(value);
+        }
+    }
+
+    @Override
+    public void onActivityCreated(Bundle savedInstanceState) {
+        super.onActivityCreated(savedInstanceState);
+        ListView list = getPreferenceListView();
+        if (list != null) {
+            list.setOnHierarchyChangeListener(new ViewGroup.OnHierarchyChangeListener() {
+                @Override
+                public void onChildViewAdded(View parent, View child) {
+                    child.post(SettingsFragment.this::applyRowStyles);
+                }
+
+                @Override
+                public void onChildViewRemoved(View parent, View child) {
+                }
+            });
+            list.post(this::applyRowStyles);
+        }
+    }
+
+    private ListView getPreferenceListView() {
+        View root = getView();
+        if (root == null) {
+            return null;
+        }
+        return root.findViewById(android.R.id.list);
+    }
+
+    private void applyRowStyles() {
+        ListView list = getPreferenceListView();
+        if (list == null) {
+            return;
+        }
+        List<Preference> ordered = buildOrderedPreferences();
+        for (int i = 0; i < list.getChildCount(); i++) {
+            try {
+                View row = list.getChildAt(i);
+                Preference pref = resolvePreferenceForRow(list, row, i, ordered);
+                if (pref != null) {
+                    stylePreferenceRow(row, pref);
+                }
+            } catch (Exception e) {
+                android.util.Log.w("UVPro.Settings", "applyRowStyles failed for row " + i, e);
+            }
+        }
+    }
+
+    private List<Preference> buildOrderedPreferences() {
+        List<Preference> out = new ArrayList<>();
+        android.preference.PreferenceScreen screen = getPreferenceScreen();
+        if (screen != null) {
+            collectPreferencesInOrder(screen, out);
+        }
+        return out;
+    }
+
+    private void collectPreferencesInOrder(PreferenceGroup group, List<Preference> out) {
+        for (int i = 0; i < group.getPreferenceCount(); i++) {
+            Preference pref = group.getPreference(i);
+            out.add(pref);
+            if (pref instanceof PreferenceGroup) {
+                collectPreferencesInOrder((PreferenceGroup) pref, out);
+            }
+        }
+    }
+
+    private Preference resolvePreferenceForRow(ListView list, View row, int childIndex,
+                                               List<Preference> ordered) {
+        int position = list.getFirstVisiblePosition() + childIndex;
+        if (position >= 0 && position < ordered.size()) {
+            Preference candidate = ordered.get(position);
+            if (preferenceMatchesRow(candidate, row)) {
+                return candidate;
+            }
+        }
+        TextView titleView = row.findViewById(android.R.id.title);
+        if (titleView != null && titleView.getText() != null) {
+            Preference byTitle = findPreferenceByTitle(titleView.getText().toString());
+            if (byTitle != null) {
+                return byTitle;
+            }
+        }
+        if (position >= 0 && position < ordered.size()) {
+            return ordered.get(position);
+        }
+        return null;
+    }
+
+    private Preference findPreferenceByTitle(String title) {
+        if (title == null || title.isEmpty()) {
+            return null;
+        }
+        android.preference.PreferenceScreen screen = getPreferenceScreen();
+        if (screen == null) {
+            return null;
+        }
+        return findPreferenceByTitle(screen, title);
+    }
+
+    private Preference findPreferenceByTitle(PreferenceGroup group, String title) {
+        for (int i = 0; i < group.getPreferenceCount(); i++) {
+            Preference pref = group.getPreference(i);
+            if (pref.getTitle() != null && title.equals(pref.getTitle().toString())) {
+                return pref;
+            }
+            if (pref instanceof PreferenceGroup) {
+                Preference nested = findPreferenceByTitle((PreferenceGroup) pref, title);
+                if (nested != null) {
+                    return nested;
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean preferenceMatchesRow(Preference pref, View row) {
+        if (pref == null || row == null) {
+            return false;
+        }
+        TextView titleView = row.findViewById(android.R.id.title);
+        if (titleView == null || titleView.getText() == null
+                || titleView.getText().length() == 0) {
+            return true;
+        }
+        if (pref.getTitle() == null) {
+            return false;
+        }
+        return titleView.getText().toString().equals(pref.getTitle().toString());
+    }
+
+    private void stylePreferenceRow(View row, Preference pref) {
+        if (row == null || pref == null) {
+            return;
+        }
+        TextView title = row.findViewById(android.R.id.title);
+        TextView summary = row.findViewById(android.R.id.summary);
+        if (pref instanceof PreferenceCategory) {
+            if (title != null) {
+                styleCategoryTitle(title);
+                centerTitleInRow(title);
+            }
+            if (summary != null) {
+                summary.setVisibility(View.GONE);
+            }
+            return;
+        }
+        if (KEY_SMART_BEACON_SECTION_HEADER.equals(pref.getKey())
+                || KEY_SA_RELAY_SECTION_HEADER.equals(pref.getKey())) {
+            styleBlueSectionHeaderRow(row, pref);
+            return;
+        }
+        if (KEY_DISTRIBUTE_NET_WARNING.equals(pref.getKey())) {
+            styleDistributeNetWarningRow(row, pref);
+            return;
+        }
+        if (KEY_DISTRIBUTE_NET_SLOTS.equals(pref.getKey())) {
+            styleDistributeNetButtonRow(row, pref);
+            return;
+        }
+        resetStandardPreferenceRow(row, pref);
+        if (title != null) {
+            resetStandardRowTitle(title);
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, PREFERENCE_TITLE_TEXT_SP);
+            title.setTypeface(Typeface.DEFAULT);
+            title.setTextColor(pref.isEnabled() ? COLOR_WHITE : COLOR_DISABLED_GREY);
+        }
+        if (summary != null) {
+            resetStandardSummary(summary);
+            applySummaryText(summary, pref);
+        }
+    }
+
+    private void styleBlueSectionHeaderRow(View row, Preference pref) {
+        resetStandardPreferenceRow(row, pref);
+        TextView title = row.findViewById(android.R.id.title);
+        TextView summary = row.findViewById(android.R.id.summary);
+        if (title != null) {
+            resetStandardRowTitle(title);
+            title.setTextColor(COLOR_STD_BLUE);
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, PREFERENCE_TITLE_TEXT_SP);
+            title.setTypeface(Typeface.DEFAULT_BOLD);
+        }
+        if (summary != null) {
+            resetStandardSummary(summary);
+            summary.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+            applySummaryText(summary, pref);
+            summary.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void resetStandardPreferenceRow(View row, Preference pref) {
+        if (row == null) {
+            return;
+        }
+        Context ctx = resolveSettingsContext();
+        int padStart = dp(ctx, 16);
+        int padEnd = dp(ctx, 16);
+        row.setPaddingRelative(padStart, row.getPaddingTop(), padEnd, row.getPaddingBottom());
+
+        if (row instanceof LinearLayout) {
+            ((LinearLayout) row).setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        }
+
+        View icon = row.findViewById(android.R.id.icon);
+        if (icon != null) {
+            icon.setVisibility(View.GONE);
+            ViewGroup.LayoutParams iconLp = icon.getLayoutParams();
+            if (iconLp != null) {
+                iconLp.width = 0;
+                icon.setLayoutParams(iconLp);
+            }
+        }
+
+        TextView title = row.findViewById(android.R.id.title);
+        if (title != null && title.getParent() instanceof ViewGroup) {
+            ViewGroup contentCol = (ViewGroup) title.getParent();
+            if (contentCol instanceof LinearLayout) {
+                ((LinearLayout) contentCol).setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            }
+            ViewGroup.LayoutParams colLp = contentCol.getLayoutParams();
+            if (colLp instanceof LinearLayout.LayoutParams) {
+                LinearLayout.LayoutParams llp = (LinearLayout.LayoutParams) colLp;
+                llp.width = 0;
+                llp.weight = 1f;
+                llp.gravity = Gravity.START;
+                contentCol.setLayoutParams(llp);
+            }
+            contentCol.setPaddingRelative(0, contentCol.getPaddingTop(), 0,
+                    contentCol.getPaddingBottom());
+        }
+
+        clearRedundantListValueWidget(row, pref);
+    }
+
+    private void styleDistributeNetWarningRow(View row, Preference pref) {
+        resetStandardPreferenceRow(row, pref);
+        TextView title = row.findViewById(android.R.id.title);
+        TextView summary = row.findViewById(android.R.id.summary);
+        if (title != null) {
+            resetStandardRowTitle(title);
+            title.setText(DISTRIBUTE_NET_WARNING);
+            title.setTextColor(pref.isEnabled() ? COLOR_WARNING_RED : COLOR_DISABLED_GREY);
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, PREFERENCE_TITLE_TEXT_SP);
+            title.setTypeface(Typeface.DEFAULT_BOLD);
+        }
+        if (summary != null) {
+            summary.setVisibility(View.GONE);
+        }
+    }
+
+    private void styleDistributeNetButtonRow(View row, Preference pref) {
+        Context ctx = resolveSettingsContext();
+        int hPad = dp(ctx, 16);
+        int vPad = dp(ctx, 12);
+        row.setPaddingRelative(hPad, vPad, hPad, vPad);
+        row.setBackgroundColor(pref.isEnabled() ? COLOR_STD_BLUE : COLOR_DISABLED_GREY);
+
+        View icon = row.findViewById(android.R.id.icon);
+        if (icon != null) {
+            icon.setVisibility(View.GONE);
+        }
+        View widgetFrame = row.findViewById(android.R.id.widget_frame);
+        if (widgetFrame instanceof ViewGroup) {
+            ((ViewGroup) widgetFrame).removeAllViews();
+        }
+
+        TextView title = row.findViewById(android.R.id.title);
+        TextView summary = row.findViewById(android.R.id.summary);
+        if (title != null) {
+            title.setGravity(Gravity.CENTER);
+            title.setTextAlignment(View.TEXT_ALIGNMENT_CENTER);
+            ViewGroup.LayoutParams lp = title.getLayoutParams();
+            if (lp != null) {
+                lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+                title.setLayoutParams(lp);
+            }
+            title.setText("Distribute to net");
+            title.setTextColor(COLOR_WHITE);
+            title.setTextSize(TypedValue.COMPLEX_UNIT_SP, PREFERENCE_TITLE_TEXT_SP);
+            title.setTypeface(Typeface.DEFAULT_BOLD);
+        }
+        if (summary != null) {
+            summary.setVisibility(View.GONE);
+        }
+    }
+
+    private void clearRedundantListValueWidget(View row, Preference pref) {
+        if (!(pref instanceof ListPreference)) {
+            return;
+        }
+        View widgetFrame = row.findViewById(android.R.id.widget_frame);
+        if (!(widgetFrame instanceof ViewGroup)) {
+            return;
+        }
+        ViewGroup widgetGroup = (ViewGroup) widgetFrame;
+        for (int i = widgetGroup.getChildCount() - 1; i >= 0; i--) {
+            View child = widgetGroup.getChildAt(i);
+            if (!(child instanceof CompoundButton)) {
+                widgetGroup.removeViewAt(i);
+            }
+        }
+    }
+
+    private void centerTitleInRow(TextView title) {
+        if (title == null) {
+            return;
+        }
+        title.setGravity(Gravity.CENTER_HORIZONTAL | Gravity.CENTER_VERTICAL);
+        ViewGroup.LayoutParams lp = title.getLayoutParams();
+        if (lp != null) {
+            lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+            title.setLayoutParams(lp);
+        }
+    }
+
+    private void resetStandardRowTitle(TextView title) {
+        if (title == null) {
+            return;
+        }
+        title.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        title.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+        ViewGroup.LayoutParams lp = title.getLayoutParams();
+        if (lp != null) {
+            lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+            if (lp instanceof ViewGroup.MarginLayoutParams) {
+                ((ViewGroup.MarginLayoutParams) lp).setMarginStart(0);
+            }
+            title.setLayoutParams(lp);
+        }
+    }
+
+    private void resetStandardSummary(TextView summary) {
+        if (summary == null) {
+            return;
+        }
+        summary.setGravity(Gravity.START);
+        summary.setTextAlignment(View.TEXT_ALIGNMENT_VIEW_START);
+        ViewGroup.LayoutParams lp = summary.getLayoutParams();
+        if (lp != null) {
+            lp.width = ViewGroup.LayoutParams.MATCH_PARENT;
+            if (lp instanceof ViewGroup.MarginLayoutParams) {
+                ((ViewGroup.MarginLayoutParams) lp).setMarginStart(0);
+            }
+            summary.setLayoutParams(lp);
+        }
+    }
+
+    private void styleCategoryTitle(TextView title) {
+        title.setTextColor(COLOR_CATEGORY_YELLOW);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, CATEGORY_TITLE_TEXT_SP);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+    }
+
+    private void applySummaryText(TextView summary, Preference pref) {
+        CharSequence styledSummary = buildStyledSummaryForPreference(pref);
+        if (styledSummary != null) {
+            summary.setText(styledSummary);
+            summary.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void removeObsoletePreferences() {
+        removePreferenceFromScreen(SmartBeacon.KEY_ENABLED);
+        removePreferenceFromScreen(PREF_PING_REPLY_SAME_TRANSPORT);
+        removePreferenceFromScreen(KEY_UNLOCK_ADMIN);
+        removePreferenceFromScreen(PREF_ENCRYPTION_ENABLED);
+        removePreferenceFromScreen("uvpro_sa_relay_header");
+        removePreferenceFromScreen("uvpro_cat_sa_relay");
+    }
+
+    private void removePreferenceFromScreen(String key) {
+        Preference pref = findPreference(key);
+        if (pref == null) {
+            return;
+        }
+        PreferenceGroup parent = pref.getParent();
+        if (parent != null) {
+            parent.removePreference(pref);
+        } else {
+            android.preference.PreferenceScreen screen = getPreferenceScreen();
+            if (screen != null) {
+                screen.removePreference(pref);
+            }
+        }
+    }
+
+    /**
+     * Some ATAK builds drop custom Pan* prefs from XML inflation. Inject any missing
+     * required controls before preference binding runs in {@code onActivityCreated}.
+     */
+    private void ensureRequiredPreferences() {
+        PreferenceCategory radio = (PreferenceCategory) findPreference(KEY_CAT_RADIO);
+        if (radio != null) {
+            ensureCheckBoxPreference(radio, PREF_PING_REPLY_ENABLED,
+                    "Send Ping Reply",
+                    "Automatically reply to incoming pings with your position",
+                    true);
+        }
+        PreferenceCategory admin = (PreferenceCategory) findPreference(KEY_CAT_ADMINISTRATION);
+        PreferenceCategory saRelay = (PreferenceCategory) findPreference("uvpro_cat_sa_relay");
+        if (saRelay != null) {
+            ensureCheckBoxPreference(saRelay, PREF_SA_RELAY_ENABLED,
+                    "Enable SA Relay",
+                    "Re-broadcast inbound network positions over radio to off-grid users. "
+                            + "Throttled to one update per contact per 30 seconds.",
+                    false);
+        } else if (admin != null) {
+            ensureCheckBoxPreference(admin, PREF_SA_RELAY_ENABLED,
+                    "Enable SA Relay",
+                    "Re-broadcast inbound network positions over radio to off-grid users. "
+                            + "Throttled to one update per contact per 30 seconds.",
+                    false);
+        }
+    }
+
+    private void ensureCheckBoxPreference(PreferenceGroup parent, String key, String title,
+                                          String summary, boolean defaultValue) {
+        if (parent == null || findPreference(key) != null) {
+            return;
+        }
+        Context ctx = getActivity() != null ? getActivity() : staticPluginContext;
+        if (ctx == null) {
+            return;
+        }
+        PanCheckBoxPreference pref = new PanCheckBoxPreference(ctx);
+        pref.setKey(key);
+        pref.setTitle(title);
+        pref.setSummary(summary);
+        pref.setDefaultValue(defaultValue);
+        parent.addPreference(pref);
+    }
+
+    private void updateDependentPreferences() {
+        SharedPreferences prefs = getPreferenceManager().getSharedPreferences();
+        Preference rfUplinkPref = findPreference(PREF_RF_TO_TAK_UPLINK_ENABLED);
+        if (rfUplinkPref != null) {
+            rfUplinkPref.setEnabled(prefs.getBoolean(PREF_SA_RELAY_ENABLED, false));
+        }
     }
 
     /**
@@ -161,9 +690,15 @@ public class SettingsFragment extends PluginPreferenceFragment
         getPreferenceManager().getSharedPreferences()
                 .registerOnSharedPreferenceChangeListener(this);
         styleAdminLeadershipWarning();
-        applyAdminCategoryVisibility();
+        syncAdminSettingsGateOnResume();
         updateAdminControlsEnabled();
+        syncSmartBeaconPreferenceValues();
+        updateDependentPreferences();
         updateSummaries();
+        ListView list = getPreferenceListView();
+        if (list != null) {
+            list.post(this::applyRowStyles);
+        }
     }
 
     @Override
@@ -183,86 +718,168 @@ public class SettingsFragment extends PluginPreferenceFragment
                 || NetSlotConfig.PREF_SLOT_TIME_SEC.equals(key)) {
             normalizeSlotPreferences(prefs);
         }
-        updateSummaries();
-    }
-
-    private void wireAdminAccessPreference() {
-        adminCategory = (PreferenceCategory) findPreference(KEY_CAT_ADMINISTRATION);
-        Preference unlock = findPreference(KEY_UNLOCK_ADMIN);
-        if (unlock != null) {
-            unlock.setOnPreferenceClickListener(preference -> {
-                Context ctx = getActivity() != null ? getActivity() : getContext();
-                if (ctx == null && MapView.getMapView() != null) {
-                    ctx = MapView.getMapView().getContext();
-                }
-                if (ctx == null) {
-                    return true;
-                }
-                if (AdminAccessGate.isUnlocked(ctx)) {
-                    Toast.makeText(ctx, "Administrative Settings already unlocked",
-                            Toast.LENGTH_SHORT).show();
-                    return true;
-                }
-                promptAdministrativeUnlock(ctx, () -> applyAdminCategoryVisibility());
-                return true;
-            });
+        if (PREF_BEACON_INTERVAL.equals(key)
+                || PREF_MESH_BEACON_ENABLED.equals(key)
+                || PREF_SA_RELAY_ENABLED.equals(key)
+                || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)
+                || PREF_PING_REPLY_ENABLED.equals(key)
+                || isSmartBeaconParamKey(key)) {
+            if (isSmartBeaconParamKey(key)) {
+                persistSmartBeaconFromPreferences();
+            }
+            notifyRuntimeSettingsChanged();
         }
-        applyAdminCategoryVisibility();
+        if (PREF_SA_RELAY_ENABLED.equals(key)) {
+            updateDependentPreferences();
+        }
+        if (PREF_ENCRYPTION_ENABLED.equals(key) || PREF_ENCRYPTION_PASSPHRASE.equals(key)) {
+            com.uvpro.plugin.protocol.UVProRadioServices.syncEncryptionFromSettings(
+                    resolveSettingsContext());
+        }
+        updateSummaries();
+        ListView list = getPreferenceListView();
+        if (list != null) {
+            list.post(this::applyRowStyles);
+        }
     }
 
-    private void applyAdminCategoryVisibility() {
+    private Context resolveSettingsContext() {
         Context ctx = getActivity() != null ? getActivity() : getContext();
+        if (ctx == null && MapView.getMapView() != null) {
+            ctx = MapView.getMapView().getContext();
+        }
         if (ctx == null) {
             ctx = staticPluginContext;
         }
-        boolean unlocked = AdminAccessGate.isUnlocked(ctx);
-        Preference unlock = findPreference(KEY_UNLOCK_ADMIN);
-        if (unlock != null) {
-            unlock.setSummary(unlocked
-                    ? "Unlocked — leadership controls below"
-                    : "Tap to enter password");
-        }
-        android.preference.PreferenceScreen screen = getPreferenceScreen();
-        if (adminCategory == null || screen == null) {
+        return ctx;
+    }
+
+    /** ATAK default SharedPreferences — never the plugin package store. */
+    private SharedPreferences atakPrefs() {
+        return getPrefs(resolveSettingsContext());
+    }
+
+    private void wireAdminSettingsGate() {
+        adminCategory = (PreferenceCategory) findPreference(KEY_CAT_ADMINISTRATION);
+        Preference adminToggle = findPreference(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED);
+        if (!(adminToggle instanceof CheckBoxPreference)) {
             return;
         }
-        if (!unlocked && adminCategory.getParent() != null) {
-            screen.removePreference(adminCategory);
-            adminCategoryRemoved = true;
-        } else if (unlocked && adminCategoryRemoved) {
-            screen.addPreference(adminCategory);
-            adminCategoryRemoved = false;
-            updateAdminControlsEnabled();
-            updateSummaries();
+        CheckBoxPreference adminCheck = (CheckBoxPreference) adminToggle;
+        adminCheck.setOnPreferenceChangeListener(null);
+        adminCheck.setOnPreferenceClickListener(preference -> {
+            Context prefsCtx = resolveSettingsContext();
+            if (prefsCtx == null) {
+                return false;
+            }
+            CheckBoxPreference checkbox = (CheckBoxPreference) preference;
+            boolean turningOn = !checkbox.isChecked();
+
+            if (!turningOn) {
+                AdminAccessGate.lock(prefsCtx);
+                checkbox.setChecked(false);
+                refreshAdminGateUi();
+                return true;
+            }
+
+            if (AdminAccessGate.isUnlocked(prefsCtx)) {
+                enableAdminSettings(checkbox, prefsCtx);
+                return true;
+            }
+
+            Context dialogCtx = getActivity() != null ? getActivity() : prefsCtx;
+            promptAdministrativeUnlock(dialogCtx, prefsCtx, () ->
+                    enableAdminSettings(checkbox, prefsCtx));
+            return true;
+        });
+    }
+
+    private void enableAdminSettings(CheckBoxPreference checkbox, Context prefsCtx) {
+        getPrefs(prefsCtx).edit()
+                .putBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, true)
+                .apply();
+        checkbox.setChecked(true);
+        refreshAdminGateUi();
+    }
+
+    private void refreshAdminGateUi() {
+        updateAdminControlsEnabled();
+        updateSummaries();
+        ListView list = getPreferenceListView();
+        if (list != null) {
+            list.post(this::applyRowStyles);
+        }
+    }
+
+    private void syncAdminSettingsGateOnResume() {
+        Context prefsCtx = resolveSettingsContext();
+        if (prefsCtx == null) {
+            return;
+        }
+        SharedPreferences prefs = atakPrefs();
+        Preference adminToggle = findPreference(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED);
+        if (!AdminAccessGate.isUnlocked(prefsCtx)) {
+            if (prefs.getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false)) {
+                prefs.edit()
+                        .putBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false)
+                        .apply();
+            }
+            if (adminToggle instanceof CheckBoxPreference) {
+                ((CheckBoxPreference) adminToggle).setChecked(false);
+            }
+        } else if (adminToggle instanceof CheckBoxPreference) {
+            ((CheckBoxPreference) adminToggle).setChecked(
+                    prefs.getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false));
+        }
+    }
+
+    private void notifyRuntimeSettingsChanged() {
+        try {
+            AtakBroadcast.getInstance().sendBroadcast(
+                    new android.content.Intent(UVProMapComponent.ACTION_BEACON_INTERVAL_CHANGED));
+        } catch (Exception ignored) {
         }
     }
 
     /** Password dialog for Tools prefs and in-plugin settings. */
-    public static void promptAdministrativeUnlock(Context ctx, Runnable onUnlocked) {
-        if (ctx == null) {
+    public static void promptAdministrativeUnlock(Context dialogCtx, Runnable onUnlocked) {
+        Context prefsCtx = MapView.getMapView() != null
+                ? MapView.getMapView().getContext()
+                : dialogCtx;
+        promptAdministrativeUnlock(dialogCtx, prefsCtx, onUnlocked);
+    }
+
+    /** @param prefsCtx ATAK context used for {@link AdminAccessGate} read/write */
+    public static void promptAdministrativeUnlock(Context dialogCtx, Context prefsCtx,
+                                                  Runnable onUnlocked) {
+        if (dialogCtx == null) {
             return;
         }
+        if (prefsCtx == null) {
+            prefsCtx = dialogCtx;
+        }
         if (!AdminAccessGate.isConfigured()) {
-            Toast.makeText(ctx,
+            Toast.makeText(dialogCtx,
                     "Administrative password not configured in this build",
                     Toast.LENGTH_LONG).show();
             return;
         }
-        final EditText input = new EditText(ctx);
+        final EditText input = new EditText(dialogCtx);
         input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        new AlertDialog.Builder(ctx)
+        final Context storeCtx = prefsCtx;
+        new AlertDialog.Builder(dialogCtx)
                 .setTitle("Administrative Settings")
                 .setMessage("Enter password to unlock hidden settings.")
                 .setView(input)
                 .setPositiveButton("Unlock", (dialog, which) -> {
-                    if (AdminAccessGate.unlock(ctx, input.getText().toString())) {
-                        Toast.makeText(ctx, "Administrative Settings unlocked",
+                    if (AdminAccessGate.unlock(storeCtx, input.getText().toString())) {
+                        Toast.makeText(dialogCtx, "Administrative Settings unlocked",
                                 Toast.LENGTH_SHORT).show();
                         if (onUnlocked != null) {
                             onUnlocked.run();
                         }
                     } else {
-                        Toast.makeText(ctx, "Incorrect password", Toast.LENGTH_LONG).show();
+                        Toast.makeText(dialogCtx, "Incorrect password", Toast.LENGTH_LONG).show();
                     }
                 })
                 .setNegativeButton("Cancel", null)
@@ -270,8 +887,14 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private void wireAdministrationPreferences() {
+        Preference distributeWarning = findPreference(KEY_DISTRIBUTE_NET_WARNING);
+        if (distributeWarning != null) {
+            distributeWarning.setTitle(DISTRIBUTE_NET_WARNING);
+            distributeWarning.setSummary("");
+        }
         Preference distribute = findPreference(KEY_DISTRIBUTE_NET_SLOTS);
         if (distribute != null) {
+            distribute.setSummary("");
             distribute.setOnPreferenceClickListener(preference -> {
                 Context ctx = getActivity() != null ? getActivity() : getContext();
                 if (ctx == null && MapView.getMapView() != null) {
@@ -280,39 +903,54 @@ public class SettingsFragment extends PluginPreferenceFragment
                 if (ctx == null) {
                     return true;
                 }
-                if (!AdminAccessGate.isUnlocked(ctx)) {
-                    promptAdministrativeUnlock(ctx, () -> applyAdminCategoryVisibility());
-                    return true;
-                }
-                if (!getPrefs(ctx).getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false)) {
-                    Toast.makeText(ctx, "Enable administrative settings first",
-                            Toast.LENGTH_LONG).show();
-                    return true;
-                }
-                SharedPreferences prefs = getPrefs(ctx);
-                normalizeSlotPreferences(prefs);
-                int slots = NetSlotConfig.getSlotCount(ctx);
-                float slotSec = NetSlotConfig.getSlotTimeSec(ctx);
-                NetSlotConfig.saveLocalSlotSettings(ctx, slots, slotSec);
-                if (!UVProRadioServices.isConnected()) {
-                    Toast.makeText(ctx, "Connect to radio before distributing slot settings",
-                            Toast.LENGTH_LONG).show();
-                    return true;
-                }
-                if (UVProRadioServices.distributeNetSlotConfig(ctx)) {
+                String error = distributeNetSlotsOrError(ctx);
+                if (error == null) {
+                    int slots = NetSlotConfig.getSlotCount(ctx);
+                    float slotSec = NetSlotConfig.getSlotTimeSec(ctx);
                     Toast.makeText(ctx,
                             "Slot config sent (" + slots + " slots, "
                                     + slotSec + " s)",
                             Toast.LENGTH_LONG).show();
                     updateSummaries();
                 } else {
-                    Toast.makeText(ctx, "Failed to send slot config over radio",
-                            Toast.LENGTH_LONG).show();
+                    Toast.makeText(ctx, error, Toast.LENGTH_LONG).show();
                 }
                 return true;
             });
         }
         updateAdminControlsEnabled();
+    }
+
+    /** @return null on success, or a user-facing error message */
+    private static String distributeNetSlotsOrError(Context ctx) {
+        if (ctx == null) {
+            return "Unable to access settings";
+        }
+        SharedPreferences prefs = getPrefs(ctx);
+        if (!prefs.getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false)
+                || !AdminAccessGate.isUnlocked(ctx)) {
+            return "Enable administrative settings and enter password";
+        }
+        normalizeSlotPreferencesStatic(ctx, prefs);
+        int slots = NetSlotConfig.getSlotCount(ctx);
+        float slotSec = NetSlotConfig.getSlotTimeSec(ctx);
+        NetSlotConfig.saveLocalSlotSettings(ctx, slots, slotSec);
+        if (!UVProRadioServices.isConnected()) {
+            return "Connect to radio before distributing slot settings";
+        }
+        if (UVProRadioServices.distributeNetSlotConfig(ctx)) {
+            return null;
+        }
+        return "Failed to send slot config over radio";
+    }
+
+    private static void normalizeSlotPreferencesStatic(Context ctx, SharedPreferences prefs) {
+        int slots = NetSlotConfig.getSlotCount(ctx);
+        float sec = NetSlotConfig.getSlotTimeSec(ctx);
+        prefs.edit()
+                .putString(NetSlotConfig.PREF_SLOT_COUNT, String.valueOf(slots))
+                .putString(NetSlotConfig.PREF_SLOT_TIME_SEC, String.valueOf(sec))
+                .apply();
     }
 
     private void wireAprsPreferences() {
@@ -335,21 +973,81 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private void updateAprsIconSummary(Preference iconPref) {
-        Context ctx = getContext();
-        if (ctx == null) {
-            ctx = staticPluginContext;
-        }
-        if (ctx == null || iconPref == null) {
+        if (iconPref == null) {
             return;
         }
-        if (!isAprsIconSelected(ctx)) {
-            iconPref.setSummary("(not set) — tap to choose");
-            return;
+        iconPref.setSummary(formatAprsIconSummary(iconPref.isEnabled()));
+    }
+
+    private CharSequence formatAprsIconSummary(boolean enabled) {
+        Context mapCtx = resolveSettingsContext();
+        if (mapCtx == null) {
+            mapCtx = getContext();
         }
-        char t = getAprsSymbolTable(ctx);
-        char c = getAprsSymbolCode(ctx);
-        iconPref.setSummary(com.uvpro.plugin.aprs.AprsSymbolCatalog.labelFor(t, c)
-                + " (" + t + c + ")");
+        SpannableStringBuilder sb = new SpannableStringBuilder(APRS_ICON_DESC);
+        int descriptionColor = enabled ? COLOR_WHITE : COLOR_DISABLED_GREY;
+        sb.setSpan(new ForegroundColorSpan(descriptionColor), 0, APRS_ICON_DESC.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sb.setSpan(new AbsoluteSizeSpan(PREFERENCE_TITLE_TEXT_SP, true), 0, APRS_ICON_DESC.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+
+        sb.append('\n');
+        int valueStart = sb.length();
+
+        Bitmap iconBitmap = null;
+        if (mapCtx != null && isAprsIconSelected(mapCtx)) {
+            iconBitmap = com.uvpro.plugin.aprs.AprsIconPreviewLoader
+                    .loadSelectedIconBitmap(mapCtx, staticPluginContext);
+        }
+
+        if (iconBitmap == null) {
+            sb.append(APRS_ICON_NOT_SET);
+            int valueColor = enabled ? COLOR_VALUE_GREEN : COLOR_DISABLED_GREY;
+            sb.setSpan(new ForegroundColorSpan(valueColor), valueStart, sb.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            sb.setSpan(new AbsoluteSizeSpan(PREFERENCE_TITLE_TEXT_SP, true), valueStart,
+                    sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            return sb;
+        }
+
+        Context drawableCtx = mapCtx != null ? mapCtx : staticPluginContext;
+        if (drawableCtx == null) {
+            sb.append(APRS_ICON_NOT_SET);
+            int valueColor = enabled ? COLOR_VALUE_GREEN : COLOR_DISABLED_GREY;
+            sb.setSpan(new ForegroundColorSpan(valueColor), valueStart, sb.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            sb.setSpan(new AbsoluteSizeSpan(PREFERENCE_TITLE_TEXT_SP, true), valueStart,
+                    sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            return sb;
+        }
+
+        sb.append('\uFFFC');
+        Bitmap scaled = scaleBitmapForSummaryLine(drawableCtx, iconBitmap);
+        BitmapDrawable drawable = new BitmapDrawable(drawableCtx.getResources(), scaled);
+        int sizePx = dp(drawableCtx, 20);
+        drawable.setBounds(0, 0, sizePx, sizePx);
+        sb.setSpan(new ImageSpan(drawable, ImageSpan.ALIGN_BOTTOM), valueStart, valueStart + 1,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return sb;
+    }
+
+    private static Bitmap scaleBitmapForSummaryLine(Context ctx, Bitmap src) {
+        if (ctx == null || src == null) {
+            return src;
+        }
+        int targetPx = dp(ctx, 20);
+        int w = src.getWidth();
+        int h = src.getHeight();
+        if (w <= 0 || h <= 0) {
+            return src;
+        }
+        float scale = Math.min((float) targetPx / w, (float) targetPx / h);
+        int nw = Math.max(1, Math.round(w * scale));
+        int nh = Math.max(1, Math.round(h * scale));
+        if (nw == w && nh == h) {
+            return src;
+        }
+        return Bitmap.createScaledBitmap(src, nw, nh, true);
     }
 
     private void styleAdminLeadershipWarning() {
@@ -360,11 +1058,27 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private void updateAdminControlsEnabled() {
-        SharedPreferences prefs = getPreferenceManager().getSharedPreferences();
+        Context ctx = resolveSettingsContext();
+        SharedPreferences prefs = atakPrefs();
         boolean adminOn = prefs.getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false);
-        setPreferenceEnabled(NetSlotConfig.PREF_SLOT_COUNT, adminOn);
-        setPreferenceEnabled(NetSlotConfig.PREF_SLOT_TIME_SEC, adminOn);
-        setPreferenceEnabled(KEY_DISTRIBUTE_NET_SLOTS, adminOn);
+        boolean unlocked = ctx != null && AdminAccessGate.isUnlocked(ctx);
+        boolean enableChildren = adminOn && unlocked;
+        for (String key : ADMIN_GATED_PREF_KEYS) {
+            setPreferenceEnabled(key, enableChildren);
+        }
+        setPreferenceEnabled(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, true);
+        if (enableChildren) {
+            updateDependentPreferences();
+        }
+    }
+
+    private boolean isAdminSectionUnlocked(Context ctx) {
+        if (ctx == null) {
+            return false;
+        }
+        SharedPreferences prefs = getPrefs(ctx);
+        return prefs.getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false)
+                && AdminAccessGate.isUnlocked(ctx);
     }
 
     private void setPreferenceEnabled(String key, boolean enabled) {
@@ -390,75 +1104,93 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     private void updateSummaries() {
-        SharedPreferences prefs =
-                getPreferenceManager().getSharedPreferences();
+        SharedPreferences prefs = getPreferenceManager().getSharedPreferences();
+        Context ctx = MapView.getMapView() != null
+                ? MapView.getMapView().getContext()
+                : staticPluginContext;
 
         Preference beaconPref = findPreference(PREF_BEACON_INTERVAL);
         if (beaconPref != null) {
-            String interval = prefs.getString(
-                    PREF_BEACON_INTERVAL, DEFAULT_BEACON_INTERVAL);
-            beaconPref.setSummary("Every " + interval + " seconds");
+            boolean smartBeaconOn = ctx != null && SmartBeacon.isEnabled(ctx);
+            beaconPref.setEnabled(!smartBeaconOn);
+            String beaconValue = smartBeaconOn
+                    ? "Smart Beacon active"
+                    : getListPreferenceValueLabel(PREF_BEACON_INTERVAL);
+            if (beaconValue == null || beaconValue.isEmpty()) {
+                beaconValue = prefs.getString(PREF_BEACON_INTERVAL, DEFAULT_BEACON_INTERVAL)
+                        + " seconds";
+            }
+            beaconPref.setSummary(formatSummaryWithValue(BEACON_INTERVAL_DESC, beaconValue));
         }
 
-        Preference retryIntervalPref = findPreference(PREF_RETRY_INTERVAL_MIN);
-        if (retryIntervalPref != null) {
-            String mins = prefs.getString(PREF_RETRY_INTERVAL_MIN, DEFAULT_RETRY_INTERVAL_MIN);
-            retryIntervalPref.setSummary("Retry after " + mins + " minute(s) with no ACK");
+        updateSmartBeaconFieldSummaries();
+
+        setSummaryWithValue(PREF_PING_REPLY_ENABLED,
+                "Automatically reply to incoming pings with your position",
+                getCheckBoxPreferenceValueLabel(PREF_PING_REPLY_ENABLED, true));
+        setSummaryWithValue(PREF_RETRY_INTERVAL_MIN,
+                "How long to wait before retransmitting an unacknowledged message",
+                getListPreferenceValueLabel(PREF_RETRY_INTERVAL_MIN));
+        setSummaryWithValue(PREF_RETRY_MAX,
+                "Number of retransmit attempts before declaring delivery failure",
+                getListPreferenceValueLabel(PREF_RETRY_MAX));
+
+        setSummaryWithValue(PREF_APRS_CALLSIGN,
+                "Ham radio call (required for APRS TX when armed)",
+                emptyToNotSet(getEditTextPreferenceValue(PREF_APRS_CALLSIGN)));
+        setSummaryWithValue(PREF_APRS_SSID,
+                "Standard APRS SSID 0–15",
+                getListPreferenceValueLabel(PREF_APRS_SSID));
+        setSummaryWithValue(PREF_APRS_MESSAGE,
+                "Comment text appended to position reports",
+                emptyToNotSet(getEditTextPreferenceValue(PREF_APRS_MESSAGE)));
+
+        setSummaryWithValue(PREF_ENCRYPTION_PASSPHRASE,
+                "Same value on every radio that uses RF encryption",
+                maskSecret(getEditTextPreferenceValue(PREF_ENCRYPTION_PASSPHRASE)));
+
+        setSummaryWithValue(PREF_MESH_BEACON_ENABLED,
+                "Timed mesh position beacons (MeshCore transport)",
+                getCheckBoxPreferenceValueLabel(PREF_MESH_BEACON_ENABLED, false));
+        setSummaryWithValue(PREF_SA_RELAY_ENABLED,
+                "Re-broadcast inbound network positions over radio to off-grid users. "
+                        + "Throttled to one update per contact per 30 seconds.",
+                getCheckBoxPreferenceValueLabel(PREF_SA_RELAY_ENABLED, false));
+        setSummaryWithValue(PREF_RF_TO_TAK_UPLINK_ENABLED,
+                "When SA Relay is enabled, forward inbound RF CoT to TAK network. "
+                        + "Use with care to avoid unintended rebroadcast loops.",
+                getCheckBoxPreferenceValueLabel(PREF_RF_TO_TAK_UPLINK_ENABLED, false));
+        setSummaryWithValue(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED,
+                "Unlock slot assignment controls for net leadership",
+                getCheckBoxPreferenceValueLabel(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false));
+
+        if (ctx != null) {
+            setSummaryWithValue(NetSlotConfig.PREF_SLOT_COUNT,
+                    "Ping-reply slots (default 20)",
+                    String.valueOf(NetSlotConfig.getSlotCount(ctx)));
+            setSummaryWithValue(NetSlotConfig.PREF_SLOT_TIME_SEC,
+                    "Seconds between slot start times (default 2.5 s)",
+                    String.format(java.util.Locale.US, "%.1f s",
+                            NetSlotConfig.getSlotTimeSec(ctx)));
+        } else {
+            setSummaryWithValue(NetSlotConfig.PREF_SLOT_COUNT,
+                    "Ping-reply slots (default 20)",
+                    getEditTextPreferenceValue(NetSlotConfig.PREF_SLOT_COUNT));
+            setSummaryWithValue(NetSlotConfig.PREF_SLOT_TIME_SEC,
+                    "Seconds between slot start times (default 2.5 s)",
+                    getEditTextPreferenceValue(NetSlotConfig.PREF_SLOT_TIME_SEC));
         }
 
-        Preference retryMaxPref = findPreference(PREF_RETRY_MAX);
-        if (retryMaxPref != null) {
-            String max = prefs.getString(PREF_RETRY_MAX, DEFAULT_RETRY_MAX);
-            retryMaxPref.setSummary("Up to " + max + " retransmit attempt(s) before failure");
-        }
-
-        Preference saRelayPref = findPreference(PREF_SA_RELAY_ENABLED);
-        if (saRelayPref != null) {
-            boolean on = prefs.getBoolean(PREF_SA_RELAY_ENABLED, false);
-            saRelayPref.setSummary(on
-                    ? "On — network PLI/markers/routes relayed over radio when connected"
-                    : "Off");
-        }
-
-        Preference pingReplyPref = findPreference(PREF_PING_REPLY_ENABLED);
-        if (pingReplyPref != null) {
-            boolean on = prefs.getBoolean(PREF_PING_REPLY_ENABLED, true);
-            pingReplyPref.setSummary(on
-                    ? "On — reply to incoming pings with your position"
-                    : "Off");
-        }
-
-        Preference pingSameTransportPref = findPreference(PREF_PING_REPLY_SAME_TRANSPORT);
-        if (pingSameTransportPref != null) {
-            boolean on = prefs.getBoolean(PREF_PING_REPLY_SAME_TRANSPORT, true);
-            pingSameTransportPref.setSummary(on
-                    ? "On — ping reply goes out on the same link that received the ping (Mesh or UV-PRO)"
-                    : "Off — ping reply uses the active transmit toggle");
-            pingSameTransportPref.setEnabled(prefs.getBoolean(PREF_PING_REPLY_ENABLED, true));
-        }
+        updateDependentPreferences();
 
         Preference aprsIconPref = findPreference(KEY_APRS_ICON);
         if (aprsIconPref != null) {
             updateAprsIconSummary(aprsIconPref);
         }
 
-        Context ctx = MapView.getMapView() != null
-                ? MapView.getMapView().getContext()
-                : staticPluginContext;
         if (ctx != null) {
             int slots = NetSlotConfig.getSlotCount(ctx);
             float slotSec = NetSlotConfig.getSlotTimeSec(ctx);
-            Preference slotCountPref = findPreference(NetSlotConfig.PREF_SLOT_COUNT);
-            if (slotCountPref != null) {
-                slotCountPref.setSummary("Ping-reply slots: " + slots
-                        + " (slot index from callsign hash)");
-            }
-            Preference slotTimePref = findPreference(NetSlotConfig.PREF_SLOT_TIME_SEC);
-            if (slotTimePref != null) {
-                slotTimePref.setSummary(String.format(
-                        java.util.Locale.US,
-                        "Seconds between slot starts: %.1f s", slotSec));
-            }
             Preference currentStatus = findPreference(KEY_ADMIN_CURRENT_SLOT_STATUS);
             if (currentStatus != null) {
                 String status = String.format(java.util.Locale.US,
@@ -469,6 +1201,383 @@ public class SettingsFragment extends PluginPreferenceFragment
                     status += "\nLast net update from " + issuer;
                 }
                 currentStatus.setSummary(status);
+            }
+        }
+    }
+
+    private void updateSmartBeaconFieldSummaries() {
+        Context ctx = MapView.getMapView() != null
+                ? MapView.getMapView().getContext()
+                : staticPluginContext;
+        if (ctx == null) {
+            return;
+        }
+        setSummaryWithValue(SmartBeacon.KEY_LOW_SPEED,
+                "Below this speed the slowest rate is used",
+                SmartBeacon.getLowSpeed(ctx) + " mph");
+        setSummaryWithValue(SmartBeacon.KEY_HIGH_SPEED,
+                "Above this speed the fastest rate is used",
+                SmartBeacon.getHighSpeed(ctx) + " mph");
+        setSummaryWithValue(SmartBeacon.KEY_SLOW_RATE,
+                "Max time between beacons when slow or stopped",
+                SmartBeacon.getSlowRate(ctx) + " s");
+        setSummaryWithValue(SmartBeacon.KEY_FAST_RATE,
+                "Min time between beacons when moving fast",
+                SmartBeacon.getFastRate(ctx) + " s");
+        setSummaryWithValue(SmartBeacon.KEY_MIN_TURN_TIME,
+                "Minimum delay between corner-pegging beacons",
+                SmartBeacon.getMinTurnTime(ctx) + " s");
+        setSummaryWithValue(SmartBeacon.KEY_TURN_THRESHOLD,
+                "Heading change needed to trigger an early beacon",
+                SmartBeacon.getTurnThreshold(ctx) + "°");
+        setSummaryWithValue(SmartBeacon.KEY_TURN_SLOPE,
+                "Scales turn sensitivity with speed (higher = less sensitive at low speed)",
+                String.valueOf(SmartBeacon.getTurnSlope(ctx)));
+    }
+
+    private void setSummaryWithValue(String key, String description, String value) {
+        Preference pref = findPreference(key);
+        if (pref != null) {
+            pref.setSummary(formatSummaryWithValue(description, value, pref.isEnabled()));
+        }
+    }
+
+    private static CharSequence formatSummaryWithValue(String description, String value) {
+        return formatSummaryWithValue(description, value, true);
+    }
+
+    private static CharSequence formatDescriptionOnly(String description) {
+        if (description == null) {
+            description = "";
+        }
+        SpannableStringBuilder sb = new SpannableStringBuilder(description);
+        sb.setSpan(new ForegroundColorSpan(COLOR_WHITE), 0, description.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sb.setSpan(new AbsoluteSizeSpan(PREFERENCE_TITLE_TEXT_SP, true), 0, description.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return sb;
+    }
+
+    private static CharSequence formatSummaryWithValue(String description, String value,
+                                                       boolean enabled) {
+        String display = value;
+        if (display == null || display.trim().isEmpty()) {
+            display = "(not set)";
+        } else {
+            display = display.trim();
+        }
+        SpannableStringBuilder sb = new SpannableStringBuilder(description);
+        int descriptionColor = enabled ? COLOR_WHITE : COLOR_DISABLED_GREY;
+        int valueColor = enabled ? COLOR_VALUE_GREEN : COLOR_DISABLED_GREY;
+        sb.setSpan(new ForegroundColorSpan(descriptionColor), 0, description.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sb.setSpan(new AbsoluteSizeSpan(PREFERENCE_TITLE_TEXT_SP, true), 0, description.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        int valueStart = sb.length();
+        sb.append('\n').append(display);
+        sb.setSpan(new AbsoluteSizeSpan(PREFERENCE_TITLE_TEXT_SP, true), valueStart, sb.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        sb.setSpan(new ForegroundColorSpan(valueColor), valueStart, sb.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return sb;
+    }
+
+    private CharSequence buildStyledSummaryForPreference(Preference pref) {
+        if (pref == null || pref.getKey() == null) {
+            return null;
+        }
+        String key = pref.getKey();
+        if (KEY_SMART_BEACON_SECTION_HEADER.equals(key)
+                || KEY_SA_RELAY_SECTION_HEADER.equals(key)) {
+            CharSequence summary = pref.getSummary();
+            return formatDescriptionOnly(summary != null ? summary.toString() : "");
+        }
+        if (KEY_ADMIN_LEADERSHIP_WARNING.equals(key)
+                || KEY_MESH_BEACON_NATIONAL_WARNING.equals(key)
+                || KEY_ADMIN_CURRENT_SLOT_STATUS.equals(key)
+                || KEY_DISTRIBUTE_NET_WARNING.equals(key)
+                || KEY_DISTRIBUTE_NET_SLOTS.equals(key)) {
+            return pref.getSummary();
+        }
+        if (KEY_APRS_ICON.equals(key)) {
+            return formatAprsIconSummary(pref.isEnabled());
+        }
+        String description = getDescriptionForPreferenceKey(key);
+        if (description == null) {
+            CharSequence summary = pref.getSummary();
+            return summary != null ? summary : "";
+        }
+        return formatSummaryWithValue(description, resolvePreferenceDisplayValue(key),
+                pref.isEnabled());
+    }
+
+    private String getDescriptionForPreferenceKey(String key) {
+        if (PREF_BEACON_INTERVAL.equals(key)) {
+            return BEACON_INTERVAL_DESC;
+        }
+        if (SmartBeacon.KEY_LOW_SPEED.equals(key)) {
+            return "Below this speed the slowest rate is used";
+        }
+        if (SmartBeacon.KEY_HIGH_SPEED.equals(key)) {
+            return "Above this speed the fastest rate is used";
+        }
+        if (SmartBeacon.KEY_SLOW_RATE.equals(key)) {
+            return "Max time between beacons when slow or stopped";
+        }
+        if (SmartBeacon.KEY_FAST_RATE.equals(key)) {
+            return "Min time between beacons when moving fast";
+        }
+        if (SmartBeacon.KEY_MIN_TURN_TIME.equals(key)) {
+            return "Minimum delay between corner-pegging beacons";
+        }
+        if (SmartBeacon.KEY_TURN_THRESHOLD.equals(key)) {
+            return "Heading change needed to trigger an early beacon";
+        }
+        if (SmartBeacon.KEY_TURN_SLOPE.equals(key)) {
+            return "Scales turn sensitivity with speed (higher = less sensitive at low speed)";
+        }
+        if (PREF_PING_REPLY_ENABLED.equals(key)) {
+            return "Automatically reply to incoming pings with your position";
+        }
+        if (PREF_RETRY_INTERVAL_MIN.equals(key)) {
+            return "How long to wait before retransmitting an unacknowledged message";
+        }
+        if (PREF_RETRY_MAX.equals(key)) {
+            return "Number of retransmit attempts before declaring delivery failure";
+        }
+        if (PREF_APRS_CALLSIGN.equals(key)) {
+            return "Ham radio call (required for APRS TX when armed)";
+        }
+        if (PREF_APRS_SSID.equals(key)) {
+            return "Standard APRS SSID 0–15";
+        }
+        if (KEY_APRS_ICON.equals(key)) {
+            return APRS_ICON_DESC;
+        }
+        if (PREF_APRS_MESSAGE.equals(key)) {
+            return "Comment text appended to position reports";
+        }
+        if (PREF_ENCRYPTION_PASSPHRASE.equals(key)) {
+            return "Same value on every radio that uses RF encryption";
+        }
+        if (PREF_MESH_BEACON_ENABLED.equals(key)) {
+            return "Timed mesh position beacons (MeshCore transport)";
+        }
+        if (PREF_SA_RELAY_ENABLED.equals(key)) {
+            return "Re-broadcast inbound network positions over radio to off-grid users. "
+                    + "Throttled to one update per contact per 30 seconds.";
+        }
+        if (PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
+            return "When SA Relay is enabled, forward inbound RF CoT to TAK network. "
+                    + "Use with care to avoid unintended rebroadcast loops.";
+        }
+        if (NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED.equals(key)) {
+            return "Unlock slot assignment controls for net leadership";
+        }
+        if (NetSlotConfig.PREF_SLOT_COUNT.equals(key)) {
+            return "Ping-reply slots (default 20)";
+        }
+        if (NetSlotConfig.PREF_SLOT_TIME_SEC.equals(key)) {
+            return "Seconds between slot start times (default 2.5 s)";
+        }
+        return null;
+    }
+
+    private String resolvePreferenceDisplayValue(String key) {
+        Context ctx = MapView.getMapView() != null
+                ? MapView.getMapView().getContext()
+                : staticPluginContext;
+        if (PREF_BEACON_INTERVAL.equals(key)) {
+            if (ctx != null && SmartBeacon.isEnabled(ctx)) {
+                return "Smart Beacon active";
+            }
+            String label = getListPreferenceValueLabel(key);
+            if (label == null || label.isEmpty()) {
+                SharedPreferences prefs = getPreferenceManager().getSharedPreferences();
+                label = prefs.getString(PREF_BEACON_INTERVAL, DEFAULT_BEACON_INTERVAL) + " seconds";
+            }
+            return label;
+        }
+        if (SmartBeacon.KEY_LOW_SPEED.equals(key) && ctx != null) {
+            return SmartBeacon.getLowSpeed(ctx) + " mph";
+        }
+        if (SmartBeacon.KEY_HIGH_SPEED.equals(key) && ctx != null) {
+            return SmartBeacon.getHighSpeed(ctx) + " mph";
+        }
+        if (SmartBeacon.KEY_SLOW_RATE.equals(key) && ctx != null) {
+            return SmartBeacon.getSlowRate(ctx) + " s";
+        }
+        if (SmartBeacon.KEY_FAST_RATE.equals(key) && ctx != null) {
+            return SmartBeacon.getFastRate(ctx) + " s";
+        }
+        if (SmartBeacon.KEY_MIN_TURN_TIME.equals(key) && ctx != null) {
+            return SmartBeacon.getMinTurnTime(ctx) + " s";
+        }
+        if (SmartBeacon.KEY_TURN_THRESHOLD.equals(key) && ctx != null) {
+            return SmartBeacon.getTurnThreshold(ctx) + "°";
+        }
+        if (SmartBeacon.KEY_TURN_SLOPE.equals(key) && ctx != null) {
+            return String.valueOf(SmartBeacon.getTurnSlope(ctx));
+        }
+        if (PREF_PING_REPLY_ENABLED.equals(key)) {
+            return getCheckBoxPreferenceValueLabel(key, true);
+        }
+        if (PREF_MESH_BEACON_ENABLED.equals(key)) {
+            return getCheckBoxPreferenceValueLabel(key, false);
+        }
+        if (PREF_SA_RELAY_ENABLED.equals(key)) {
+            return getCheckBoxPreferenceValueLabel(key, false);
+        }
+        if (PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
+            return getCheckBoxPreferenceValueLabel(key, false);
+        }
+        if (NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED.equals(key)) {
+            return getCheckBoxPreferenceValueLabel(key, false);
+        }
+        if (PREF_RETRY_INTERVAL_MIN.equals(key) || PREF_RETRY_MAX.equals(key)
+                || PREF_APRS_SSID.equals(key)) {
+            return getListPreferenceValueLabel(key);
+        }
+        if (PREF_APRS_CALLSIGN.equals(key) || PREF_APRS_MESSAGE.equals(key)) {
+            return emptyToNotSet(getEditTextPreferenceValue(key));
+        }
+        if (PREF_ENCRYPTION_PASSPHRASE.equals(key)) {
+            return maskSecret(getEditTextPreferenceValue(key));
+        }
+        if (KEY_APRS_ICON.equals(key)) {
+            return APRS_ICON_NOT_SET;
+        }
+        if (NetSlotConfig.PREF_SLOT_COUNT.equals(key) && ctx != null) {
+            return String.valueOf(NetSlotConfig.getSlotCount(ctx));
+        }
+        if (NetSlotConfig.PREF_SLOT_TIME_SEC.equals(key) && ctx != null) {
+            return String.format(java.util.Locale.US, "%.1f s", NetSlotConfig.getSlotTimeSec(ctx));
+        }
+        if (NetSlotConfig.PREF_SLOT_COUNT.equals(key)) {
+            return getEditTextPreferenceValue(key);
+        }
+        if (NetSlotConfig.PREF_SLOT_TIME_SEC.equals(key)) {
+            return getEditTextPreferenceValue(key);
+        }
+        return "";
+    }
+
+    private static String emptyToNotSet(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return "(not set)";
+        }
+        return value.trim();
+    }
+
+    private static String maskSecret(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return "(not set)";
+        }
+        return "••••••••";
+    }
+
+    private String getListPreferenceValueLabel(String key) {
+        Preference pref = findPreference(key);
+        if (!(pref instanceof ListPreference)) {
+            return "";
+        }
+        ListPreference listPref = (ListPreference) pref;
+        CharSequence entry = listPref.getEntry();
+        if (entry != null && entry.length() > 0) {
+            return entry.toString();
+        }
+        String value = listPref.getValue();
+        if (value == null || value.isEmpty()) {
+            value = getPreferenceManager().getSharedPreferences().getString(key, null);
+        }
+        CharSequence[] entries = listPref.getEntries();
+        CharSequence[] values = listPref.getEntryValues();
+        if (value != null && entries != null && values != null) {
+            for (int i = 0; i < values.length; i++) {
+                if (value.equals(String.valueOf(values[i]))) {
+                    return String.valueOf(entries[i]);
+                }
+            }
+        }
+        return value != null ? value : "";
+    }
+
+    private String getEditTextPreferenceValue(String key) {
+        Preference pref = findPreference(key);
+        if (pref instanceof EditTextPreference) {
+            String text = ((EditTextPreference) pref).getText();
+            return text != null ? text : "";
+        }
+        return "";
+    }
+
+    private String getCheckBoxPreferenceValueLabel(String key, boolean defaultValue) {
+        Preference pref = findPreference(key);
+        if (pref instanceof CheckBoxPreference) {
+            return ((CheckBoxPreference) pref).isChecked() ? "On" : "Off";
+        }
+        SharedPreferences prefs = getPreferenceManager().getSharedPreferences();
+        return prefs.getBoolean(key, defaultValue) ? "On" : "Off";
+    }
+
+    private static boolean isSmartBeaconParamKey(String key) {
+        return SmartBeacon.KEY_LOW_SPEED.equals(key)
+                || SmartBeacon.KEY_HIGH_SPEED.equals(key)
+                || SmartBeacon.KEY_SLOW_RATE.equals(key)
+                || SmartBeacon.KEY_FAST_RATE.equals(key)
+                || SmartBeacon.KEY_MIN_TURN_TIME.equals(key)
+                || SmartBeacon.KEY_TURN_THRESHOLD.equals(key)
+                || SmartBeacon.KEY_TURN_SLOPE.equals(key);
+    }
+
+    private void persistSmartBeaconFromPreferences() {
+        Context ctx = MapView.getMapView() != null
+                ? MapView.getMapView().getContext()
+                : staticPluginContext;
+        if (ctx == null) {
+            return;
+        }
+        SharedPreferences prefs = getPrefs(ctx);
+        int lowSpeed = readSmartBeaconInt(prefs, SmartBeacon.KEY_LOW_SPEED,
+                SmartBeacon.DEFAULT_LOW_SPEED);
+        int highSpeed = readSmartBeaconInt(prefs, SmartBeacon.KEY_HIGH_SPEED,
+                SmartBeacon.DEFAULT_HIGH_SPEED);
+        int slowRate = readSmartBeaconInt(prefs, SmartBeacon.KEY_SLOW_RATE,
+                SmartBeacon.DEFAULT_SLOW_RATE);
+        int fastRate = readSmartBeaconInt(prefs, SmartBeacon.KEY_FAST_RATE,
+                SmartBeacon.DEFAULT_FAST_RATE);
+        int minTurnTime = readSmartBeaconInt(prefs, SmartBeacon.KEY_MIN_TURN_TIME,
+                SmartBeacon.DEFAULT_MIN_TURN_TIME);
+        int turnThreshold = readSmartBeaconInt(prefs, SmartBeacon.KEY_TURN_THRESHOLD,
+                SmartBeacon.DEFAULT_TURN_THRESHOLD);
+        int turnSlope = readSmartBeaconInt(prefs, SmartBeacon.KEY_TURN_SLOPE,
+                SmartBeacon.DEFAULT_TURN_SLOPE);
+
+        if (highSpeed <= lowSpeed) {
+            highSpeed = lowSpeed + 10;
+        }
+        if (fastRate >= slowRate) {
+            fastRate = Math.max(1, slowRate / 2);
+        }
+        fastRate = Math.max(1, fastRate);
+        slowRate = Math.max(fastRate + 1, slowRate);
+        minTurnTime = Math.max(1, minTurnTime);
+        turnThreshold = Math.max(1, turnThreshold);
+        turnSlope = Math.max(0, turnSlope);
+
+        SmartBeacon.saveAll(ctx, lowSpeed, highSpeed, slowRate, fastRate,
+                minTurnTime, turnThreshold, turnSlope);
+        syncSmartBeaconPreferenceValues();
+    }
+
+    private static int readSmartBeaconInt(SharedPreferences prefs, String key, int fallback) {
+        try {
+            return prefs.getInt(key, fallback);
+        } catch (ClassCastException ignored) {
+            try {
+                return Integer.parseInt(prefs.getString(key, String.valueOf(fallback)).trim());
+            } catch (Exception ignored2) {
+                return fallback;
             }
         }
     }
@@ -567,10 +1676,9 @@ public class SettingsFragment extends PluginPreferenceFragment
                 .getBoolean(PREF_PING_REPLY_ENABLED, true);
     }
 
-    /** When true, slotted ping replies TX on the transport that received the ping. */
+    /** Ping replies always TX on the transport that received the ping. */
     public static boolean isPingReplySameTransportEnabled(Context context) {
-        return getPrefs(context)
-                .getBoolean(PREF_PING_REPLY_SAME_TRANSPORT, true);
+        return true;
     }
 
     public static boolean isMeshTransmitEnabled(Context context) {
@@ -714,6 +1822,13 @@ public class SettingsFragment extends PluginPreferenceFragment
      */
     public static void openToolPreferences(Context context) {
         launchPluginSettings(TOOL_SETTINGS_KEY, null, context);
+    }
+
+    /**
+     * Opens plugin Tool Preferences scrolled to Beacon Settings.
+     */
+    public static void openRadioSettings(Context context) {
+        launchPluginSettings(TOOL_SETTINGS_KEY, KEY_CAT_BEACON, context);
     }
 
     /**
@@ -905,7 +2020,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         } else {
             ui.iconPreview.setVisibility(View.GONE);
             ui.iconNotSet.setVisibility(View.VISIBLE);
-            ui.iconNotSet.setText("(not set)");
+            ui.iconNotSet.setText(APRS_ICON_NOT_SET);
         }
     }
 
@@ -934,6 +2049,8 @@ public class SettingsFragment extends PluginPreferenceFragment
      * Administration block for ping-reply slot net config (Tools prefs or plugin dialog).
      */
     public static final class AdministrationUi {
+        public Switch saRelayEnabled;
+        public Switch rfToTakUplinkEnabled;
         public Switch adminEnabled;
         public Switch meshBeaconEnabled;
         public EditText editSlotCount;
@@ -1008,6 +2125,75 @@ public class SettingsFragment extends PluginPreferenceFragment
         rowMeshBeacon.addView(ui.meshBeaconEnabled);
         layout.addView(rowMeshBeacon);
 
+        TextView headerSaRelay = new TextView(ctx);
+        headerSaRelay.setText("\nSA Relay");
+        headerSaRelay.setTextColor(COLOR_STD_BLUE);
+        headerSaRelay.setTextSize(16);
+        headerSaRelay.setTypeface(Typeface.DEFAULT_BOLD);
+        layout.addView(headerSaRelay);
+
+        TextView saRelayDescription = new TextView(ctx);
+        saRelayDescription.setText("Re-broadcast network positions over radio");
+        saRelayDescription.setTextColor(COLOR_WHITE);
+        saRelayDescription.setTextSize(13);
+        saRelayDescription.setPadding(0, 2, 0, 8);
+        layout.addView(saRelayDescription);
+
+        LinearLayout rowSaRelay = new LinearLayout(ctx);
+        rowSaRelay.setOrientation(LinearLayout.HORIZONTAL);
+        rowSaRelay.setGravity(Gravity.CENTER_VERTICAL);
+        TextView labelSaRelay = new TextView(ctx);
+        labelSaRelay.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        labelSaRelay.setText("Enable SA Relay");
+        labelSaRelay.setTextColor(0xFFFFFFFF);
+        labelSaRelay.setTextSize(13);
+        rowSaRelay.addView(labelSaRelay);
+        ui.saRelayEnabled = new Switch(ctx);
+        ui.saRelayEnabled.setChecked(isSaRelayEnabled(ctx));
+        rowSaRelay.addView(ui.saRelayEnabled);
+        layout.addView(rowSaRelay);
+
+        LinearLayout rowRfToTak = new LinearLayout(ctx);
+        rowRfToTak.setOrientation(LinearLayout.HORIZONTAL);
+        rowRfToTak.setGravity(Gravity.CENTER_VERTICAL);
+        TextView labelRfToTak = new TextView(ctx);
+        labelRfToTak.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        labelRfToTak.setText("Enable RF to TAK Uplink Relay");
+        labelRfToTak.setTextColor(0xFFFFFFFF);
+        labelRfToTak.setTextSize(13);
+        rowRfToTak.addView(labelRfToTak);
+        ui.rfToTakUplinkEnabled = new Switch(ctx);
+        ui.rfToTakUplinkEnabled.setChecked(isRfToTakUplinkEnabled(ctx));
+        ui.rfToTakUplinkEnabled.setEnabled(ui.saRelayEnabled.isChecked());
+        rowRfToTak.addView(ui.rfToTakUplinkEnabled);
+        layout.addView(rowRfToTak);
+        ui.saRelayEnabled.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (ui.rfToTakUplinkEnabled != null) {
+                ui.rfToTakUplinkEnabled.setEnabled(isChecked);
+                if (!isChecked) {
+                    ui.rfToTakUplinkEnabled.setChecked(false);
+                }
+            }
+        });
+
+        TextView hintSaRelay = new TextView(ctx);
+        hintSaRelay.setText(
+                "Throttled: one update per contact per 30 s. Requires TAK server + radio connected.");
+        hintSaRelay.setTextColor(0xFF888888);
+        hintSaRelay.setTextSize(11);
+        hintSaRelay.setPadding(0, 2, 0, 0);
+        layout.addView(hintSaRelay);
+
+        TextView hintRfToTakUplink = new TextView(ctx);
+        hintRfToTakUplink.setText(
+                "Forwards RF CoT to TAK network. Active only when SA Relay is enabled.");
+        hintRfToTakUplink.setTextColor(0xFF888888);
+        hintRfToTakUplink.setTextSize(11);
+        hintRfToTakUplink.setPadding(0, 2, 0, 12);
+        layout.addView(hintRfToTakUplink);
+
         LinearLayout rowAdmin = new LinearLayout(ctx);
         rowAdmin.setOrientation(LinearLayout.HORIZONTAL);
         rowAdmin.setGravity(Gravity.CENTER_VERTICAL);
@@ -1045,20 +2231,20 @@ public class SettingsFragment extends PluginPreferenceFragment
         ui.editSlotTime.setTextColor(0xFFFFFFFF);
         layout.addView(ui.editSlotTime);
 
+        TextView distributeWarning = new TextView(ctx);
+        distributeWarning.setText(DISTRIBUTE_NET_WARNING);
+        distributeWarning.setTextColor(COLOR_WARNING_RED);
+        distributeWarning.setTextSize(13);
+        distributeWarning.setTypeface(Typeface.DEFAULT_BOLD);
+        distributeWarning.setPadding(0, 12, 0, 8);
+        layout.addView(distributeWarning);
+
         ui.btnDistribute = new Button(ctx);
         ui.btnDistribute.setText("Distribute to net");
         ui.btnDistribute.setTextColor(COLOR_WHITE);
         ui.btnDistribute.setBackgroundColor(COLOR_STD_BLUE);
         ui.btnDistribute.setOnClickListener(v -> distributeNetSlotsFromUi(ctx, ui));
         layout.addView(ui.btnDistribute);
-
-        TextView distributeHint = new TextView(ctx);
-        distributeHint.setText(
-                "Ensure all stations are in radio range to receive slot assignments");
-        distributeHint.setTextColor(0xFF888888);
-        distributeHint.setTextSize(11);
-        distributeHint.setPadding(0, 4, 0, 12);
-        layout.addView(distributeHint);
 
         ui.currentStatus = new TextView(ctx);
         ui.currentStatus.setTextColor(0xFF00BCD4);
@@ -1086,6 +2272,10 @@ public class SettingsFragment extends PluginPreferenceFragment
                         ui.adminEnabled.isChecked())
                 .putBoolean(PREF_MESH_BEACON_ENABLED,
                         ui.meshBeaconEnabled != null && ui.meshBeaconEnabled.isChecked())
+                .putBoolean(PREF_SA_RELAY_ENABLED,
+                        ui.saRelayEnabled != null && ui.saRelayEnabled.isChecked())
+                .putBoolean(PREF_RF_TO_TAK_UPLINK_ENABLED,
+                        ui.rfToTakUplinkEnabled != null && ui.rfToTakUplinkEnabled.isChecked())
                 .apply();
         try {
             int slots = Integer.parseInt(ui.editSlotCount.getText().toString().trim());
@@ -1134,20 +2324,16 @@ public class SettingsFragment extends PluginPreferenceFragment
             return;
         }
         saveAdministrationFromUi(ctx, ui);
-        if (!UVProRadioServices.isConnected()) {
-            Toast.makeText(ctx, "Connect to radio before distributing slot settings",
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-        int slots = NetSlotConfig.getSlotCount(ctx);
-        float sec = NetSlotConfig.getSlotTimeSec(ctx);
-        if (UVProRadioServices.distributeNetSlotConfig(ctx)) {
+        String error = distributeNetSlotsOrError(ctx);
+        if (error == null) {
+            int slots = NetSlotConfig.getSlotCount(ctx);
+            float sec = NetSlotConfig.getSlotTimeSec(ctx);
             Toast.makeText(ctx,
                     "Slot config sent (" + slots + " slots, " + sec + " s)",
                     Toast.LENGTH_LONG).show();
             refreshAdministrationStatus(ctx, ui);
         } else {
-            Toast.makeText(ctx, "Failed to send slot config over radio", Toast.LENGTH_LONG).show();
+            Toast.makeText(ctx, error, Toast.LENGTH_LONG).show();
         }
     }
 

@@ -1,198 +1,514 @@
 <?xml version="1.0" encoding="utf-8"?>
+
 <PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <PreferenceCategory
-        android:key="uvpro_cat_sa_relay"
-        android:title="SA Relay">
 
-        <com.atakmap.android.gui.PanCheckBoxPreference
-            android:key="uvpro_sa_relay_enabled"
-            android:title="Enable SA Relay"
-            android:summary="Re-broadcast inbound network positions over radio to off-grid users. Throttled to one update per contact per 30 seconds."
-            android:defaultValue="false" />
-
-        <com.atakmap.android.gui.PanCheckBoxPreference
-            android:key="uvpro_rf_to_tak_uplink_enabled"
-            android:title="Enable RF to TAK Uplink Relay"
-            android:summary="When SA Relay is enabled, forward inbound RF CoT to TAK network. Use with care to avoid unintended rebroadcast loops."
-            android:defaultValue="false" />
-
-    </PreferenceCategory>
 
     <PreferenceCategory
-        android:key="uvpro_cat_radio"
-        android:title="Radio Settings">
+
+        android:key="uvpro_cat_beacon"
+
+        android:title="Beacon Settings">
+
+
 
         <com.atakmap.android.gui.PanListPreference
+
             android:key="uvpro_beacon_interval"
-            android:title="GPS Beacon Interval"
-            android:summary="How often to broadcast position"
+
+            android:title="Beacon Interval"
+
+            android:summary="Sets the ATAK call sign beacon interval"
+
             android:defaultValue="600"
+
             android:dialogTitle="Beacon Interval"
+
             android:entries="@array/beacon_interval_labels"
+
             android:entryValues="@array/beacon_interval_values" />
 
-        <com.atakmap.android.gui.PanCheckBoxPreference
-            android:key="uvpro_ping_reply_enabled"
-            android:title="Send Ping Reply"
-            android:summary="Automatically reply to incoming pings with your position"
-            android:defaultValue="true" />
 
-        <com.atakmap.android.gui.PanCheckBoxPreference
-            android:key="uvpro_ping_reply_same_transport"
-            android:title="Ping Reply on Same Transport"
-            android:summary="Reply on Mesh if ping arrived on Mesh; on UV-PRO radio if ping arrived on radio"
-            android:dependency="uvpro_ping_reply_enabled"
-            android:defaultValue="true" />
-
-        <com.atakmap.android.gui.PanListPreference
-            android:key="uvpro_retry_interval_min"
-            android:title="Retry Interval"
-            android:summary="How long to wait before retransmitting an unacknowledged message"
-            android:defaultValue="2"
-            android:dialogTitle="Retry Interval"
-            android:entries="@array/retry_interval_labels"
-            android:entryValues="@array/retry_interval_values" />
-
-        <com.atakmap.android.gui.PanListPreference
-            android:key="uvpro_retry_max"
-            android:title="Max Retries"
-            android:summary="Number of retransmit attempts before declaring delivery failure"
-            android:defaultValue="3"
-            android:dialogTitle="Max Retries"
-            android:entries="@array/retry_max_labels"
-            android:entryValues="@array/retry_max_values" />
-
-    </PreferenceCategory>
-
-    <PreferenceCategory
-        android:key="uvpro_cat_aprs"
-        android:title="APRS">
-
-        <com.atakmap.android.gui.PanEditTextPreference
-            android:key="uvpro_aprs_callsign"
-            android:title="FCC Call Sign"
-            android:summary="Ham radio call (required for APRS TX when armed)"
-            android:defaultValue=""
-            android:dialogTitle="FCC Call Sign"
-            android:inputType="textCapCharacters" />
-
-        <com.atakmap.android.gui.PanListPreference
-            android:key="uvpro_aprs_ssid"
-            android:title="APRS suffix (SSID)"
-            android:summary="Standard APRS SSID 0–15"
-            android:defaultValue="9"
-            android:dialogTitle="APRS suffix"
-            android:entries="@array/aprs_ssid_labels"
-            android:entryValues="@array/aprs_ssid_values" />
 
         <Preference
-            android:key="uvpro_aprs_icon"
-            android:title="APRS icon"
-            android:summary="Map symbol for your position beacons"
-            android:persistent="false"
-            android:selectable="true" />
 
-        <com.atakmap.android.gui.PanEditTextPreference
-            android:key="uvpro_aprs_message"
-            android:title="APRS message"
-            android:summary="Comment text appended to position reports"
-            android:defaultValue=""
-            android:dialogTitle="APRS message"
-            android:inputType="text" />
+            android:key="uvpro_smart_beacon_section_header"
 
-    </PreferenceCategory>
+            android:title="Smart Beacon Settings"
 
-    <PreferenceCategory
-        android:key="uvpro_cat_security"
-        android:title="Security">
+            android:summary="Sets automatic beacons based off of movement"
 
-        <com.atakmap.android.gui.PanCheckBoxPreference
-            android:key="uvpro_encryption_enabled"
-            android:title="Enable Encryption"
-            android:summary="Encrypt all data sent over radio"
-            android:defaultValue="false" />
-
-        <com.atakmap.android.gui.PanEditTextPreference
-            android:key="uvpro_encryption_passphrase"
-            android:title="Encryption shared secret"
-            android:summary="Same value on every radio that uses RF encryption"
-            android:defaultValue=""
-            android:dialogTitle="Enter shared secret"
-            android:inputType="textPassword" />
-
-    </PreferenceCategory>
-
-    <Preference
-        android:key="uvpro_admin_access"
-        android:title="Administrative Settings"
-        android:summary="Tap to enter password"
-        android:persistent="false"
-        android:selectable="true" />
-
-    <PreferenceCategory
-        android:key="uvpro_cat_administration"
-        android:title="Administrative Settings">
-
-        <Preference
-            android:key="uvpro_admin_leadership_warning"
-            android:title="For Team Leadership ONLY"
-            android:summary="Do not use unless directed by higher"
             android:selectable="false"
+
             android:persistent="false"
+
             android:enabled="true" />
 
-        <Preference
-            android:key="uvpro_mesh_beacon_national_warning"
-            android:title="Mesh Beacon — national activation only"
-            android:summary="Do not use unless directed by your team leader"
-            android:selectable="false"
-            android:persistent="false"
-            android:enabled="true" />
 
-        <com.atakmap.android.gui.PanCheckBoxPreference
-            android:key="uvpro_mesh_beacon_enabled"
-            android:title="Enable Mesh Beacon"
-            android:summary="Timed mesh position beacons (MeshCore transport)"
-            android:defaultValue="false" />
-
-        <com.atakmap.android.gui.PanCheckBoxPreference
-            android:key="uvpro_admin_settings_enabled"
-            android:title="Enable administrative settings"
-            android:summary="Unlock slot assignment controls for net leadership"
-            android:defaultValue="false" />
 
         <com.atakmap.android.gui.PanEditTextPreference
-            android:key="uvpro_ping_slot_count"
-            android:title="Slot count"
-            android:summary="Ping-reply slots (default 20)"
-            android:defaultValue="20"
-            android:dialogTitle="Slot count"
+
+            android:key="uvpro_smart_beacon_low_speed"
+
+            android:title="Low Speed Threshold (mph)"
+
+            android:summary="Below this speed the slowest rate is used"
+
+            android:defaultValue="5"
+
+            android:dialogTitle="Low Speed Threshold (mph)"
+
             android:inputType="number" />
 
+
+
         <com.atakmap.android.gui.PanEditTextPreference
-            android:key="uvpro_ping_slot_time_sec"
-            android:title="Slot time"
-            android:summary="Seconds between slot start times (default 2.5 s)"
-            android:defaultValue="2.5"
-            android:dialogTitle="Slot time (seconds)"
-            android:inputType="numberDecimal" />
 
-        <Preference
-            android:key="uvpro_distribute_net_slots"
-            android:title="Distribute to net"
-            android:summary="Ensure all stations are in radio range to receive slot assignments"
-            android:persistent="false"
-            android:selectable="true" />
+            android:key="uvpro_smart_beacon_high_speed"
 
-        <Preference
-            android:key="uvpro_admin_current_slot_status"
-            android:title="Currently set on this device"
-            android:summary="Slot count: 20 — Slot time: 2.5 s"
-            android:selectable="false"
-            android:persistent="false"
-            android:enabled="true" />
+            android:title="High Speed Threshold (mph)"
+
+            android:summary="Above this speed the fastest rate is used"
+
+            android:defaultValue="60"
+
+            android:dialogTitle="High Speed Threshold (mph)"
+
+            android:inputType="number" />
+
+
+
+        <com.atakmap.android.gui.PanEditTextPreference
+
+            android:key="uvpro_smart_beacon_slow_rate"
+
+            android:title="Slow Rate (seconds)"
+
+            android:summary="Max time between beacons when slow or stopped"
+
+            android:defaultValue="1800"
+
+            android:dialogTitle="Slow Rate (seconds)"
+
+            android:inputType="number" />
+
+
+
+        <com.atakmap.android.gui.PanEditTextPreference
+
+            android:key="uvpro_smart_beacon_fast_rate"
+
+            android:title="Fast Rate (seconds)"
+
+            android:summary="Min time between beacons when moving fast"
+
+            android:defaultValue="180"
+
+            android:dialogTitle="Fast Rate (seconds)"
+
+            android:inputType="number" />
+
+
+
+        <com.atakmap.android.gui.PanEditTextPreference
+
+            android:key="uvpro_smart_beacon_min_turn_time"
+
+            android:title="Min Turn Time (seconds)"
+
+            android:summary="Minimum delay between corner-pegging beacons"
+
+            android:defaultValue="15"
+
+            android:dialogTitle="Min Turn Time (seconds)"
+
+            android:inputType="number" />
+
+
+
+        <com.atakmap.android.gui.PanEditTextPreference
+
+            android:key="uvpro_smart_beacon_turn_threshold"
+
+            android:title="Turn Threshold (degrees)"
+
+            android:summary="Heading change needed to trigger an early beacon"
+
+            android:defaultValue="30"
+
+            android:dialogTitle="Turn Threshold (degrees)"
+
+            android:inputType="number" />
+
+
+
+        <com.atakmap.android.gui.PanEditTextPreference
+
+            android:key="uvpro_smart_beacon_turn_slope"
+
+            android:title="Turn Slope"
+
+            android:summary="Scales turn sensitivity with speed (higher = less sensitive at low speed)"
+
+            android:defaultValue="255"
+
+            android:dialogTitle="Turn Slope"
+
+            android:inputType="number" />
+
+
 
     </PreferenceCategory>
 
+
+
+    <PreferenceCategory
+
+        android:key="uvpro_cat_radio"
+
+        android:title="Radio Settings">
+
+
+
+        <com.atakmap.android.gui.PanCheckBoxPreference
+
+            android:key="uvpro_ping_reply_enabled"
+
+            android:title="Send Ping Reply"
+
+            android:summary="Automatically reply to incoming pings with your position"
+
+            android:defaultValue="true" />
+
+
+
+        <com.atakmap.android.gui.PanListPreference
+
+            android:key="uvpro_retry_interval_min"
+
+            android:title="Retry Interval"
+
+            android:summary="How long to wait before retransmitting an unacknowledged message"
+
+            android:defaultValue="2"
+
+            android:dialogTitle="Retry Interval"
+
+            android:entries="@array/retry_interval_labels"
+
+            android:entryValues="@array/retry_interval_values" />
+
+
+
+        <com.atakmap.android.gui.PanListPreference
+
+            android:key="uvpro_retry_max"
+
+            android:title="Max Retries"
+
+            android:summary="Number of retransmit attempts before declaring delivery failure"
+
+            android:defaultValue="3"
+
+            android:dialogTitle="Max Retries"
+
+            android:entries="@array/retry_max_labels"
+
+            android:entryValues="@array/retry_max_values" />
+
+
+
+    </PreferenceCategory>
+
+
+
+    <PreferenceCategory
+
+        android:key="uvpro_cat_aprs"
+
+        android:title="APRS Settings">
+
+
+
+        <com.atakmap.android.gui.PanEditTextPreference
+
+            android:key="uvpro_aprs_callsign"
+
+            android:title="FCC Call Sign"
+
+            android:summary="Ham radio call (required for APRS TX when armed)"
+
+            android:defaultValue=""
+
+            android:dialogTitle="FCC Call Sign"
+
+            android:inputType="textCapCharacters" />
+
+
+
+        <com.atakmap.android.gui.PanListPreference
+
+            android:key="uvpro_aprs_ssid"
+
+            android:title="APRS suffix (SSID)"
+
+            android:summary="Standard APRS SSID 0–15"
+
+            android:defaultValue="9"
+
+            android:dialogTitle="APRS suffix"
+
+            android:entries="@array/aprs_ssid_labels"
+
+            android:entryValues="@array/aprs_ssid_values" />
+
+
+
+        <Preference
+
+            android:key="uvpro_aprs_icon"
+
+            android:title="APRS icon"
+
+            android:summary="Map symbol for your position beacons"
+
+            android:persistent="false"
+
+            android:selectable="true" />
+
+
+
+        <com.atakmap.android.gui.PanEditTextPreference
+
+            android:key="uvpro_aprs_message"
+
+            android:title="APRS message"
+
+            android:summary="Comment text appended to position reports"
+
+            android:defaultValue=""
+
+            android:dialogTitle="APRS message"
+
+            android:inputType="text" />
+
+
+
+    </PreferenceCategory>
+
+
+
+    <PreferenceCategory
+
+        android:key="uvpro_cat_security"
+
+        android:title="Security">
+
+
+
+        <com.atakmap.android.gui.PanEditTextPreference
+
+            android:key="uvpro_encryption_passphrase"
+
+            android:title="Encryption shared secret"
+
+            android:summary="Same value on every radio that uses RF encryption"
+
+            android:defaultValue=""
+
+            android:dialogTitle="Enter shared secret"
+
+            android:inputType="textPassword" />
+
+
+
+    </PreferenceCategory>
+
+
+
+    <PreferenceCategory
+
+        android:key="uvpro_cat_administration"
+
+        android:title="Administrative Settings">
+
+
+
+        <com.atakmap.android.gui.PanCheckBoxPreference
+
+            android:key="uvpro_admin_settings_enabled"
+
+            android:title="Enable administrative settings"
+
+            android:summary="Unlock slot assignment controls for net leadership"
+
+            android:defaultValue="false" />
+
+
+
+        <Preference
+
+            android:key="uvpro_admin_leadership_warning"
+
+            android:title="For Team Leadership ONLY"
+
+            android:summary="Do not use unless directed by higher"
+
+            android:selectable="false"
+
+            android:persistent="false"
+
+            android:enabled="true" />
+
+
+
+        <Preference
+
+            android:key="uvpro_mesh_beacon_national_warning"
+
+            android:title="Mesh Beacon — national activation only"
+
+            android:summary="Do not use unless directed by your team leader"
+
+            android:selectable="false"
+
+            android:persistent="false"
+
+            android:enabled="true" />
+
+
+
+        <com.atakmap.android.gui.PanCheckBoxPreference
+
+            android:key="uvpro_mesh_beacon_enabled"
+
+            android:title="Enable Mesh Beacon"
+
+            android:summary="Timed mesh position beacons (MeshCore transport)"
+
+            android:defaultValue="false" />
+
+
+
+        <Preference
+
+            android:key="uvpro_sa_relay_section_header"
+
+            android:title="SA Relay"
+
+            android:summary="Re-broadcast network positions over radio"
+
+            android:selectable="false"
+
+            android:persistent="false"
+
+            android:enabled="true" />
+
+
+
+        <com.atakmap.android.gui.PanCheckBoxPreference
+
+            android:key="uvpro_sa_relay_enabled"
+
+            android:title="Enable SA Relay"
+
+            android:summary="Re-broadcast inbound network positions over radio to off-grid users. Throttled to one update per contact per 30 seconds."
+
+            android:defaultValue="false" />
+
+
+
+        <com.atakmap.android.gui.PanCheckBoxPreference
+
+            android:key="uvpro_rf_to_tak_uplink_enabled"
+
+            android:title="Enable RF to TAK Uplink Relay"
+
+            android:summary="When SA Relay is enabled, forward inbound RF CoT to TAK network. Use with care to avoid unintended rebroadcast loops."
+
+            android:defaultValue="false" />
+
+
+
+        <com.atakmap.android.gui.PanEditTextPreference
+
+            android:key="uvpro_ping_slot_count"
+
+            android:title="Slot count"
+
+            android:summary="Ping-reply slots (default 20)"
+
+            android:defaultValue="20"
+
+            android:dialogTitle="Slot count"
+
+            android:inputType="number" />
+
+
+
+        <com.atakmap.android.gui.PanEditTextPreference
+
+            android:key="uvpro_ping_slot_time_sec"
+
+            android:title="Slot time"
+
+            android:summary="Seconds between slot start times (default 2.5 s)"
+
+            android:defaultValue="2.5"
+
+            android:dialogTitle="Slot time (seconds)"
+
+            android:inputType="numberDecimal" />
+
+
+
+        <Preference
+
+            android:key="uvpro_distribute_net_warning"
+
+            android:title="WARNING: DO NOT SEND THIS FEATURE UNLESS SPECIFICALLY DIRECTED BY HIGHER"
+
+            android:selectable="false"
+
+            android:persistent="false"
+
+            android:enabled="true" />
+
+
+
+        <Preference
+
+            android:key="uvpro_distribute_net_slots"
+
+            android:title="Distribute to net"
+
+            android:summary=""
+
+            android:persistent="false"
+
+            android:selectable="true" />
+
+
+
+        <Preference
+
+            android:key="uvpro_admin_current_slot_status"
+
+            android:title="Currently set on this device"
+
+            android:summary="Slot count: 20 — Slot time: 2.5 s"
+
+            android:selectable="false"
+
+            android:persistent="false"
+
+            android:enabled="true" />
+
+
+
+    </PreferenceCategory>
+
+
+
 </PreferenceScreen>
+

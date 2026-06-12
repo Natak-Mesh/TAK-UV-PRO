@@ -32,6 +32,23 @@ public final class UVProRadioServices {
         encryptionManager = null;
     }
 
+    /** Apply encryption toggle + shared secret from ATAK SharedPreferences. */
+    public static void syncEncryptionFromSettings(Context context) {
+        EncryptionManager em = encryptionManager;
+        if (em == null) {
+            return;
+        }
+        Context ctx = resolveContext(context);
+        if (ctx == null) {
+            return;
+        }
+        if (SettingsFragment.isEncryptionEnabled(ctx)) {
+            em.setSharedSecret(SettingsFragment.getEncryptionPassphrase(ctx));
+        } else {
+            em.setSharedSecret(null);
+        }
+    }
+
     public static boolean isConnected() {
         BtConnectionManager bt = btManager;
         return bt != null && bt.isConnected();

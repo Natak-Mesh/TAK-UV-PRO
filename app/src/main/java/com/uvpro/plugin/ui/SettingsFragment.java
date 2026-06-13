@@ -132,6 +132,7 @@ public class SettingsFragment extends PluginPreferenceFragment
     public static final String PREF_RESTRICT_CHAT_TO_REACHABLE_PEERS =
             "uvpro_restrict_chat_to_reachable_peers";
     public static final String PREF_PING_REPLY_ENABLED = "uvpro_ping_reply_enabled";
+    public static final boolean DEFAULT_PING_REPLY_ENABLED = true;
     public static final String PREF_PING_REPLY_SAME_TRANSPORT = "uvpro_ping_reply_same_transport";
     public static final String PREF_ATAK_MESHCORE_TRANSMIT = "uvpro_atak_meshcore_transmit";
     public static final String PREF_ATAK_UVPRO_TRANSMIT = "uvpro_atak_uvpro_transmit";
@@ -339,7 +340,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         wireListPreference(PREF_RETRY_MAX);
         wireListPreference(PREF_APRS_SSID);
 
-        wireCheckBoxPreference(PREF_PING_REPLY_ENABLED, true);
+        wireCheckBoxPreference(PREF_PING_REPLY_ENABLED, DEFAULT_PING_REPLY_ENABLED);
         wireCheckBoxPreference(PREF_SA_RELAY_ENABLED, false);
         wireCheckBoxPreference(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
         wireCheckBoxPreference(PREF_DISABLE_MESH_BEACON_LIMITING, false);
@@ -638,7 +639,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         }
         getPrefs(ctx).edit()
                 .putString(PREF_BEACON_INTERVAL, DEFAULT_BEACON_INTERVAL)
-                .putBoolean(PREF_PING_REPLY_ENABLED, true)
+                .putBoolean(PREF_PING_REPLY_ENABLED, DEFAULT_PING_REPLY_ENABLED)
                 .putString(PREF_RETRY_INTERVAL_MIN, DEFAULT_RETRY_INTERVAL_MIN)
                 .putString(PREF_RETRY_MAX, DEFAULT_RETRY_MAX)
                 .putString(PREF_APRS_CALLSIGN, "")
@@ -668,7 +669,7 @@ public class SettingsFragment extends PluginPreferenceFragment
                 SmartBeacon.DEFAULT_TURN_SLOPE);
         AdminAccessGate.lock(ctx);
         setListPreferenceValue(PREF_BEACON_INTERVAL, DEFAULT_BEACON_INTERVAL);
-        setCheckBoxPreferenceValue(PREF_PING_REPLY_ENABLED, true);
+        setCheckBoxPreferenceValue(PREF_PING_REPLY_ENABLED, DEFAULT_PING_REPLY_ENABLED);
         setListPreferenceValue(PREF_RETRY_INTERVAL_MIN, DEFAULT_RETRY_INTERVAL_MIN);
         setListPreferenceValue(PREF_RETRY_MAX, DEFAULT_RETRY_MAX);
         setEditTextPreferenceText(PREF_APRS_CALLSIGN, "");
@@ -2563,7 +2564,7 @@ public class SettingsFragment extends PluginPreferenceFragment
             ensureCheckBoxPreferenceOrReplace(radio, PREF_PING_REPLY_ENABLED,
                     "Send Ping Reply",
                     "Automatically reply to incoming pings with your position",
-                    true);
+                    DEFAULT_PING_REPLY_ENABLED);
         }
     }
 
@@ -2914,7 +2915,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         setEditTextPreferenceText(NetSlotConfig.PREF_SLOT_TIME_SEC,
                 String.valueOf(NetSlotConfig.getSlotTimeSec(ctx)));
         setCheckBoxPreferenceValue(PREF_PING_REPLY_ENABLED,
-                atak.getBoolean(PREF_PING_REPLY_ENABLED, true));
+                atak.getBoolean(PREF_PING_REPLY_ENABLED, DEFAULT_PING_REPLY_ENABLED));
         setCheckBoxPreferenceValue(PREF_SA_RELAY_ENABLED,
                 atak.getBoolean(PREF_SA_RELAY_ENABLED, false));
         setCheckBoxPreferenceValue(PREF_RF_TO_TAK_UPLINK_ENABLED,
@@ -3711,7 +3712,7 @@ public class SettingsFragment extends PluginPreferenceFragment
             return String.valueOf(SmartBeacon.getTurnSlope(ctx));
         }
         if (PREF_PING_REPLY_ENABLED.equals(key)) {
-            return getCheckBoxPreferenceValueLabel(key, true);
+            return getCheckBoxPreferenceValueLabel(key, DEFAULT_PING_REPLY_ENABLED);
         }
         if (PREF_SA_RELAY_ENABLED.equals(key)) {
             return getCheckBoxPreferenceValueLabel(key, false);
@@ -4042,7 +4043,7 @@ public class SettingsFragment extends PluginPreferenceFragment
 
     public static boolean isPingReplyEnabled(Context context) {
         return getPrefs(context)
-                .getBoolean(PREF_PING_REPLY_ENABLED, true);
+                .getBoolean(PREF_PING_REPLY_ENABLED, DEFAULT_PING_REPLY_ENABLED);
     }
 
     /** Ping replies always TX on the transport that received the ping. */

@@ -3,7 +3,7 @@
 A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team Awareness Kit (ATAK) over Bluetooth. Team members with radios can share positions, chat, and situational awareness data entirely off-grid — no cell service or internet required.
 
 - Package: `com.uvpro.plugin`
-- Current version: `2.0.2`
+- Current version: `2.0.3`
 - Target ATAK: `5.5.1` (CIV)
 
 ## Features

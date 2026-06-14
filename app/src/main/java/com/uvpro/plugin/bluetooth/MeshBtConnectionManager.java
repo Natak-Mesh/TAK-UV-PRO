@@ -843,12 +843,12 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     /** Probe the saved target and connect if available. */
     public void tryAutoConnectToSavedTarget() {
-        autoConnectToSavedTargetInternal("Boot auto-connect", true);
+        autoConnectToSavedTargetInternal("Boot auto-connect", true, true);
     }
 
     /** After UV-PRO connects at boot — may run even if the 7s fallback already probed once. */
     public void tryAutoConnectAfterRadioConnect() {
-        autoConnectToSavedTargetInternal("Post-radio auto-connect", false);
+        autoConnectToSavedTargetInternal("Post-radio auto-connect", false, true);
     }
 
     public void cancelBootAutoConnect() {
@@ -877,7 +877,22 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         }
     }
 
-    private void autoConnectToSavedTargetInternal(String reason, boolean markBootAttempted) {
+    /**
+     * Mesh boot did not start a probe (no target, not bonded, etc.) or mesh was already up.
+     * Lets the UI schedule startup transmit selection after mesh boot phase ends.
+     */
+    private void notifyMeshBootStartupIdleIfNeeded(boolean notifyIfSkipped, boolean connectedNow) {
+        if (!notifyIfSkipped || meshBootAutoConnectResolving.get()) {
+            return;
+        }
+        MeshBootAutoConnectListener listener = meshBootAutoConnectListener;
+        if (listener != null) {
+            listener.onMeshBootAutoConnectFinished(connectedNow);
+        }
+    }
+
+    private void autoConnectToSavedTargetInternal(String reason, boolean markBootAttempted,
+                                                boolean notifyIfSkippedWithoutAttempt) {
         if (scanPickerSessionActive.get()) {
             Log.i(TAG, reason + ": scan/picker active — skipping");
             return;
@@ -886,20 +901,27 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             Log.i(TAG, reason + ": Mesh Disconnect is active — skipping");
             return;
         }
-        if (connected.get() || connecting.get()) {
+        if (connected.get()) {
+            notifyMeshBootStartupIdleIfNeeded(notifyIfSkippedWithoutAttempt, true);
+            return;
+        }
+        if (connecting.get()) {
             return;
         }
         if (markBootAttempted && !savedTargetAutoConnectAttempted.compareAndSet(false, true)) {
             Log.d(TAG, reason + ": already attempted this session");
+            notifyMeshBootStartupIdleIfNeeded(notifyIfSkippedWithoutAttempt, false);
             return;
         }
         if (!checkBtPermissions()) {
             Log.i(TAG, reason + ": no BT permissions yet");
+            notifyMeshBootStartupIdleIfNeeded(notifyIfSkippedWithoutAttempt, false);
             return;
         }
         String tgt = BluetoothDeviceRegistry.getMeshConnectTargetAddress(context);
         if (tgt == null || tgt.isEmpty()) {
             Log.d(TAG, reason + ": no saved mesh target");
+            notifyMeshBootStartupIdleIfNeeded(notifyIfSkippedWithoutAttempt, false);
             return;
         }
         BluetoothDevice device;
@@ -907,9 +929,11 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             device = btAdapter != null ? btAdapter.getRemoteDevice(tgt) : null;
         } catch (Exception e) {
             Log.w(TAG, reason + ": bad address " + tgt, e);
+            notifyMeshBootStartupIdleIfNeeded(notifyIfSkippedWithoutAttempt, false);
             return;
         }
         if (device == null) {
+            notifyMeshBootStartupIdleIfNeeded(notifyIfSkippedWithoutAttempt, false);
             return;
         }
         int savedTargetBondState = BluetoothDevice.BOND_NONE;
@@ -920,6 +944,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         if (savedTargetBondState != BluetoothDevice.BOND_BONDED) {
             Log.i(TAG, reason + ": saved target " + tgt
                     + " is not bonded — skipping background auto-connect");
+            notifyMeshBootStartupIdleIfNeeded(notifyIfSkippedWithoutAttempt, false);
             return;
         }
         final int probeGeneration = autoConnectGeneration.get();

@@ -406,6 +406,9 @@ try {
                     if (rfTakUplinkKeepalive != null) {
                         rfTakUplinkKeepalive.kick();
                     }
+                    if (dropDownReceiver != null) {
+                        dropDownReceiver.notifyTransmitTransportConnectivityChanged();
+                    }
                 });
             }
             @Override
@@ -440,6 +443,9 @@ try {
                     cotBridge.refreshSendableMapItems();
                     if (rfTakUplinkKeepalive != null) {
                         rfTakUplinkKeepalive.kick();
+                    }
+                    if (dropDownReceiver != null) {
+                        dropDownReceiver.notifyTransmitTransportConnectivityChanged();
                     }
                 });
             }
@@ -2488,9 +2494,16 @@ try {
                 ? resolveStartupBeaconTransportManager()
                 : resolvePeriodicBeaconTransportManager();
         if (beaconTransport == null || !beaconTransport.isConnected()) {
-            Log.d(TAG, forceImmediate
-                    ? "Startup beacon skipped: no connected transmit transport"
-                    : "Periodic beacon skipped: active transmit transport not connected");
+            String detail = beaconTransport == null
+                    ? "no transmit transport selected"
+                    : (beaconTransport == meshBtConnectionManager
+                            ? "MeshCore not connected" : "UV-PRO not connected");
+            Log.d(TAG, (forceImmediate ? "Startup" : "Periodic")
+                    + " beacon skipped: " + detail);
+            if (forceImmediate && dropDownReceiver != null) {
+                dropDownReceiver.appendPluginLog(
+                        "Startup beacon not sent — " + detail);
+            }
             return;
         }
         if (cotBridge == null || mapView == null) return;

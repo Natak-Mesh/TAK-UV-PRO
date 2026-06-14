@@ -8,7 +8,6 @@ import android.util.Log;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.android.maps.PointMapItem;
 import com.uvpro.plugin.bluetooth.BtConnectionManager;
-import com.uvpro.plugin.bluetooth.TransmitTransportResolver;
 import com.uvpro.plugin.cot.CotBridge;
 import com.uvpro.plugin.ui.SettingsFragment;
 
@@ -132,7 +131,7 @@ public final class PingReplyScheduler {
                 course = Double.parseDouble(self.getMetaString("course", "0"));
             } catch (Exception ignored) {
             }
-            BtConnectionManager tx = resolveReplyTransport(context);
+            BtConnectionManager tx = resolveReplyTransport();
             if (tx == null || !tx.isConnected()) {
                 Log.w(TAG, "Ping reply skipped — no connected transport for inbound="
                         + pendingInboundTransport);
@@ -149,41 +148,22 @@ public final class PingReplyScheduler {
         }
     }
 
-    private BtConnectionManager resolveReplyTransport(Context context) {
-        BtConnectionManager preferred = pendingInboundTransport == RfInboundTransport.MESHCORE
+    private BtConnectionManager resolveReplyTransport() {
+        BtConnectionManager inbound = pendingInboundTransport == RfInboundTransport.MESHCORE
                 ? meshTransport
                 : uvproTransport;
-        if (preferred == meshTransport && !SettingsFragment.isMeshTransmitEnabled(context)) {
-            preferred = SettingsFragment.isUvproTransmitEnabled(context)
-                    ? uvproTransport
-                    : null;
-        } else if (preferred == uvproTransport
-                && !SettingsFragment.isUvproTransmitEnabled(context)) {
-            preferred = SettingsFragment.isMeshTransmitEnabled(context)
-                    ? meshTransport
-                    : null;
+        BtConnectionManager alternate = inbound == meshTransport
+                ? uvproTransport
+                : meshTransport;
+        if (inbound != null && inbound.isConnected()) {
+            return inbound;
         }
-        if (preferred != null && preferred.isConnected()) {
-            return preferred;
+        if (alternate != null && alternate.isConnected()) {
+            Log.d(TAG, "Ping reply fallback: inbound " + pendingInboundTransport
+                    + " not connected — using alternate");
+            return alternate;
         }
-        return resolveTransmitWithToggleFallback(context);
-    }
-
-    private BtConnectionManager resolveTransmitWithToggleFallback(Context context) {
-        BtConnectionManager active = TransmitTransportResolver.resolve(
-                SettingsFragment.isMeshTransmitEnabled(context),
-                SettingsFragment.isUvproTransmitEnabled(context),
-                meshTransport,
-                uvproTransport);
-        return active != null && active.isConnected() ? active : null;
-    }
-
-    private boolean isMeshTransport(BtConnectionManager tx) {
-        if (tx == null) {
-            return false;
-        }
-        return meshTransport != null && tx == meshTransport
-                || tx instanceof com.uvpro.plugin.bluetooth.MeshBtConnectionManager;
+        return null;
     }
 
     private String linkNameFor(BtConnectionManager tx) {

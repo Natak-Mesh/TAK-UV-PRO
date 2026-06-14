@@ -17,6 +17,7 @@ import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanSettings;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -152,6 +153,22 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     /** Addresses seen during the current live BLE scan (used for availability dot logic). */
     private final Set<String> liveScanAddresses = new HashSet<>();
 
+    private static final long MESH_ACL_DEBOUNCE_MS = 1500L;
+    private static final long MESH_PASSIVE_INITIAL_DELAY_MS = 3000L;
+    private static final long[] MESH_PASSIVE_BACKOFF_MS = {
+            3000L, 8000L, 15000L, 30000L, 60000L
+    };
+    private static final long MESH_PASSIVE_INTERVAL_MS = 60_000L;
+
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private BroadcastReceiver meshAvailabilityReceiver;
+    private boolean meshAvailabilityReceiverRegistered = false;
+    private final AtomicBoolean passiveMeshWatchArmed = new AtomicBoolean(false);
+    private final AtomicInteger passiveMeshProbeGeneration = new AtomicInteger(0);
+    private int passiveMeshWatchAttempt = 0;
+    private Runnable passiveMeshWatchRunnable;
+    private Runnable pendingMeshAclRunnable;
+
     /** Availability result constants. */
     public static final int AVAIL_AVAILABLE = BleMeshAvailabilityProber.AVAILABLE;
     public static final int AVAIL_BUSY = BleMeshAvailabilityProber.BUSY;
@@ -257,6 +274,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         ioThread.start();
         ioHandler = new Handler(ioThread.getLooper());
         registerBondReceiver();
+        registerMeshAvailabilityReceiver();
     }
 
     public interface MeshStateListener {
@@ -811,6 +829,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             bootListener.onUserScanStarting();
         }
         finishMeshBootAutoConnect(false);
+        cancelPassiveMeshWatch();
         scanPickerSessionActive.set(true);
         scanSessionGeneration.incrementAndGet();
         autoConnectGeneration.incrementAndGet();
@@ -835,6 +854,248 @@ public class MeshBtConnectionManager extends BtConnectionManager {
 
     public boolean isScanPickerSessionActive() {
         return scanPickerSessionActive.get();
+    }
+
+    // -------------------------------------------------------------------------
+    // Passive mesh watch (late power-on / ACL, mirrors UV-PRO Classic BT recovery)
+    // -------------------------------------------------------------------------
+
+    private void registerMeshAvailabilityReceiver() {
+        if (meshAvailabilityReceiverRegistered) {
+            return;
+        }
+        meshAvailabilityReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context ctx, Intent intent) {
+                if (intent == null) {
+                    return;
+                }
+                String action = intent.getAction();
+                if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)) {
+                    BluetoothDevice device =
+                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (device != null) {
+                        onMeshAclConnected(device);
+                    }
+                } else if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(action)) {
+                    int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE,
+                            BluetoothAdapter.ERROR);
+                    if (state == BluetoothAdapter.STATE_ON) {
+                        onBluetoothEnabledForMesh();
+                    }
+                }
+            }
+        };
+        try {
+            IntentFilter filter = new IntentFilter();
+            filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
+            filter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(meshAvailabilityReceiver, filter,
+                        Context.RECEIVER_EXPORTED);
+            } else {
+                context.registerReceiver(meshAvailabilityReceiver, filter);
+            }
+            meshAvailabilityReceiverRegistered = true;
+            Log.d(TAG, "Mesh availability receiver registered");
+        } catch (Exception e) {
+            Log.w(TAG, "Could not register mesh availability receiver", e);
+        }
+    }
+
+    private String getSavedMeshTargetAddress() {
+        try {
+            return BluetoothDeviceRegistry.getMeshConnectTargetAddress(context);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private BluetoothDevice resolveSavedMeshDevice() {
+        String tgt = getSavedMeshTargetAddress();
+        if (tgt == null || tgt.isEmpty() || btAdapter == null) {
+            return null;
+        }
+        try {
+            return btAdapter.getRemoteDevice(tgt);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private boolean isSavedMeshTarget(String address) {
+        if (address == null || address.isEmpty()) {
+            return false;
+        }
+        String tgt = getSavedMeshTargetAddress();
+        return tgt != null && tgt.equalsIgnoreCase(address);
+    }
+
+    private void onMeshAclConnected(BluetoothDevice device) {
+        if (device == null || device.getAddress() == null) {
+            return;
+        }
+        if (meshManualDisconnect.get() || scanPickerSessionActive.get()) {
+            return;
+        }
+        if (connected.get() || connecting.get()) {
+            cancelPendingMeshAclProbe();
+            return;
+        }
+        String addr = device.getAddress();
+        Log.d(TAG, "ACL connected " + addr + " (saved mesh="
+                + getSavedMeshTargetAddress() + ")");
+        if (!isSavedMeshTarget(addr)) {
+            return;
+        }
+        Log.i(TAG, "ACL connected for saved mesh " + addr + " — scheduling probe");
+        scheduleMeshAclProbe(device, "acl-connected");
+    }
+
+    private void onBluetoothEnabledForMesh() {
+        if (meshManualDisconnect.get() || scanPickerSessionActive.get()) {
+            return;
+        }
+        if (connected.get() || connecting.get()) {
+            return;
+        }
+        BluetoothDevice device = resolveSavedMeshDevice();
+        if (device == null) {
+            return;
+        }
+        Log.i(TAG, "Bluetooth enabled — arming mesh passive watch for "
+                + device.getAddress());
+        armPassiveMeshWatch();
+    }
+
+    private void scheduleMeshAclProbe(BluetoothDevice device, String reason) {
+        if (device == null) {
+            return;
+        }
+        cancelPendingMeshAclProbe();
+        final BluetoothDevice target = device;
+        pendingMeshAclRunnable = () -> {
+            pendingMeshAclRunnable = null;
+            probeAndConnectSavedMesh(reason, target);
+        };
+        mainHandler.postDelayed(pendingMeshAclRunnable, MESH_ACL_DEBOUNCE_MS);
+    }
+
+    private void cancelPendingMeshAclProbe() {
+        if (pendingMeshAclRunnable != null) {
+            mainHandler.removeCallbacks(pendingMeshAclRunnable);
+            pendingMeshAclRunnable = null;
+        }
+    }
+
+    private void armPassiveMeshWatch() {
+        if (meshManualDisconnect.get() || scanPickerSessionActive.get()) {
+            return;
+        }
+        if (connected.get() || connecting.get()) {
+            return;
+        }
+        if (resolveSavedMeshDevice() == null) {
+            return;
+        }
+        passiveMeshWatchArmed.set(true);
+        passiveMeshWatchAttempt = 0;
+        cancelPassiveMeshWatchScheduled();
+        Log.i(TAG, "Mesh passive watch armed (target=" + getSavedMeshTargetAddress() + ")");
+        scheduleNextPassiveMeshWatch(MESH_PASSIVE_INITIAL_DELAY_MS);
+    }
+
+    private void cancelPassiveMeshWatch() {
+        passiveMeshWatchArmed.set(false);
+        passiveMeshWatchAttempt = 0;
+        passiveMeshProbeGeneration.incrementAndGet();
+        cancelPassiveMeshWatchScheduled();
+        cancelPendingMeshAclProbe();
+    }
+
+    private void cancelPassiveMeshWatchScheduled() {
+        if (passiveMeshWatchRunnable != null) {
+            mainHandler.removeCallbacks(passiveMeshWatchRunnable);
+            passiveMeshWatchRunnable = null;
+        }
+    }
+
+    private boolean shouldRunPassiveMeshWatch() {
+        if (!passiveMeshWatchArmed.get() || meshManualDisconnect.get()
+                || scanPickerSessionActive.get()) {
+            return false;
+        }
+        if (connected.get() || connecting.get()) {
+            return false;
+        }
+        String tgt = getSavedMeshTargetAddress();
+        return tgt != null && !tgt.isEmpty();
+    }
+
+    private void scheduleNextPassiveMeshWatch(long delayMs) {
+        if (!shouldRunPassiveMeshWatch()) {
+            cancelPassiveMeshWatch();
+            return;
+        }
+        if (passiveMeshWatchRunnable != null) {
+            mainHandler.removeCallbacks(passiveMeshWatchRunnable);
+        }
+        passiveMeshWatchRunnable = () -> {
+            passiveMeshWatchRunnable = null;
+            if (!shouldRunPassiveMeshWatch()) {
+                cancelPassiveMeshWatch();
+                return;
+            }
+            BluetoothDevice device = resolveSavedMeshDevice();
+            if (device != null) {
+                probeAndConnectSavedMesh("passive-watch", device);
+            }
+            scheduleNextPassiveMeshWatch(nextPassiveMeshWatchDelay());
+        };
+        mainHandler.postDelayed(passiveMeshWatchRunnable, delayMs);
+    }
+
+    private long nextPassiveMeshWatchDelay() {
+        int idx = passiveMeshWatchAttempt++;
+        if (idx < MESH_PASSIVE_BACKOFF_MS.length) {
+            return MESH_PASSIVE_BACKOFF_MS[idx];
+        }
+        return MESH_PASSIVE_INTERVAL_MS;
+    }
+
+    private void probeAndConnectSavedMesh(String reason, BluetoothDevice device) {
+        if (device == null || meshManualDisconnect.get() || scanPickerSessionActive.get()) {
+            return;
+        }
+        if (connected.get() || connecting.get()) {
+            return;
+        }
+        if (!checkBtPermissions()) {
+            return;
+        }
+        if (!isSafeForAvailabilityProbe(device)) {
+            return;
+        }
+        final int gen = passiveMeshProbeGeneration.incrementAndGet();
+        final String addr = device.getAddress();
+        Log.i(TAG, reason + ": probing saved mesh " + addr);
+        probeDeviceAvailability(device, availability -> {
+            if (gen != passiveMeshProbeGeneration.get()) {
+                return;
+            }
+            if (meshManualDisconnect.get() || scanPickerSessionActive.get()) {
+                return;
+            }
+            if (connected.get() || connecting.get()) {
+                return;
+            }
+            if (availability == AVAIL_AVAILABLE) {
+                Log.i(TAG, reason + ": connecting to " + addr);
+                connectInternal(device);
+            } else {
+                Log.d(TAG, reason + ": mesh " + addr + " not available (avail=" + availability + ")");
+            }
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -867,13 +1128,24 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         }
     }
 
+    public boolean isPassiveMeshWatchArmed() {
+        return passiveMeshWatchArmed.get();
+    }
+
     private void finishMeshBootAutoConnect(boolean connected) {
-        if (!meshBootAutoConnectResolving.getAndSet(false)) {
+        boolean wasResolving = meshBootAutoConnectResolving.getAndSet(false);
+        if (!connected && !scanPickerSessionActive.get() && !meshManualDisconnect.get()) {
+            armPassiveMeshWatch();
+        }
+        if (!wasResolving) {
             return;
         }
         MeshBootAutoConnectListener listener = meshBootAutoConnectListener;
         if (listener != null) {
             listener.onMeshBootAutoConnectFinished(connected);
+        }
+        if (connected) {
+            cancelPassiveMeshWatch();
         }
     }
 
@@ -1059,6 +1331,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
             autoConnectGeneration.incrementAndGet();
             cancelBootAutoConnect();
             cancelAutoConnectTimeout();
+            cancelPassiveMeshWatch();
             savedTargetAutoConnectAttempted.set(true);
             userInitiatedConnect.set(false);
             pendingBondDevice = null;
@@ -1173,6 +1446,9 @@ public class MeshBtConnectionManager extends BtConnectionManager {
         clearQueues();
         ioHandler.post(this::closeGattInternal);
         notifyDisconnected("Connection lost");
+        if (!meshManualDisconnect.get() && !scanPickerSessionActive.get()) {
+            armPassiveMeshWatch();
+        }
     }
 
     @Override
@@ -1594,6 +1870,7 @@ public class MeshBtConnectionManager extends BtConnectionManager {
     protected void notifyConnected(BluetoothDevice device) {
         userInitiatedConnect.set(false);
         cancelAutoConnectTimeout();
+        cancelPassiveMeshWatch();
         finishMeshBootAutoConnect(true);
         if (device != null && device.getAddress() != null) {
             try {

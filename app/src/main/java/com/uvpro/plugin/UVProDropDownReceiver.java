@@ -326,6 +326,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
     private GradientDrawable scanConnectPulseDrawable;
     private final Runnable deferredScanConnectPulseStart = this::startScanConnectButtonPulse;
     private final Runnable deferredMeshScanPulseStart = this::startMeshScanButtonPulse;
+    private volatile boolean scanConnectPulsePending = false;
+    private volatile boolean meshScanPulsePending = false;
     private ValueAnimator meshConnectPulseAnimator;
     private GradientDrawable meshConnectPulseDrawable;
     private ValueAnimator sendButtonPulseAnimator;
@@ -576,6 +578,8 @@ public class UVProDropDownReceiver extends DropDownReceiver
                             stopMeshConnectButtonPulse(true);
                             updateMeshScanButtonText();
                             appendLog("Last MeshCore node not found — tap Scan and Connect.");
+                        } else {
+                            updateMeshScanButtonText();
                         }
                         scheduleStartupTransmitAfterMeshBoot(
                                 connected ? 0L : STARTUP_TRANSMIT_AFTER_MESH_GIVEUP_MS);
@@ -1453,9 +1457,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
             return;
         }
         meshFoundDevices.clear();
-        updateMeshScanButtonText();
         appendLog("Scanning for MeshCore devices...");
         requestMeshScanButtonPulse();
+        updateMeshScanButtonText();
         meshBtManager.startScan();
     }
 
@@ -1497,7 +1501,10 @@ public class UVProDropDownReceiver extends DropDownReceiver
         if (btnScan == null) return;
         if (btManager.isConnected()) {
             btnScan.setText("Connected");
-        } else if (btManager.isConnecting() && !btManager.isBootAutoConnectResolving()) {
+        } else if (isScanConnectButtonPulsing()
+                || btManager.isBootAutoConnectResolving()) {
+            btnScan.setText("Scanning");
+        } else if (btManager.isConnecting()) {
             btnScan.setText("CANCEL");
         } else {
             btnScan.setText("Scan and Connect");
@@ -1510,9 +1517,20 @@ public class UVProDropDownReceiver extends DropDownReceiver
         }
         if (meshBtManager.isConnected()) {
             btnMeshScan.setText("Connected");
+        } else if (isMeshScanButtonPulsing()
+                || meshBtManager.isMeshBootAutoConnectResolving()) {
+            btnMeshScan.setText("Scanning");
         } else {
             btnMeshScan.setText("Scan and Connect");
         }
+    }
+
+    private boolean isScanConnectButtonPulsing() {
+        return scanConnectPulseAnimator != null || scanConnectPulsePending;
+    }
+
+    private boolean isMeshScanButtonPulsing() {
+        return meshConnectPulseAnimator != null || meshScanPulsePending;
     }
 
     private void onMeshcoreChannelsClicked() {
@@ -7770,6 +7788,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void requestScanConnectButtonPulse() {
+        scanConnectPulsePending = true;
         if (getMapView() == null) {
             startScanConnectButtonPulse();
             return;
@@ -7779,6 +7798,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void startScanConnectButtonPulse() {
+        scanConnectPulsePending = false;
         if (btnScan == null) {
             return;
         }
@@ -7804,9 +7824,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
             btnScan.invalidate();
         });
         scanConnectPulseAnimator.start();
+        updateScanButtonText();
     }
 
     private void stopScanConnectButtonPulse(boolean restoreBackground) {
+        scanConnectPulsePending = false;
         if (getMapView() != null) {
             getMapView().removeCallbacks(deferredScanConnectPulseStart);
         }
@@ -7825,6 +7847,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 applyPillButtonBackground(btnScan, COLOR_PILL_BUTTON_PRIMARY);
             }
         }
+        updateScanButtonText();
     }
 
     private void startMeshConnectButtonPulse() {
@@ -7832,6 +7855,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void requestMeshScanButtonPulse() {
+        meshScanPulsePending = true;
         if (getMapView() == null) {
             startMeshScanButtonPulse();
             return;
@@ -7841,6 +7865,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
     }
 
     private void startMeshScanButtonPulse() {
+        meshScanPulsePending = false;
         if (btnMeshScan == null) {
             return;
         }
@@ -7866,9 +7891,11 @@ public class UVProDropDownReceiver extends DropDownReceiver
             btnMeshScan.invalidate();
         });
         meshConnectPulseAnimator.start();
+        updateMeshScanButtonText();
     }
 
     private void stopMeshConnectButtonPulse(boolean restoreBackground) {
+        meshScanPulsePending = false;
         if (getMapView() != null) {
             getMapView().removeCallbacks(deferredMeshScanPulseStart);
         }
@@ -7887,6 +7914,7 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 applyPillButtonBackground(btnMeshScan, 0xFF455A64);
             }
         }
+        updateMeshScanButtonText();
     }
 
     private void openPluginToolPreferences() {

@@ -190,10 +190,11 @@ If any item below is uncertain, **stop and do not merge** until verified.
 ### TPC submission zips
 
 - **Version:** Set **`ext.PLUGIN_VERSION`** in **root `build.gradle`** only. **`versionCode`** is derived in **`app/build.gradle`** from that string.
-- **Packaging:** Run **`./tools/package-submission.sh`** from the repo root. It reads the version from `build.gradle` and writes **`UV-PRO-<version>-ATAK-5.5.1-source.zip`** (and manifest) under **`Plugins/TAK Submissions/`** by default.
+- **Dual ATAK targets (5.5.1 + 5.6.0)** — default for “ready for zip”: **`./tools/build-submission-zips.sh`** writes both `UV-PRO-<ver>-ATAK-5.5.1-source.zip` and `UV-PRO-<ver>-ATAK-5.6.0-source.zip` under **`Plugins/TAK Submissions/`**. SDK swap via **`./tools/use-atak-sdk.sh`** (5.6 path: `~/Documents/ATAK/Versions/ATAK-CIV-5.6.0.18-SDK`).
+- **Single target:** **`./tools/use-atak-sdk.sh 5.5.1`** (or `5.6.0`), then **`./gradlew assembleCivRelease`** (`-Patak.version=5.6.0` for 5.6), then **`ATAK_VERSION=<ver> ./tools/package-submission.sh`**.
 - **`git archive`:** Only **committed** files are included. Uncommitted work is **not** in the zip.
 - **Vendored takdev:** The archive is expected to include **`gradle/takdev/atak-gradle-takdev.jar`** so TPC can build without Artifactory init scripts.
-- **Local APK beside zip:** Run **`./gradlew assembleCivRelease`** before `package-submission.sh` if you want the unsigned civ release APK copied next to the zip. **Field releases** should use the **TPC-signed** APK returned from the portal.
+- **Local APK beside zip:** Each build copies the matching unsigned civ release APK next to its zip. **Field releases** should use the **TPC-signed** APK returned from the portal.
 
 ### Notes
 

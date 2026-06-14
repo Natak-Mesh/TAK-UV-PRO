@@ -752,7 +752,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Long press for TX"
+                    android:text="Long Press to Switch TX Channel"
                     android:textColor="#FFFFFFFF"
                     android:textSize="13sp"
                     android:gravity="start|center_vertical" />

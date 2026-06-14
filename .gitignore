@@ -47,7 +47,6 @@ scratch/*
 
 # Generated portal drop (tools/package-submission.sh)
 submission/
-tools/package-submission.sh
 
 # OS files
 Thumbs.db

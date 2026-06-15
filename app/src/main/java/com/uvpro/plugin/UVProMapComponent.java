@@ -218,6 +218,7 @@ public class UVProMapComponent extends DropDownMapComponent {
         }
 
         Log.i(TAG, "UV-PRO plugin initializing...");
+        RadioGpsBridge.installLocationProvider();
         // Defensive: unread badge state is process-local; start clean each time the plugin is loaded.
         try {
             UVProContactHandler.clearAllUnread();
@@ -708,6 +709,7 @@ try {
     @Override
     protected void onDestroyImpl(Context context, MapView view) {
         Log.i(TAG, "UV-PRO plugin shutting down...");
+        RadioGpsBridge.uninstallLocationProvider();
 
         // Stop GPS speed listener
         if (gpsLocationManager != null && gpsLocationListener != null) {

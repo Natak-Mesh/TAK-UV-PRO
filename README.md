@@ -3,8 +3,8 @@
 A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team Awareness Kit (ATAK) over Bluetooth. Team members with radios can share positions, chat, and situational awareness data entirely off-grid — no cell service or internet required.
 
 - Package: `com.uvpro.plugin`
-- Current version: `2.0.3`
-- Target ATAK: `5.5.1` (CIV)
+- Current version: `2.0.5`
+- Target ATAK: `5.5.1` and `5.6.0` (CIV; build with `-Patak.version=5.6.0` for 5.6 installs)
 
 ## Features
 
@@ -13,7 +13,7 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Position Sharing (PLI)** | ✅ Working | Your ATAK position is beaconed over radio at a configurable interval. Incoming positions appear as contacts on the map. |
 | **Smart Beaconing (APRS-style)** | ✅ Working | APRS-standard SmartBeaconing + corner pegging using live GPS Doppler speed (not position delta). Speed-proportional rate between low/high thresholds, turn detection at any speed > 0, and fixed-interval safety floor. Seven parameters in Settings → Manage Smart Beacon Settings. |
 | **Dynamic CoT Stale Window** | ✅ Working | Contact `stale` timestamp now tracks current beacon policy (fixed interval or Smart Beacon profile) so receivers do not grey contacts prematurely. |
-| **Ping / Ping Reply** | ✅ Working | **Send Ping** (dropdown) broadcasts a discovery ping to all stations. **Per-contact Ping** (Connectors page or radial **Contact** submenu) sends a directed `TYPE_PING` to one callsign; only that peer should reply. **Send Ping Reply** (Settings) auto-replies to incoming pings you are targeted for. Replies use **slotted timing** (default 20 slots × 2.5 s) keyed by callsign hash. |
+| **Ping / Ping Reply** | ✅ Working | **Send Ping** (dropdown) broadcasts a discovery ping to all stations. **Per-contact Ping** (Connectors page or radial **Contact** submenu) sends a directed `TYPE_PING` to one callsign; only that peer should reply. **Send Ping Reply** (Settings) auto-replies on the **radio that received the ping** (fallback to the other link only if that radio is disconnected—not transmit-toggle prefs). Replies use **slotted timing** (default 20 slots × 2.5 s) keyed by callsign hash. |
 | **Net slot administration** | ✅ Working | Team leadership can set slot count/time and **Distribute to net** (`TYPE_NET_SLOT_CONFIG`); receivers auto-apply newer assignments. In **Settings → Tool Preferences → UV-PRO Settings → Administration** or **Plugin Settings** (bottom of dialog). |
 | **Bluetooth Scan & Connect** | ✅ Working | Instant picker showing previously-connected radios with live green/gray availability dots. **UV-PRO auto-connects first at boot**; MeshCore follows once the radio link resolves. |
 | **Radio Connection Status Overlay** | ✅ Working | Persistent BTECH icon in the lower-right map corner (green = connected, desaturated = disconnected). **Tap the icon** to open the UV-PRO panel (same as Menu → Tools → UV-PRO). |
@@ -22,7 +22,7 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **GeoChat delivery receipts (checkmarks)** | ✅ Working | ATAK's native single-checkmark (delivered) and double-checkmark (read) appear on the sender's chat window. |
 | **Retry on no ACK + delivery failure alert** | ✅ Working | If no delivered ACK within the configured interval, message is retransmitted up to max retries. If all retries exhausted, a persistent alert appears. Retry interval and max retries adjustable in Settings. |
 | **Contact-targeted CoT over RF** | ✅ Working | Any CoT item sendable to a contact in ATAK — waypoints, routes, casevac/9-line, drawings, markers — is intercepted, compressed, and relayed over RF. |
-| **SA Relay (opt-in)** | ✅ Working | Network-to-radio bridge: broadcasts received SA over RF to radio-only users. Configurable in Settings. |
+| **SA Relay (opt-in)** | ✅ Working | Network-to-radio bridge: broadcasts received SA over RF to radio-only users. Configurable in Settings. Stationary contacts are deduped by **position + identity** (~1 m); relay CoT skips the automatic +3 s double-send. |
 | **AES-256 Encryption** | ✅ Working | Optional shared-secret AES-256-GCM for all radio traffic. All nodes must use the same secret. |
 | **Contact Tracking** | ✅ Working | Radios in range tracked as contacts with callsign, last-seen time, and position. |
 | **Map Repeater Load/Tune (KML)** | ✅ Working | Tap a repeater placemark from imported KML, arm **Load Selected Repeater**, then tap a destination channel to program/tune it (TX/RX + CTCSS/DCS). |
@@ -41,6 +41,13 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Transmit auto-failover** | ✅ Working | Preferred MeshCore vs UV-PRO transmit is tracked separately from the active toggle. If the preferred radio disconnects for **5+ minutes** while the alternate is connected, the toggle switches automatically; it restores when the preferred device reconnects. Manual toggle changes update preference and cancel failover. Logged in the main plugin panel. |
 | **Mesh beacon rate limits** | ✅ Working | When **ATAK MeshCore Transmit** is on and **Disable Mesh Beacon Limiting** is unchecked, runtime floors cap mesh periodic/Smart Beacon rates (interval/slow ≥ 30 min, fast/min-turn ≥ 5 min) without changing stored prefs. UV-PRO-only beacons are unaffected; checking the disable box removes caps. |
 | **Mesh map Delete Contact** | ✅ Working | Long-press a MeshCore node marker → details panel → **Delete Contact** removes the map item and ATAK contact (same pattern as APRS delete). |
+
+### 2026-06-15 Progress Update (v2.0.5)
+
+- **SA Relay dedupe:** Signatures use quantized lat/lon + callsign/uid instead of stripped XML so Wi-Fi PLI timestamp/speed/battery churn no longer re-broadcasts stationary contacts every 30 s. Real movement beyond ~1 m still relays.
+- **SA Relay TX:** Inbound network SA relay uses `sendCotOverRadioNoRetry`—no automatic CoT double-send (+3 s duplicate burst) on relay traffic.
+- **Auto ping reply routing:** Slotted ping replies prefer the inbound radio (mesh vs UV-PRO); alternate radio only when the receive path is disconnected.
+- **ATAK 5.6 radio GPS:** `PluginRadioLocationProvider` registers UV-PRO/MeshCore fixes as a first-class ATAK location source (5.6 GPS source toggles) alongside legacy map injection.
 
 ### 2026-06-12 Progress Update (v1.9.70)
 
@@ -454,7 +461,7 @@ Waypoints, routes, casevac/9-line, drawings, and other CoT items can all be sent
 
 Enable **SA Relay** in Settings to automatically broadcast received network SA (team positions, waypoints, routes) over RF to all radio users on frequency. This is designed for a single designated relay node — **do not enable unless instructed by your team leader.** A per-contact 30-second throttle prevents channel flooding.
 
-As of 2026-05-21, unchanged periodic SA/status payloads (`a-*`) are also suppressed. This avoids repeated rebroadcast of stationary Wi-Fi/TAK contacts whose CoT only changes volatile timestamps.
+Stationary Wi-Fi/TAK contacts are suppressed when position has not meaningfully changed (~1 m quantization on lat/lon, ignoring timestamps, speed, course, and battery fields). Relayed SA is not subject to the generic CoT +3 s double-send used for other outbound CoT.
 
 For deeper implementation details and a full “new agent” handoff (logic trees, key files, known ATAK gotchas), see `HANDOFF.md`.
 

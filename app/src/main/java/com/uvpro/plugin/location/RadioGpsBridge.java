@@ -29,7 +29,38 @@ public final class RadioGpsBridge {
     public static final String MESHCORE_MOCK_SOURCE_LABEL = "MeshCore GPS";
     private static final String INTERNAL_GPS_PROVIDER_UID = "internal-gps-chip";
 
+    private static volatile PluginRadioLocationProvider radioLocationProvider;
+    private static volatile boolean radioLocationProviderRegistered;
+
     private RadioGpsBridge() {
+    }
+
+    /**
+     * Expose radio GPS as a registered ATAK location provider so 5.6 GPS source toggles can use it
+     * without relying on legacy map-bundle mock metadata alone.
+     */
+    public static synchronized void installLocationProvider() {
+        if (radioLocationProviderRegistered) {
+            return;
+        }
+        radioLocationProvider = new PluginRadioLocationProvider();
+        LocationManager.getInstance().registerProvider(
+                radioLocationProvider, LocationManager.HIGHEST_PRIORITY);
+        radioLocationProviderRegistered = true;
+        Log.i(TAG, "Registered plugin radio GPS location provider");
+    }
+
+    public static synchronized void uninstallLocationProvider() {
+        if (!radioLocationProviderRegistered) {
+            return;
+        }
+        LocationManager.getInstance().unregisterProvider(PluginRadioLocationProvider.PROVIDER_UID);
+        if (radioLocationProvider != null) {
+            radioLocationProvider.dispose();
+            radioLocationProvider = null;
+        }
+        radioLocationProviderRegistered = false;
+        Log.i(TAG, "Unregistered plugin radio GPS location provider");
     }
 
     public static final class UpdateResult {
@@ -157,6 +188,10 @@ public final class RadioGpsBridge {
         }
         Intent gpsReceived = new Intent("com.atakmap.android.map.WR_GPS_RECEIVED");
         AtakBroadcast.getInstance().sendBroadcast(gpsReceived);
+        PluginRadioLocationProvider provider = radioLocationProvider;
+        if (provider != null) {
+            provider.publishFix(fix, source);
+        }
         Log.i(TAG, "Injected GPS into ATAK (" + source + "): " + gp);
         return true;
     }

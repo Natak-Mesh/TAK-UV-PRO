@@ -29,6 +29,7 @@ import com.atakmap.commoncommo.CoTSendMethod;
 import com.atakmap.coremap.maps.assets.Icon;
 import com.atakmap.coremap.cot.event.CotDetail;
 import com.atakmap.coremap.cot.event.CotEvent;
+import com.atakmap.coremap.cot.event.CotPoint;
 
 import com.uvpro.plugin.BuildConfig;
 import com.uvpro.plugin.ax25.AprsSymbolMapper;
@@ -2552,18 +2553,34 @@ public class CotBridge {
         if (signature != null) {
             saRelayLastSignatureByUid.put(uid, signature);
         }
-        new Thread(() -> sendCotOverRadio(event)).start();
+        new Thread(() -> sendCotOverRadioNoRetry(event)).start();
     }
 
+    /** ~1.1 m — movement beyond this changes the SA relay signature. */
+    private static final double SA_RELAY_COORD_QUANTUM = 0.00001;
+
     /**
-     * Build a stable SA payload signature while ignoring volatile CoT timestamps.
-     * This suppresses periodic retransmit of unchanged network SA.
+     * Stable SA signature: position + identity, ignoring timestamps, motion fields,
+     * and other Wi-Fi PLI churn so stationary contacts are not re-relayed every 30s.
      */
     private static String buildSaRelaySignature(CotEvent event) {
         if (event == null) {
             return null;
         }
         try {
+            String type = event.getType();
+            String uid = event.getUID();
+            String callsign = extractInboundSaCallsign(event);
+            CotPoint point = event.getCotPoint();
+            if (point != null) {
+                double lat = point.getLat();
+                double lon = point.getLon();
+                if (lat != CotPoint.UNKNOWN && lon != CotPoint.UNKNOWN
+                        && !Double.isNaN(lat) && !Double.isNaN(lon)) {
+                    return type + "|" + uid + "|" + callsign + "|"
+                            + quantizeSaRelayCoord(lat) + "|" + quantizeSaRelayCoord(lon);
+                }
+            }
             String xml = event.toString();
             if (xml == null || xml.isEmpty()) {
                 return null;
@@ -2572,6 +2589,11 @@ public class CotBridge {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    private static String quantizeSaRelayCoord(double value) {
+        long q = Math.round(value / SA_RELAY_COORD_QUANTUM);
+        return String.format(Locale.US, "%.5f", q * SA_RELAY_COORD_QUANTUM);
     }
 
     private static boolean isSaRelayEligibleType(String type) {

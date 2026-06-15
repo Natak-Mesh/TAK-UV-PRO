@@ -354,9 +354,9 @@ public class SettingsFragment extends PluginPreferenceFragment
         }
         pref.setOnPreferenceChangeListener((preference, newValue) -> {
             boolean checked = Boolean.TRUE.equals(newValue);
+            Context relayCtx = resolveSettingsContext();
             if (PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key) && checked) {
-                Context relayCtx = resolveSettingsContext();
-                if (relayCtx == null || !isSaRelayEnabled(relayCtx)) {
+                if (!isSaRelayEnabledForUi(relayCtx)) {
                     Context toastCtx = getActivity() != null ? getActivity() : relayCtx;
                     if (toastCtx != null) {
                         Toast.makeText(toastCtx, "Enable SA Relay first",
@@ -372,6 +372,9 @@ public class SettingsFragment extends PluginPreferenceFragment
             afterPreferenceValueSaved(key);
             if (PREF_SA_RELAY_ENABLED.equals(key)) {
                 updateDependentPreferences();
+            }
+            if (PREF_SA_RELAY_ENABLED.equals(key)
+                    || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
                 ListView list = getPreferenceListView();
                 if (list != null) {
                     list.post(this::applyRowStyles);
@@ -440,7 +443,12 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (ctx == null) {
             return;
         }
-        getPrefs(ctx).edit().putBoolean(key, value).apply();
+        SharedPreferences.Editor editor = getPrefs(ctx).edit().putBoolean(key, value);
+        if (PREF_SA_RELAY_ENABLED.equals(key) || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
+            editor.commit();
+        } else {
+            editor.apply();
+        }
     }
 
     private void afterPreferenceValueSaved(String key) {

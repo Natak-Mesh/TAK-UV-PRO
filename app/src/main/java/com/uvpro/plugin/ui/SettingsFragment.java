@@ -352,6 +352,10 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (!(pref instanceof CheckBoxPreference)) {
             return;
         }
+        if (PREF_SA_RELAY_ENABLED.equals(key) || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
+            pref.setPersistent(false);
+        }
+        syncCheckBoxPreferenceFromAtak(key, defaultValue);
         pref.setOnPreferenceChangeListener((preference, newValue) -> {
             boolean checked = Boolean.TRUE.equals(newValue);
             Context relayCtx = resolveSettingsContext();
@@ -366,9 +370,7 @@ public class SettingsFragment extends PluginPreferenceFragment
                 }
             }
             persistBooleanPrefToAtak(key, checked);
-            if (preference instanceof CheckBoxPreference) {
-                ((CheckBoxPreference) preference).setChecked(checked);
-            }
+            syncCheckBoxPreferenceFromAtak(key, defaultValue);
             afterPreferenceValueSaved(key);
             if (PREF_SA_RELAY_ENABLED.equals(key)) {
                 updateDependentPreferences();
@@ -464,7 +466,9 @@ public class SettingsFragment extends PluginPreferenceFragment
         }
         if (PREF_BEACON_INTERVAL.equals(key)
                 || isSmartBeaconParamKey(key)
-                || PREF_PING_REPLY_ENABLED.equals(key)) {
+                || PREF_PING_REPLY_ENABLED.equals(key)
+                || PREF_SA_RELAY_ENABLED.equals(key)
+                || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
             notifyRuntimeSettingsChanged();
         }
         if (PREF_APRS_CALLSIGN.equals(key) || PREF_APRS_MESSAGE.equals(key)
@@ -750,8 +754,31 @@ public class SettingsFragment extends PluginPreferenceFragment
     private void setCheckBoxPreferenceValue(String key, boolean checked) {
         Preference pref = findPreference(key);
         if (pref instanceof CheckBoxPreference) {
-            ((CheckBoxPreference) pref).setChecked(checked);
+            CheckBoxPreference check = (CheckBoxPreference) pref;
+            if (check.isChecked() != checked) {
+                check.setChecked(checked);
+            }
         }
+    }
+
+    private static boolean defaultForCheckboxKey(String key) {
+        if (PREF_PING_REPLY_ENABLED.equals(key)) {
+            return DEFAULT_PING_REPLY_ENABLED;
+        }
+        return false;
+    }
+
+    /** ATAK default SharedPreferences are the runtime source of truth for checkbox prefs. */
+    private boolean readBooleanPrefFromAtak(String key, boolean defaultValue) {
+        Context ctx = resolveSettingsContext();
+        if (ctx == null) {
+            return defaultValue;
+        }
+        return getPrefs(ctx).getBoolean(key, defaultValue);
+    }
+
+    private void syncCheckBoxPreferenceFromAtak(String key, boolean defaultValue) {
+        setCheckBoxPreferenceValue(key, readBooleanPrefFromAtak(key, defaultValue));
     }
 
     private void syncSmartBeaconPreferenceValues() {
@@ -1645,32 +1672,62 @@ public class SettingsFragment extends PluginPreferenceFragment
         }
         widgetFrame.setVisibility(View.VISIBLE);
         ViewGroup widgetGroup = (ViewGroup) widgetFrame;
-        CheckBox box = null;
-        for (int i = 0; i < widgetGroup.getChildCount(); i++) {
-            View child = widgetGroup.getChildAt(i);
-            if (child instanceof CheckBox && EMBEDDED_CHECKBOX_TAG.equals(child.getTag())) {
-                box = (CheckBox) child;
-                break;
+        CheckBoxPreference checkPref = (CheckBoxPreference) pref;
+        boolean checked = readBooleanPrefFromAtak(
+                checkPref.getKey(), defaultForCheckboxKey(checkPref.getKey()));
+        if (PREF_RF_TO_TAK_UPLINK_ENABLED.equals(checkPref.getKey())) {
+            Context ctx = resolveSettingsContext();
+            if (ctx != null) {
+                checked = isRfToTakUplinkEnabled(ctx);
             }
         }
-        if (box == null) {
-            widgetGroup.removeAllViews();
-            box = new CheckBox(row.getContext());
-            box.setTag(EMBEDDED_CHECKBOX_TAG);
-            box.setFocusable(false);
-            box.setClickable(false);
-            widgetGroup.addView(box, new ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT));
+        if (checkPref.isChecked() != checked) {
+            checkPref.setChecked(checked);
         }
-        CheckBoxPreference checkPref = (CheckBoxPreference) pref;
-        box.setChecked(checkPref.isChecked());
+        CheckBox box = resolveRowCheckBox(widgetGroup);
+        box.setChecked(checked);
         box.setEnabled(pref.isEnabled());
         try {
             box.setButtonTintList(ColorStateList.valueOf(
                     pref.isEnabled() ? COLOR_VALUE_GREEN : COLOR_DISABLED_GREY));
         } catch (Exception ignored) {
         }
+    }
+
+    /** Prefer the framework/Pan checkbox; avoid duplicate embedded boxes that desync on scroll. */
+    private CheckBox resolveRowCheckBox(ViewGroup widgetGroup) {
+        CheckBox embedded = null;
+        CheckBox framework = null;
+        for (int i = 0; i < widgetGroup.getChildCount(); i++) {
+            View child = widgetGroup.getChildAt(i);
+            if (!(child instanceof CheckBox)) {
+                continue;
+            }
+            if (EMBEDDED_CHECKBOX_TAG.equals(child.getTag())) {
+                embedded = (CheckBox) child;
+            } else {
+                framework = (CheckBox) child;
+            }
+        }
+        if (framework != null) {
+            if (embedded != null) {
+                widgetGroup.removeView(embedded);
+            }
+            framework.setFocusable(false);
+            framework.setClickable(false);
+            return framework;
+        }
+        if (embedded != null) {
+            return embedded;
+        }
+        CheckBox box = new CheckBox(widgetGroup.getContext());
+        box.setTag(EMBEDDED_CHECKBOX_TAG);
+        box.setFocusable(false);
+        box.setClickable(false);
+        widgetGroup.addView(box, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        return box;
     }
 
     private void styleBlueSectionHeaderRow(View row, Preference pref) {
@@ -2645,6 +2702,9 @@ public class SettingsFragment extends PluginPreferenceFragment
             pref = created;
         }
         pref.setChecked(checked);
+        if (PREF_SA_RELAY_ENABLED.equals(key) || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
+            pref.setPersistent(false);
+        }
         applyAdminCheckboxEnabledState(pref, key);
     }
 
@@ -2718,9 +2778,8 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (rfUplinkPref != null) {
             applyPreferenceEnabled(rfUplinkPref, true);
             if (!saRelayOn && rfUplinkPref instanceof CheckBoxPreference) {
-                CheckBoxPreference rfCheck = (CheckBoxPreference) rfUplinkPref;
-                if (rfCheck.isChecked()) {
-                    rfCheck.setChecked(false);
+                if (readBooleanPrefFromAtak(PREF_RF_TO_TAK_UPLINK_ENABLED, false)) {
+                    syncCheckBoxPreferenceFromAtak(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
                     persistBooleanPrefToAtak(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
                 }
             }
@@ -3726,6 +3785,9 @@ public class SettingsFragment extends PluginPreferenceFragment
             return getCheckBoxPreferenceValueLabel(key, false);
         }
         if (PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
+            if (ctx != null) {
+                return isRfToTakUplinkEnabled(ctx) ? "On" : "Off";
+            }
             return getCheckBoxPreferenceValueLabel(key, false);
         }
         if (NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED.equals(key)) {
@@ -4070,7 +4132,8 @@ public class SettingsFragment extends PluginPreferenceFragment
     }
 
     public static boolean isRfToTakUplinkEnabled(Context context) {
-        return getPrefs(context)
+        return isSaRelayEnabled(context)
+                && getPrefs(context)
                 .getBoolean(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
     }
 

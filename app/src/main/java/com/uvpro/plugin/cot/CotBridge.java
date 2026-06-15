@@ -2806,10 +2806,6 @@ public class CotBridge {
         if (event == null) {
             return false;
         }
-        if (!wifiTransmitEnabled) {
-            Log.d(TAG, "RF -> TAK uplink suppressed (ATAK WiFi transmit disabled)");
-            return false;
-        }
         if (!isRfToTakUplinkEnabled()) {
             return false;
         }

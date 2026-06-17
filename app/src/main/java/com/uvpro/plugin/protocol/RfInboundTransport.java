@@ -1,9 +1,10 @@
 package com.uvpro.plugin.protocol;
 
 /**
- * Identifies which RF link delivered an inbound AX.25 frame (UV-PRO radio vs MeshCore).
+ * Identifies which link delivered an inbound ping (UV-PRO radio, MeshCore, or TAK/Wi‑Fi).
  */
 public enum RfInboundTransport {
     UVPRO,
-    MESHCORE
+    MESHCORE,
+    WIFI
 }

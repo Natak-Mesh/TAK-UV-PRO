@@ -6097,6 +6097,13 @@ public class UVProDropDownReceiver extends DropDownReceiver
 
     private String explainTransmitBlock(BtConnectionManager activeTx) {
         if (!isUvproConnected() && !isMeshConnected()) {
+            if (wifiTransmitEnabled && cotBridge != null
+                    && cotBridge.canSendPingOverWifiNetwork()) {
+                return "UV-PRO and MeshCore not connected; use ATAK WiFi transmit";
+            }
+            if (wifiTransmitEnabled) {
+                return "UV-PRO and MeshCore not connected; WiFi/TAK endpoint unavailable";
+            }
             return "UV-PRO and MeshCore not connected";
         }
         if (!meshTransmitEnabled && !uvproTransmitEnabled) {
@@ -8304,6 +8311,14 @@ public class UVProDropDownReceiver extends DropDownReceiver
                 showActionToast("Ping Sent");
             } catch (Exception e) {
                 appendLog("Ping not sent — " + e.getMessage());
+            }
+        } else if (cotBridge != null && cotBridge.canSendPingOverWifiNetwork()) {
+            if (cotBridge.sendPingOverWifiNetwork(null)) {
+                PingReplyNotifier.notePingSent(getMapView().getContext());
+                appendLog("Ping sent (ATAK WiFi)");
+                showActionToast("Ping Sent");
+            } else {
+                appendLog("Ping not sent — WiFi/TAK dispatch failed");
             }
         } else {
             appendTransmitBlockedLog("Ping", activeTx);

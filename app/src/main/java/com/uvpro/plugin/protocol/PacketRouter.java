@@ -9,6 +9,8 @@ import com.atakmap.android.contact.IpConnector;
 import com.atakmap.android.maps.MapItem;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.comms.NetConnectString;
+import com.atakmap.coremap.cot.event.CotDetail;
+import com.atakmap.coremap.cot.event.CotEvent;
 
 import com.uvpro.plugin.aprs.AprsInfoFormatter;
 import com.uvpro.plugin.aprs.AprsTrackManager;
@@ -18,6 +20,7 @@ import com.uvpro.plugin.ax25.AprsSymbolMapper;
 import com.uvpro.plugin.ax25.AprsWeatherParser;
 import com.uvpro.plugin.chat.ChatBridge;
 import com.uvpro.plugin.cot.CotBridge;
+import com.uvpro.plugin.cot.CotBuilder;
 import com.uvpro.plugin.util.CallsignUtil;
 import com.uvpro.plugin.contacts.ContactTracker;
 import com.uvpro.plugin.contacts.RadioContact;
@@ -770,5 +773,67 @@ public class PacketRouter {
             return;
         }
         pingReplyScheduler.scheduleReply(mv.getContext(), inboundTransport);
+    }
+
+    /**
+     * Inbound Wi‑Fi/TAK ping CoT (remarks source {@link CotBuilder#WIFI_PING_REMARKS_SOURCE}).
+     */
+    public void handleInboundWifiPing(CotEvent event) {
+        if (event == null) {
+            return;
+        }
+        UVProPacket.PingPayload payload = decodeWifiPingPayload(event);
+        if (payload == null) {
+            return;
+        }
+        String pingCall = payload.sourceCallsign;
+        if (pingCall == null || pingCall.trim().isEmpty()) {
+            return;
+        }
+        Log.d(TAG, "WiFi ping from: " + pingCall
+                + (payload.isDirected()
+                ? " (directed to " + payload.targetCallsign + ")"
+                : " (broadcast)"));
+        MapView pingMv = MapView.getMapView();
+        boolean shouldReply = !payload.isDirected();
+        if (payload.isDirected() && pingMv != null) {
+            String selfAtak = com.uvpro.plugin.ui.SettingsFragment.getCallsign(
+                    pingMv.getContext());
+            shouldReply = com.uvpro.plugin.util.CallsignUtil.isSameRadioStation(
+                    selfAtak, payload.targetCallsign);
+            if (!shouldReply) {
+                Log.d(TAG, "Directed WiFi ping for " + payload.targetCallsign
+                        + " — not this station");
+            }
+        }
+        if (pingMv != null && (shouldReply || !payload.isDirected())) {
+            PingReplyNotifier.notifyPingReceived(pingMv.getContext(), pingCall);
+        }
+        contactTracker.handlePing(pingCall);
+        chatBridge.onPeerActivity(pingCall);
+        if (shouldReply) {
+            schedulePingReply(RfInboundTransport.WIFI);
+        }
+    }
+
+    private static UVProPacket.PingPayload decodeWifiPingPayload(CotEvent event) {
+        try {
+            CotDetail detail = event.getDetail();
+            if (detail == null) {
+                return null;
+            }
+            CotDetail contact = detail.getFirstChildByName(0, "contact");
+            String source = contact != null ? contact.getAttribute("callsign") : null;
+            if (source == null || source.trim().isEmpty()) {
+                return null;
+            }
+            String target = CotBuilder.extractWifiPingTarget(event);
+            if (target.isEmpty()) {
+                return new UVProPacket.PingPayload(source.trim(), null);
+            }
+            return new UVProPacket.PingPayload(source.trim(), target);
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

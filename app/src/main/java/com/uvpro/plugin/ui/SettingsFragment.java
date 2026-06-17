@@ -352,9 +352,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (!(pref instanceof CheckBoxPreference)) {
             return;
         }
-        if (PREF_SA_RELAY_ENABLED.equals(key) || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
-            pref.setPersistent(false);
-        }
+        pref.setPersistent(false);
         syncCheckBoxPreferenceFromAtak(key, defaultValue);
         pref.setOnPreferenceChangeListener((preference, newValue) -> {
             boolean checked = Boolean.TRUE.equals(newValue);
@@ -375,7 +373,8 @@ public class SettingsFragment extends PluginPreferenceFragment
             if (PREF_SA_RELAY_ENABLED.equals(key)) {
                 updateDependentPreferences();
             }
-            if (PREF_SA_RELAY_ENABLED.equals(key)
+            if (PREF_PING_REPLY_ENABLED.equals(key)
+                    || PREF_SA_RELAY_ENABLED.equals(key)
                     || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
                 ListView list = getPreferenceListView();
                 if (list != null) {
@@ -445,12 +444,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         if (ctx == null) {
             return;
         }
-        SharedPreferences.Editor editor = getPrefs(ctx).edit().putBoolean(key, value);
-        if (PREF_SA_RELAY_ENABLED.equals(key) || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
-            editor.commit();
-        } else {
-            editor.apply();
-        }
+        getPrefs(ctx).edit().putBoolean(key, value).commit();
     }
 
     private void afterPreferenceValueSaved(String key) {
@@ -2702,9 +2696,7 @@ public class SettingsFragment extends PluginPreferenceFragment
             pref = created;
         }
         pref.setChecked(checked);
-        if (PREF_SA_RELAY_ENABLED.equals(key) || PREF_RF_TO_TAK_UPLINK_ENABLED.equals(key)) {
-            pref.setPersistent(false);
-        }
+        pref.setPersistent(false);
         applyAdminCheckboxEnabledState(pref, key);
     }
 
@@ -2768,6 +2760,7 @@ public class SettingsFragment extends PluginPreferenceFragment
         pref.setTitle(title);
         pref.setSummary(summary);
         pref.setDefaultValue(defaultValue);
+        pref.setPersistent(false);
         parent.addPreference(pref);
     }
 
@@ -2981,16 +2974,11 @@ public class SettingsFragment extends PluginPreferenceFragment
                 String.valueOf(NetSlotConfig.getSlotCount(ctx)));
         setEditTextPreferenceText(NetSlotConfig.PREF_SLOT_TIME_SEC,
                 String.valueOf(NetSlotConfig.getSlotTimeSec(ctx)));
-        setCheckBoxPreferenceValue(PREF_PING_REPLY_ENABLED,
-                atak.getBoolean(PREF_PING_REPLY_ENABLED, DEFAULT_PING_REPLY_ENABLED));
-        setCheckBoxPreferenceValue(PREF_SA_RELAY_ENABLED,
-                atak.getBoolean(PREF_SA_RELAY_ENABLED, false));
-        setCheckBoxPreferenceValue(PREF_RF_TO_TAK_UPLINK_ENABLED,
-                atak.getBoolean(PREF_RF_TO_TAK_UPLINK_ENABLED, false));
-        setCheckBoxPreferenceValue(PREF_DISABLE_MESH_BEACON_LIMITING,
-                atak.getBoolean(PREF_DISABLE_MESH_BEACON_LIMITING, false));
-        setCheckBoxPreferenceValue(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED,
-                atak.getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false));
+        syncCheckBoxPreferenceFromAtak(PREF_PING_REPLY_ENABLED, DEFAULT_PING_REPLY_ENABLED);
+        syncCheckBoxPreferenceFromAtak(PREF_SA_RELAY_ENABLED, false);
+        syncCheckBoxPreferenceFromAtak(PREF_RF_TO_TAK_UPLINK_ENABLED, false);
+        syncCheckBoxPreferenceFromAtak(PREF_DISABLE_MESH_BEACON_LIMITING, false);
+        syncCheckBoxPreferenceFromAtak(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false);
         syncSmartBeaconPreferenceValues();
     }
 
@@ -3005,11 +2993,8 @@ public class SettingsFragment extends PluginPreferenceFragment
                 mirrorPreferenceToAtak(ui, key);
             }
         }
-        for (String key : MIRROR_BOOLEAN_PREF_KEYS) {
-            if (ui.contains(key)) {
-                mirrorPreferenceToAtak(ui, key);
-            }
-        }
+        // Checkbox prefs are written directly to ATAK in wireCheckBoxPreference; mirroring
+        // the fragment UI store on pause can overwrite ATAK with stale false.
         Context ctx = resolveSettingsContext();
         if (ctx != null) {
             persistSmartBeaconFromPreferences(getPrefs(ctx));
@@ -3027,6 +3012,7 @@ public class SettingsFragment extends PluginPreferenceFragment
             return;
         }
         CheckBoxPreference adminCheck = (CheckBoxPreference) adminToggle;
+        adminCheck.setPersistent(false);
         adminCheck.setOnPreferenceChangeListener((preference, newValue) ->
                 handleAdminSettingsChange((CheckBoxPreference) preference,
                         Boolean.TRUE.equals(newValue)));
@@ -3126,7 +3112,7 @@ public class SettingsFragment extends PluginPreferenceFragment
     private void enableAdminSettings(CheckBoxPreference checkbox, Context prefsCtx) {
         getPrefs(prefsCtx).edit()
                 .putBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, true)
-                .apply();
+                .commit();
         checkbox.setChecked(true);
         refreshAdminGateUi();
     }
@@ -3151,7 +3137,7 @@ public class SettingsFragment extends PluginPreferenceFragment
             if (prefs.getBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false)) {
                 prefs.edit()
                         .putBoolean(NetSlotConfig.PREF_ADMIN_SETTINGS_ENABLED, false)
-                        .apply();
+                        .commit();
             }
             if (adminToggle instanceof CheckBoxPreference) {
                 ((CheckBoxPreference) adminToggle).setChecked(false);

@@ -20,6 +20,7 @@ public final class PositionRequester {
     private static volatile BtConnectionManager uvproTransport;
     private static volatile BtConnectionManager meshTransport;
     private static volatile EncryptionManager encryptionManager;
+    private static volatile com.uvpro.plugin.cot.CotBridge cotBridge;
 
     private PositionRequester() {
     }
@@ -31,10 +32,18 @@ public final class PositionRequester {
         encryptionManager = encryption;
     }
 
+    public static void install(BtConnectionManager uvproBt, BtConnectionManager meshBt,
+                               EncryptionManager encryption,
+                               com.uvpro.plugin.cot.CotBridge bridge) {
+        install(uvproBt, meshBt, encryption);
+        cotBridge = bridge;
+    }
+
     public static void clear() {
         uvproTransport = null;
         meshTransport = null;
         encryptionManager = null;
+        cotBridge = null;
     }
 
     public static boolean requestPosition(Context context, String targetCallsign) {
@@ -49,17 +58,25 @@ public final class PositionRequester {
         if (targetCallsign == null || targetCallsign.trim().isEmpty()) {
             return false;
         }
-        BtConnectionManager tx = resolveTransport(contactUid);
-        if (tx == null || !tx.isConnected()) {
-            Log.w(TAG, "Request position: no connected radio transport");
-            return false;
-        }
         Context ctx = resolveContext(context);
         if (ctx == null) {
             return false;
         }
-        String sender = SettingsFragment.getCallsign(ctx);
         String atakTarget = targetCallsign.trim();
+        BtConnectionManager tx = resolveTransport(contactUid);
+        if (tx == null || !tx.isConnected()) {
+            com.uvpro.plugin.cot.CotBridge bridge = cotBridge;
+            if (bridge != null && bridge.canSendPingOverWifiNetwork()) {
+                boolean wifiOk = bridge.sendPingOverWifiNetwork(atakTarget);
+                if (wifiOk) {
+                    PingReplyNotifier.noteDirectedPingSent(ctx, atakTarget, "ATAK WiFi");
+                }
+                return wifiOk;
+            }
+            Log.w(TAG, "Request position: no connected radio transport");
+            return false;
+        }
+        String sender = SettingsFragment.getCallsign(ctx);
         String targetRadio = CallsignUtil.toRadioCallsign(atakTarget);
         if (targetRadio.isEmpty()) {
             return false;

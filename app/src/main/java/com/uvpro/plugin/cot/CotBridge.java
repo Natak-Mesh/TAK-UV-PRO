@@ -222,6 +222,7 @@ public class CotBridge {
 
     /** Set after {@link ChatBridge} construction; used to send compact TYPE_CHAT with wire ACK ids. */
     private volatile ChatBridge chatBridge;
+    private volatile com.uvpro.plugin.protocol.PacketRouter packetRouter;
     private volatile boolean wifiTransmitEnabled = true;
 
     private void markInboundInjectSkipOutboundRelay(String cotUid) {
@@ -287,8 +288,136 @@ public class CotBridge {
         this.chatBridge = chatBridge;
     }
 
+    public void setPacketRouter(com.uvpro.plugin.protocol.PacketRouter packetRouter) {
+        this.packetRouter = packetRouter;
+    }
+
     public void setWifiTransmitEnabled(boolean enabled) {
         wifiTransmitEnabled = enabled;
+    }
+
+    /** ATAK WiFi transmit on (or WiFi-only with no RF) and TAK endpoint available. */
+    public boolean canSendPingOverWifiNetwork() {
+        if (!isTakNetworkAvailable()) {
+            return false;
+        }
+        // WiFi-only stations use TAK for ping — SA Relay and RF toggles do not apply.
+        if (!isRadioConnected()) {
+            return true;
+        }
+        return wifiTransmitEnabled;
+    }
+
+    private boolean isTakNetworkAvailable() {
+        try {
+            String endpoint = CotMapComponent.getEndpoint();
+            return endpoint != null && !endpoint.trim().isEmpty();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Broadcast or directed ping over TAK/Wi‑Fi when RF transports are unavailable.
+     *
+     * @param targetCallsign ATAK callsign for directed ping, or null/empty for broadcast
+     */
+    public boolean sendPingOverWifiNetwork(String targetCallsign) {
+        if (!canSendPingOverWifiNetwork()) {
+            return false;
+        }
+        CotEvent event = CotBuilder.buildWifiPingCot(mapView, targetCallsign);
+        if (event == null || !event.isValid()) {
+            Log.w(TAG, "WiFi ping CoT build failed");
+            return false;
+        }
+        try {
+            com.atakmap.comms.CotDispatcher dispatcher =
+                    CotMapComponent.getExternalDispatcher();
+            if (dispatcher == null) {
+                return false;
+            }
+            String target = targetCallsign != null ? targetCallsign.trim() : "";
+            if (!target.isEmpty()) {
+                IndividualContact peer = findWifiPingContact(target);
+                if (peer != null) {
+                    dispatcher.dispatchToContact(
+                            event, peer, CoTSendMethod.POINT_TO_POINT);
+                    Log.i(TAG, "WiFi directed ping sent to " + target);
+                } else {
+                    dispatcher.dispatchToBroadcast(event, CoTSendMethod.ANY);
+                    Log.i(TAG, "WiFi ping broadcast (no contact for " + target + ")");
+                }
+            } else {
+                dispatcher.dispatchToBroadcast(event, CoTSendMethod.ANY);
+                Log.i(TAG, "WiFi ping broadcast");
+            }
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "WiFi ping send failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Slotted ping reply over TAK/Wi‑Fi — independent of SA Relay and WiFi transmit toggle. */
+    public boolean sendSelfPositionOverWifiNetwork() {
+        if (!isTakNetworkAvailable()) {
+            return false;
+        }
+        try {
+            CotEvent event = CotBuilder.buildWifiPingReplyCot(mapView);
+            if (event == null || !event.isValid()) {
+                return false;
+            }
+            com.atakmap.comms.CotDispatcher dispatcher =
+                    CotMapComponent.getExternalDispatcher();
+            if (dispatcher == null) {
+                return false;
+            }
+            dispatcher.dispatchToBroadcast(event, CoTSendMethod.ANY);
+            Log.i(TAG, "WiFi ping reply (position SA) broadcast");
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "WiFi ping reply failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private IndividualContact findWifiPingContact(String targetCallsign) {
+        if (targetCallsign == null || targetCallsign.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            Contacts contacts = Contacts.getInstance();
+            Contact match = ChatBridge.findContactByCallsignVariants(
+                    contacts, targetCallsign.trim());
+            if (match instanceof IndividualContact) {
+                return (IndividualContact) match;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "findWifiPingContact failed", e);
+        }
+        return null;
+    }
+
+    private void maybeHandleInboundNetworkWifiPing(CotEvent event) {
+        if (!CotBuilder.isWifiPingCot(event)) {
+            return;
+        }
+        if (packetRouter == null) {
+            return;
+        }
+        String localUid = null;
+        try {
+            localUid = MapView.getDeviceUid();
+        } catch (Exception ignored) {
+        }
+        String eventUid = event.getUID();
+        if (localUid != null && eventUid != null
+                && localUid.trim().equalsIgnoreCase(eventUid.trim())) {
+            return;
+        }
+        packetRouter.handleInboundWifiPing(event);
     }
 
     /**
@@ -2244,6 +2373,7 @@ public class CotBridge {
             public void logReceive(CotEvent event, String src, String dest) {
                 noteInboundNetworkTransport(event);
                 maybeNoteInboundNetworkGeoChat(event);
+                maybeHandleInboundNetworkWifiPing(event);
                 maybeSaRelayInboundNetworkCot(event);
             }
         };
@@ -2300,6 +2430,9 @@ public class CotBridge {
             }
             // Wi‑Fi unicast keepalive SA is Wi‑Fi-only (dispatchToContact); never RF-relay.
             if (CotBuilder.isWifiKeepaliveCot(event)) {
+                return;
+            }
+            if (CotBuilder.isWifiNetworkOnlyCot(event)) {
                 return;
             }
             boolean btConnected = btManager != null && btManager.isConnected();
@@ -2492,6 +2625,13 @@ public class CotBridge {
      */
     private void maybeSaRelayInboundNetworkCot(CotEvent event) {
         if (event == null) return;
+        if (CotBuilder.isWifiNetworkOnlyCot(event)) {
+            return;
+        }
+        // SA Relay is RF-only — irrelevant when this device has no radio link.
+        if (!isRadioConnected()) {
+            return;
+        }
         if (!isSaRelayEnabled()) return;
         if (btManager == null || !btManager.isConnected()) return;
 
@@ -2707,7 +2847,7 @@ public class CotBridge {
      */
     private void maybeRelayMapCotFromCommsLogger(CotEvent event, String dest) {
         if (btManager == null || !btManager.isConnected()) return;
-        if (event == null || CotBuilder.isWifiKeepaliveCot(event)) return;
+        if (event == null || CotBuilder.isWifiNetworkOnlyCot(event)) return;
         if (dest == null || !"broadcast".equalsIgnoreCase(dest.trim())) return;
         if (!shouldRelayBroadcastMapCot(event, null)) return;
         String uid = event.getUID();

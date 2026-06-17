@@ -44,6 +44,10 @@ public class CotBuilder {
 
     /** {@link com.uvpro.plugin.network.WifiContactKeepalive} marks remarks with this source. */
     public static final String WIFI_KEEPALIVE_REMARKS_SOURCE = "UV-PRO WiFi keepalive";
+    /** Broadcast/directed ping over TAK/Wi‑Fi (not RF TYPE_PING). */
+    public static final String WIFI_PING_REMARKS_SOURCE = "UV-PRO WiFi ping";
+    /** Slotted ping reply sent over TAK/Wi‑Fi (not RF OPENRL). */
+    public static final String WIFI_PING_REPLY_REMARKS_SOURCE = "UV-PRO WiFi ping reply";
 
     /** Stale interval for radio contacts: 5 minutes */
     private static final long STALE_MILLIS = 5 * 60 * 1000L;
@@ -665,7 +669,72 @@ public class CotBuilder {
 
     /** True for unicast Wi‑Fi keepalive mini-SA — must never be relayed over RF. */
     public static boolean isWifiKeepaliveCot(CotEvent event) {
+        return remarksSourceEquals(event, WIFI_KEEPALIVE_REMARKS_SOURCE);
+    }
+
+    /**
+     * Build a Wi‑Fi/TAK ping CoT (broadcast or directed via remarks {@code to}).
+     */
+    public static CotEvent buildWifiPingCot(MapView mapView, String targetCallsign) {
+        CotEvent event = buildSelfWifiKeepaliveCot(mapView, 60_000L);
+        if (event == null) {
+            return null;
+        }
+        event.setType("t-x-v-p");
+        CotDetail detail = event.getDetail();
+        if (detail == null) {
+            return null;
+        }
+        CotDetail remarks = detail.getFirstChildByName(0, "remarks");
+        if (remarks == null) {
+            remarks = new CotDetail("remarks");
+            detail.addChild(remarks);
+        }
+        remarks.setAttribute("source", WIFI_PING_REMARKS_SOURCE);
+        remarks.setInnerText("");
+        String target = targetCallsign != null ? targetCallsign.trim() : "";
+        if (!target.isEmpty()) {
+            remarks.setAttribute("to", target);
+        }
+        return event;
+    }
+
+    /** True for Wi‑Fi/TAK ping CoT — must never be SA-relayed over RF. */
+    public static boolean isWifiPingCot(CotEvent event) {
+        return remarksSourceEquals(event, WIFI_PING_REMARKS_SOURCE);
+    }
+
+    /** True for Wi‑Fi/TAK ping reply position SA — must never be SA-relayed over RF. */
+    public static boolean isWifiPingReplyCot(CotEvent event) {
+        return remarksSourceEquals(event, WIFI_PING_REPLY_REMARKS_SOURCE);
+    }
+
+    /** Wi‑Fi/TAK-only plugin traffic that must stay on the network (never RF relay). */
+    public static boolean isWifiNetworkOnlyCot(CotEvent event) {
+        return isWifiKeepaliveCot(event)
+                || isWifiPingCot(event)
+                || isWifiPingReplyCot(event);
+    }
+
+    /** Directed Wi‑Fi ping target from remarks {@code to}, or empty for broadcast. */
+    public static String extractWifiPingTarget(CotEvent event) {
         if (event == null || event.getDetail() == null) {
+            return "";
+        }
+        try {
+            CotDetail remarks = event.getDetail().getFirstChildByName(0, "remarks");
+            if (remarks == null) {
+                return "";
+            }
+            String to = remarks.getAttribute("to");
+            return to != null ? to.trim() : "";
+        } catch (Exception ignored) {
+            return "";
+        }
+    }
+
+    private static boolean remarksSourceEquals(CotEvent event, String source) {
+        if (event == null || event.getDetail() == null || source == null) {
             return false;
         }
         try {
@@ -673,10 +742,32 @@ public class CotBuilder {
             if (remarks == null) {
                 return false;
             }
-            return WIFI_KEEPALIVE_REMARKS_SOURCE.equals(remarks.getAttribute("source"));
+            return source.equals(remarks.getAttribute("source"));
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    /**
+     * Self position SA for a slotted ping reply over TAK/Wi‑Fi (device UID + endpoint).
+     */
+    public static CotEvent buildWifiPingReplyCot(MapView mapView) {
+        CotEvent event = buildSelfWifiKeepaliveCot(mapView, STALE_MILLIS);
+        if (event == null) {
+            return null;
+        }
+        CotDetail detail = event.getDetail();
+        if (detail == null) {
+            return null;
+        }
+        CotDetail remarks = detail.getFirstChildByName(0, "remarks");
+        if (remarks == null) {
+            remarks = new CotDetail("remarks");
+            detail.addChild(remarks);
+        }
+        remarks.setAttribute("source", WIFI_PING_REPLY_REMARKS_SOURCE);
+        remarks.setInnerText("");
+        return event;
     }
 
     /**

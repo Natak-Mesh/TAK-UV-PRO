@@ -158,9 +158,13 @@ public class UVProContactHandler extends
                 }
                 boolean ok = PositionRequester.requestPosition(
                         pluginContext, uid, atakTarget);
+                String failReason = ok ? null
+                        : (com.uvpro.plugin.contacts.ContactReachability.isLocalWifiAvailable()
+                                ? "WiFi/TAK unavailable"
+                                : "radio not connected");
                 Toast.makeText(pluginContext,
                         ok ? "Ping sent to " + atakTarget
-                                : "Ping failed (radio not connected)",
+                                : "Ping failed (" + failReason + ")",
                         Toast.LENGTH_LONG).show();
                 return true;
             }

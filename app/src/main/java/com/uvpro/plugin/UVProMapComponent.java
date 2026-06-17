@@ -302,6 +302,7 @@ try {
         // 4. PacketRouter (needs CotBridge, ChatBridge, ContactTracker)
         packetRouter = new PacketRouter(cotBridge, chatBridge, contactTracker);
         packetRouter.setEncryptionManager(encryptionManager);
+        cotBridge.setPacketRouter(packetRouter);
         aprsTrackManager = new AprsTrackManager(view);
         packetRouter.setAprsTrackManager(aprsTrackManager);
         contactTracker.setAprsTrackManager(aprsTrackManager);
@@ -486,7 +487,7 @@ try {
         NetSlotConfig.ensureDefaults(view.getContext());
         UVProRadioServices.install(btConnectionManager, encryptionManager);
         com.uvpro.plugin.protocol.PositionRequester.install(
-                btConnectionManager, meshBtConnectionManager, encryptionManager);
+                btConnectionManager, meshBtConnectionManager, encryptionManager, cotBridge);
 
         // 6. Create the drop-down UI receiver
         dropDownReceiver = new UVProDropDownReceiver(

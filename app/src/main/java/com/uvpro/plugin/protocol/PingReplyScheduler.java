@@ -63,6 +63,12 @@ public final class PingReplyScheduler {
                 Log.d(TAG, "Ping reply already scheduled on UV-PRO; ignoring Mesh duplicate");
                 return;
             }
+            if (pendingInboundTransport == RfInboundTransport.WIFI
+                    && incoming != RfInboundTransport.WIFI) {
+                Log.d(TAG, "Ping reply already scheduled on WiFi; ignoring duplicate on "
+                        + incoming);
+                return;
+            }
             if (pendingInboundTransport == RfInboundTransport.MESHCORE
                     && incoming == RfInboundTransport.UVPRO) {
                 Log.d(TAG, "Upgrading ping reply transport Mesh → UV-PRO");
@@ -114,6 +120,15 @@ public final class PingReplyScheduler {
         try {
             MapView mv = MapView.getMapView();
             if (mv == null) {
+                return;
+            }
+            if (pendingInboundTransport == RfInboundTransport.WIFI) {
+                if (cotBridge.sendSelfPositionOverWifiNetwork()) {
+                    Log.d(TAG, "Ping reply sent (slotted) over WiFi/TAK");
+                    PingReplyNotifier.notifyPingReplySent(context);
+                } else {
+                    Log.w(TAG, "Ping reply skipped — WiFi/TAK unavailable");
+                }
                 return;
             }
             PointMapItem self = mv.getSelfMarker();

@@ -8287,7 +8287,9 @@ public class UVProDropDownReceiver extends DropDownReceiver
         pulseSendButtonFeedback(btnSendPing, COLOR_BEACON_SECTION_STROKE);
         BtConnectionManager activeTx = resolveActiveTransmitManager();
         appendTransmitRouteLog("Ping");
-        if (cotBridge != null && activeTx != null && activeTx.isConnected()) {
+        boolean rfWanted = meshTransmitEnabled || uvproTransmitEnabled;
+        boolean rfSent = false;
+        if (rfWanted && cotBridge != null && activeTx != null && activeTx.isConnected()) {
             String callsign = MapView.getMapView().getSelfMarker().getMetaString("callsign","UNKNOWN");
             try {
                 com.uvpro.plugin.protocol.UVProPacket packet =
@@ -8298,29 +8300,37 @@ public class UVProDropDownReceiver extends DropDownReceiver
                     packetBytes = encryptionManager.encrypt(packetBytes);
                     if (packetBytes == null) {
                         appendLog("Ping not sent — encryption failed");
-                        return;
+                        packetBytes = null;
                     }
                 }
-                com.uvpro.plugin.ax25.Ax25Frame frame =
-                        com.uvpro.plugin.ax25.Ax25Frame
-                                .createUVProFrame(callsign, 0, packetBytes);
-                byte[] ax25 = frame.encode();
-                activeTx.sendKissFrame(ax25);
-                PingReplyNotifier.notePingSent(getMapView().getContext());
-                appendLog("Ping sent (" + transportLabelFor(activeTx) + ")");
-                showActionToast("Ping Sent");
+                if (packetBytes != null) {
+                    com.uvpro.plugin.ax25.Ax25Frame frame =
+                            com.uvpro.plugin.ax25.Ax25Frame
+                                    .createUVProFrame(callsign, 0, packetBytes);
+                    activeTx.sendKissFrame(frame.encode());
+                    PingReplyNotifier.notePingSent(getMapView().getContext());
+                    appendLog("Ping sent (" + transportLabelFor(activeTx) + ")");
+                    showActionToast("Ping Sent");
+                    rfSent = true;
+                }
             } catch (Exception e) {
                 appendLog("Ping not sent — " + e.getMessage());
             }
-        } else if (cotBridge != null && cotBridge.canSendPingOverWifiNetwork()) {
+        }
+        boolean wifiSent = false;
+        if (cotBridge != null && cotBridge.canSendPingOverWifiNetwork()) {
             if (cotBridge.sendPingOverWifiNetwork(null)) {
-                PingReplyNotifier.notePingSent(getMapView().getContext());
+                if (!rfSent) {
+                    PingReplyNotifier.notePingSent(getMapView().getContext());
+                }
                 appendLog("Ping sent (ATAK WiFi)");
                 showActionToast("Ping Sent");
-            } else {
+                wifiSent = true;
+            } else if (!rfSent) {
                 appendLog("Ping not sent — WiFi/TAK dispatch failed");
             }
-        } else {
+        }
+        if (!rfSent && !wifiSent) {
             appendTransmitBlockedLog("Ping", activeTx);
         }
     }

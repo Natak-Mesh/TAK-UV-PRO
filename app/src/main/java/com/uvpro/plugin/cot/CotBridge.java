@@ -2374,6 +2374,11 @@ public class CotBridge {
                 noteInboundNetworkTransport(event);
                 maybeNoteInboundNetworkGeoChat(event);
                 maybeHandleInboundNetworkWifiPing(event);
+                MapView pingMv = MapView.getMapView();
+                if (pingMv != null) {
+                    PingReplyNotifier.maybeNotifyPingReplyFromCot(
+                            pingMv.getContext(), event);
+                }
                 maybeSaRelayInboundNetworkCot(event);
             }
         };

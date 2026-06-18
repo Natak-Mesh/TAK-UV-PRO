@@ -782,7 +782,7 @@
                 android:background="@drawable/bg_uvpro_channel_button" />
         </LinearLayout>
 
-        <!-- ==================== TRANSMIT AND GPS ==================== -->
+        <!-- ==================== TRANSMIT SELECTION ==================== -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -794,7 +794,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="TRANSMIT AND GPS"
+                android:text="TRANSMIT SELECTION"
                 android:textColor="#FFCE93D8"
                 android:textSize="12sp"
                 android:textStyle="bold"

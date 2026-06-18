@@ -3,7 +3,7 @@
 A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team Awareness Kit (ATAK) over Bluetooth. Team members with radios can share positions, chat, and situational awareness data entirely off-grid — no cell service or internet required.
 
 - Package: `com.uvpro.plugin`
-- Current version: `2.0.7`
+- Current version: `2.0.10`
 - Target ATAK: `5.5.1` and `5.6.0` (CIV; build with `-Patak.version=5.6.0` for 5.6 installs)
 
 ## Features
@@ -22,7 +22,7 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **GeoChat delivery receipts (checkmarks)** | ✅ Working | ATAK's native single-checkmark (delivered) and double-checkmark (read) appear on the sender's chat window. |
 | **Retry on no ACK + delivery failure alert** | ✅ Working | If no delivered ACK within the configured interval, message is retransmitted up to max retries. If all retries exhausted, a persistent alert appears. Retry interval and max retries adjustable in Settings. |
 | **Contact-targeted CoT over RF** | ✅ Working | Any CoT item sendable to a contact in ATAK — waypoints, routes, casevac/9-line, drawings, markers — is intercepted, compressed, and relayed over RF. |
-| **SA Relay (opt-in)** | ✅ Working | Network-to-radio bridge: broadcasts received SA over RF to radio-only users. Configurable in Settings. Stationary contacts are deduped by **position + identity** (~1 m); relay CoT skips the automatic +3 s double-send. |
+| **SA Relay (opt-in)** | ✅ Working | Network-to-radio bridge: broadcasts received SA over RF to radio-only users. Configurable in Settings. Per-contact RF relay capped at **once every 10 minutes**; unchanged stationary contacts are still suppressed (~1 m). Relay CoT skips the automatic +3 s double-send. **RF → TAK uplink** (WiFi) uses its own 60 s keepalive and is not slowed. |
 | **AES-256 Encryption** | ✅ Working | Optional shared-secret AES-256-GCM for all radio traffic. All nodes must use the same secret. |
 | **Contact Tracking** | ✅ Working | Radios in range tracked as contacts with callsign, last-seen time, and position. |
 | **Map Repeater Load/Tune (KML)** | ✅ Working | Tap a repeater placemark from imported KML, arm **Load Selected Repeater**, then tap a destination channel to program/tune it (TX/RX + CTCSS/DCS). |
@@ -41,6 +41,16 @@ A free, open-source ATAK plugin that connects UV-PRO radios to the Android Team 
 | **Transmit auto-failover** | ✅ Working | Preferred MeshCore vs UV-PRO transmit is tracked separately from the active toggle. If the preferred radio disconnects for **5+ minutes** while the alternate is connected, the toggle switches automatically; it restores when the preferred device reconnects. Manual toggle changes update preference and cancel failover. Logged in the main plugin panel. |
 | **Mesh beacon rate limits** | ✅ Working | When **ATAK MeshCore Transmit** is on and **Disable Mesh Beacon Limiting** is unchecked, runtime floors cap mesh periodic/Smart Beacon rates (interval/slow ≥ 30 min, fast/min-turn ≥ 5 min) without changing stored prefs. UV-PRO-only beacons are unaffected; checking the disable box removes caps. |
 | **Mesh map Delete Contact** | ✅ Working | Long-press a MeshCore node marker → details panel → **Delete Contact** removes the map item and ATAK contact (same pattern as APRS delete). |
+
+### 2026-06-17 Progress Update (v2.0.10)
+
+- **SA Relay RF throttle:** WiFi/TAK → radio SA Relay broadcasts are limited to **one chirp per contact every 10 minutes** (was 30 seconds). Stops multi-contact WiFi churn from hammering the UV-PRO channel.
+- **Auto Send map points on RF:** ATAK Auto Send still refreshes markers on WiFi/TAK as before; RF relay of net-wide map points is **one chirp per marker every 2 minutes**, with **no ACK retries** and no duplicate PreSend/CommsLogger double-send.
+- **RF → TAK uplink unchanged:** Inbound RF CoT and the 60 s uplink keepalive still forward to WiFi/TAK at their existing cadence.
+
+### 2026-06-07 Progress Update (v2.0.9)
+
+- **WiFi/TAK ping:** Route broadcast ping over TAK when RF transmit toggles are off; prefer WiFi for `ANDROID-*` contacts; show ping-reply toast on inbound network CoT.
 
 ### 2026-06-15 Progress Update (v2.0.7)
 
@@ -468,7 +478,7 @@ Waypoints, routes, casevac/9-line, drawings, and other CoT items can all be sent
 
 ### SA Relay
 
-Enable **SA Relay** in Settings to automatically broadcast received network SA (team positions, waypoints, routes) over RF to all radio users on frequency. This is designed for a single designated relay node — **do not enable unless instructed by your team leader.** A per-contact 30-second throttle prevents channel flooding.
+Enable **SA Relay** in Settings to automatically broadcast received network SA (team positions, waypoints, routes) over RF to all radio users on frequency. This is designed for a single designated relay node — **do not enable unless instructed by your team leader.** Each contact is relayed onto RF at most **once every 10 minutes** (unchanged stationary contacts are still suppressed). **Enable RF to TAK Uplink Relay** is separate: it forwards RF traffic onto WiFi/TAK and is not limited by the 10-minute RF throttle.
 
 Stationary Wi-Fi/TAK contacts are suppressed when position has not meaningfully changed (~1 m quantization on lat/lon, ignoring timestamps, speed, course, and battery fields). Relayed SA is not subject to the generic CoT +3 s double-send used for other outbound CoT.
 

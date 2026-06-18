@@ -161,8 +161,8 @@ public class CotBridge {
 
     private final RfSlottedCoTScheduler slottedCoTScheduler = new RfSlottedCoTScheduler();
 
-    /** Minimum interval between outgoing SA relays (ms) */
-    private static final long SA_RELAY_INTERVAL_MS = 30_000;
+    /** Minimum interval between SA Relay broadcasts onto RF (WiFi/TAK → UV-PRO/Mesh). */
+    private static final long SA_RELAY_RF_BROADCAST_INTERVAL_MS = 10 * 60_000L;
     private long lastSaRelay = 0;
 
     /** Per-UID throttle map for SA Relay to prevent channel flooding */
@@ -172,6 +172,12 @@ public class CotBridge {
     /** Short de-dupe window so PreSend + COT_PLACED do not double-transmit the same event. */
     private final Map<String, Long> recentLocalRelayKeys = new ConcurrentHashMap<>();
     private static final long LOCAL_RELAY_DEDUPE_MS = 1500L;
+    /**
+     * Net-wide map points (ATAK Auto Send): one RF chirp per marker at most this often.
+     * WiFi/TAK rebroadcast is unchanged; only UV-PRO radio relay is throttled.
+     */
+    private static final long BROADCAST_MAP_RF_MIN_INTERVAL_MS = 120_000L;
+    private final Map<String, Long> lastBroadcastMapRfRelayByUid = new ConcurrentHashMap<>();
     private static final long INBOUND_CHAT_NOTIFY_DEDUPE_MS = 7000L;
     private static final int APRS_ICON_TARGET_PX = 52;
     /** Cache upscaled APRS icons by iconset path to avoid per-refresh bitmap work. */
@@ -2532,12 +2538,9 @@ public class CotBridge {
                 return;
             }
 
-            // Explicit map-item broadcasts (point/route/user-defined) should relay even without
-            // per-contact toUIDs. This is transport-agnostic (UV-PRO or MeshCore active manager).
+            // Net-wide map broadcasts (Auto Send): throttled RF chirp, no retry storm.
             if (shouldRelayBroadcastMapCot(event, toUIDs)) {
-                Log.d(TAG, "Relaying broadcast map CoT to radio: type=" + type
-                        + " uid=" + event.getUID());
-                new Thread(() -> sendCotOverRadio(event)).start();
+                maybeRelayBroadcastMapCotToRadio(event, toUIDs);
                 return;
             }
 
@@ -2546,7 +2549,7 @@ public class CotBridge {
             if (!relayOutgoingSa) return;
 
             long now = System.currentTimeMillis();
-            if (now - lastSaRelay < SA_RELAY_INTERVAL_MS) return;
+            if (now - lastSaRelay < SA_RELAY_RF_BROADCAST_INTERVAL_MS) return;
 
             boolean shouldRelay = type.startsWith("a-f-")   // friendly SA
                     || type.startsWith("b-r-f-h")           // CASEVAC/medevac
@@ -2676,10 +2679,10 @@ public class CotBridge {
             return;
         }
 
-        // Per-UID throttle: don't relay the same contact more than once per SA_RELAY_INTERVAL_MS
+        // Per-UID throttle: don't relay the same contact onto RF more than once per interval.
         long now = System.currentTimeMillis();
         Long lastRelay = saRelayLastSentByUid.get(uid);
-        if (lastRelay != null && (now - lastRelay) < SA_RELAY_INTERVAL_MS) return;
+        if (lastRelay != null && (now - lastRelay) < SA_RELAY_RF_BROADCAST_INTERVAL_MS) return;
         saRelayLastSentByUid.put(uid, now);
 
         // Suppress unchanged periodic SA/status relays (Wi-Fi/TAK contact PLI churn).
@@ -2851,16 +2854,36 @@ public class CotBridge {
      * Fallback when core comms accepts a net-wide map broadcast but mesh/RF is the only path.
      */
     private void maybeRelayMapCotFromCommsLogger(CotEvent event, String dest) {
+        if (dest == null || !"broadcast".equalsIgnoreCase(dest.trim())) return;
+        maybeRelayBroadcastMapCotToRadio(event, null);
+    }
+
+    /**
+     * One RF transmission for a net-wide map point (Auto Send / broadcast): no ACK retries,
+     * max once per {@link #BROADCAST_MAP_RF_MIN_INTERVAL_MS} per marker uid.
+     */
+    private void maybeRelayBroadcastMapCotToRadio(CotEvent event, String[] toUIDs) {
         if (btManager == null || !btManager.isConnected()) return;
         if (event == null || CotBuilder.isWifiNetworkOnlyCot(event)) return;
-        if (dest == null || !"broadcast".equalsIgnoreCase(dest.trim())) return;
-        if (!shouldRelayBroadcastMapCot(event, null)) return;
+        if (!shouldRelayBroadcastMapCot(event, toUIDs)) return;
+
         String uid = event.getUID();
-        if (uid != null && shouldSkipOutboundRelayWasInboundInject(uid)) return;
+        if (uid == null || uid.trim().isEmpty()) return;
+        String trimUid = uid.trim();
+        if (shouldSkipOutboundRelayWasInboundInject(trimUid)) return;
+
+        long now = System.currentTimeMillis();
+        Long lastRf = lastBroadcastMapRfRelayByUid.get(trimUid);
+        if (lastRf != null && now - lastRf < BROADCAST_MAP_RF_MIN_INTERVAL_MS) {
+            Log.d(TAG, "Broadcast map RF skipped (max 1 per 2m): uid=" + trimUid
+                    + " retry in " + ((BROADCAST_MAP_RF_MIN_INTERVAL_MS - (now - lastRf)) / 1000) + "s");
+            return;
+        }
         if (isDuplicateLocalRelay(event)) return;
-        Log.d(TAG, "Outbound map broadcast (CommsLogger) relay: type=" + event.getType()
-                + " uid=" + uid);
-        new Thread(() -> sendCotOverRadio(event)).start();
+
+        lastBroadcastMapRfRelayByUid.put(trimUid, now);
+        Log.d(TAG, "Broadcast map RF chirp: type=" + event.getType() + " uid=" + trimUid);
+        new Thread(() -> sendCotOverRadioNoRetry(event)).start();
     }
 
     /**

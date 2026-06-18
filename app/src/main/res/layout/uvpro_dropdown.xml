@@ -248,69 +248,6 @@
             </LinearLayout>
 
             <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:paddingTop="10dp">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="ATAK MeshCore Transmit"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp" />
-
-                <Switch
-                    android:id="@+id/switch_mesh_transmit"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:paddingTop="4dp">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="ATAK UV-PRO Transmit"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp" />
-
-                <Switch
-                    android:id="@+id/switch_uvpro_transmit"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:paddingTop="4dp">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="ATAK WIFI Transmit"
-                    android:textColor="#FFFFFFFF"
-                    android:textSize="13sp" />
-
-                <Switch
-                    android:id="@+id/switch_wifi_transmit"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" />
-            </LinearLayout>
-
-            <LinearLayout
                 android:id="@+id/row_augment_gps_from_meshcore"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -843,6 +780,87 @@
                 android:text="DIGITAL ONLY MODE"
                 android:enabled="false"
                 android:background="@drawable/bg_uvpro_channel_button" />
+        </LinearLayout>
+
+        <!-- ==================== TRANSMIT AND GPS ==================== -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_uvpro_transmit_gps_section"
+            android:padding="12dp"
+            android:layout_marginBottom="8dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="TRANSMIT AND GPS"
+                android:textColor="#FFCE93D8"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:paddingBottom="4dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="ATAK MeshCore Transmit"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_mesh_transmit"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="4dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="ATAK UV-PRO Transmit"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_uvpro_transmit"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:paddingTop="4dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="ATAK WIFI Transmit"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="13sp" />
+
+                <Switch
+                    android:id="@+id/switch_wifi_transmit"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
         </LinearLayout>
 
         <!-- ==================== BEACON (interval display) ==================== -->
